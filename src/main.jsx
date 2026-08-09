@@ -6,12 +6,89 @@ import Tesseract from "tesseract.js";
 import {
   Upload, Search, CalendarDays, Clock3, RotateCcw, Download,
   Filter, ChevronLeft, ChevronRight, Image as ImageIcon, Save,
-  Settings2, X, Trash2, LayoutDashboard, List, Moon, Sun
+  Settings2, X, Trash2, LayoutDashboard, List, Check, ScanLine
 } from "lucide-react";
 import "./styles.css";
 
 const STORE = "vv-roster-complete-v1";
 const DAY = 86400000;
+
+const SHIFT_TOKEN_RE = /(?:\b(?:RDO|AL|ALLV|ALTH|HACC|TRNG|TRAINING|OFF)\b|\b[0-2]?\d[:.]?\d{2}\s*[-–]\s*[0-2]?\d[:.]?\d{2}\b)/ig;
+function normalizeShiftText(s=""){
+  let x=String(s).toUpperCase().replace(/[—_]/g,"-").replace(/\s+/g," ").trim();
+  x=x.replace(/\b(\d{2})(\d{2})\s*[-–]\s*(\d{2})(\d{2})\b/g,"$1$2-$3$4");
+  return x;
+}
+function shiftTokens(text=""){return normalizeShiftText(text).match(SHIFT_TOKEN_RE)||[];}
+function firstRosterDate(text=""){
+  const range=String(text).match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](20\d{2})\b/);
+  if(range)return `${range[3]}-${String(+range[2]).padStart(2,"0")}-${String(+range[1]).padStart(2,"0")}`;
+  return "";
+}
+function candidateName(line=""){
+  const normalized=normalizeShiftText(line);
+  const m=normalized.match(SHIFT_TOKEN_RE);
+  if(!m)return "";
+  const prefix=line.slice(0,m.index).replace(/\s+/g," ").replace(/[|:;]+$/g,"").trim();
+  if(prefix.length<3 || prefix.length>60)return "";
+  if(/SHIFT|TIER|BAG|AIRPORT|WORKING|HOURS|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY/i.test(prefix))return "";
+  return prefix;
+}
+async function preprocessRosterImage(file){
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=url;});
+    const scale=Math.max(2, Math.min(3, 2400/img.width));
+    const canvas=document.createElement("canvas");
+    canvas.width=Math.round(img.width*scale); canvas.height=Math.round(img.height*scale);
+    const ctx=canvas.getContext("2d",{willReadFrequently:true});
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    const data=ctx.getImageData(0,0,canvas.width,canvas.height), a=data.data;
+    for(let i=0;i<a.length;i+=4){
+      const g=.299*a[i]+.587*a[i+1]+.114*a[i+2];
+      const v=g>210?255:g<105?0:Math.max(0,Math.min(255,(g-128)*1.65+128));
+      a[i]=a[i+1]=a[i+2]=v;
+    }
+    ctx.putImageData(data,0,0);
+    return {dataUrl:canvas.toDataURL("image/png"),width:canvas.width,height:canvas.height};
+  } finally { URL.revokeObjectURL(url); }
+}
+function makeScreenshotCandidates(result){
+  const lines=(result.data.lines||[]).map((l,i)=>({id:i,text:(l.text||"").trim(),bbox:l.bbox})).filter(l=>l.text);
+  const candidates=[];
+  for(const l of lines){
+    const tokens=shiftTokens(l.text); const name=candidateName(l.text);
+    if(name && tokens.length>=2)candidates.push({...l,name,tokens});
+  }
+  return candidates;
+}
+function rowsFromScreenshot(importData, candidate, chosenName){
+  const words=importData.words||[];
+  const b=candidate.bbox||{}; const cy=((b.y0||0)+(b.y1||0))/2; const h=Math.max(18,(b.y1||0)-(b.y0||0));
+  const rowWords=words.filter(w=>{const wb=w.bbox||{}; const wy=((wb.y0||0)+(wb.y1||0))/2; return Math.abs(wy-cy)<=h*.8 && String(w.text||"").trim();}).sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
+  const firstShift=rowWords.find(w=>shiftTokens(w.text).length || /^(?:RDO|AL|ALLV|ALTH|HACC|TRNG|OFF)$/i.test(w.text));
+  if(!firstShift)return [];
+  const xStart=Math.max(0,(firstShift.bbox?.x0||0)-4);
+  const hourWord=[...rowWords].reverse().find(w=>/^\d{1,3}[.,]\d{1,2}$/.test(String(w.text||"").trim()));
+  let xEnd=hourWord?.bbox?.x0 || importData.width*.96;
+  if(xEnd<=xStart)xEnd=importData.width*.96;
+  const colW=(xEnd-xStart)/14;
+  const cells=Array.from({length:14},()=>[]);
+  rowWords.forEach(w=>{
+    const wb=w.bbox||{}; const cx=((wb.x0||0)+(wb.x1||0))/2;
+    if(cx<xStart||cx>=xEnd)return;
+    const idx=Math.max(0,Math.min(13,Math.floor((cx-xStart)/colW)));
+    cells[idx].push(String(w.text||"").trim());
+  });
+  return cells.map((parts,i)=>{
+    let cell=normalizeShiftText(parts.join(" "));
+    const pieces=shiftTokens(cell);
+    if(!pieces.length && !/RDO|AL|ALLV|ALTH|HACC|TRNG|OFF/i.test(cell))return null;
+    if(pieces.length) cell=cell.replace(/.*?(?=(?:RDO|AL|ALLV|ALTH|HACC|TRNG|OFF|\d))/i,"").trim();
+    const time=(cell.match(/\b\d{4}\s*[-–]\s*\d{4}\b/)||[])[0]||"";
+    return {id:`shot-${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,name:chosenName||candidate.name,date:addDays(importData.startDate,i),time:cell,hours:time?(hoursFromTime(time)||""):0,team:"",role:"",source:importData.fileName};
+  }).filter(Boolean);
+}
 
 function clean(s=""){return String(s).toLowerCase().replace(/[_-]/g," ").replace(/\s+/g," ").trim();}
 function col(keys, patterns){return keys.find(k=>patterns.some(p=>clean(k).includes(p)));}
@@ -104,6 +181,9 @@ function App(){
   const [progress,setProgress]=useState(0);
   const [error,setError]=useState("");
   const [drag,setDrag]=useState(false);
+  const [shotImport,setShotImport]=useState(null);
+  const [shotName,setShotName]=useState("");
+  const [shotCandidate,setShotCandidate]=useState(null);
   const input=useRef();
 
   useEffect(()=>{
@@ -124,20 +204,20 @@ function App(){
   const ocr=useCallback(async file=>{
     setIsOCR(true);setProgress(0);setError("");
     try{
-      const r=await Tesseract.recognize(file,"eng",{logger:m=>m.status==="recognizing text"&&setProgress(Math.round(m.progress*100))});
-      const rows=[];
-      r.data.text.split(/\n/).map(x=>x.trim()).filter(Boolean).forEach((line,i)=>{
-        const dm=line.match(/\\b(\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}|\\d{4}[/-]\\d{1,2}[/-]\\d{1,2})\\b/);
-        const tm=line.match(/\\b\\d{1,2}[:.]\\d{2}\\s*(?:AM|PM)?\\s*[–-]\\s*\\d{1,2}[:.]\\d{2}\\s*(?:AM|PM)?\\b/i);
-        let name=line.replace(dm?.[0]||"","").replace(tm?.[0]||"","").replace(/\\s{2,}/g," ").replace(/^[|,:;\\-\\s]+|[|,:;\\-\\s]+$/g,"").trim();
-        if(name.length>=2&&!/^(name|employee|staff|date|time|hours|shift)$/i.test(name))
-          rows.push({id:`ocr-${i}-${Date.now()}`,name,date:dm?dateValue(dm[0]):"",time:tm?tm[0]:"",hours:tm?hoursFromTime(tm[0])??"":"",team:"",role:"",source:file.name});
-      });
-      if(!rows.length)setError("OCR could not identify roster rows. Try a clearer screenshot.");
-      else addRows(rows);
+      const prepared=await preprocessRosterImage(file);
+      const r=await Tesseract.recognize(prepared.dataUrl,"eng",{logger:m=>m.status==="recognizing text"&&setProgress(Math.round(m.progress*100))});
+      const candidates=makeScreenshotCandidates(r);
+      const startDate=firstRosterDate(r.data.text)||isoToday();
+      const data={fileName:file.name,text:r.data.text,words:r.data.words||[],lines:r.data.lines||[],width:prepared.width,height:prepared.height,candidates,startDate};
+      if(!candidates.length){
+        setError("I could read the screenshot, but could not confidently find staff rows. Crop the screenshot so the roster table fills most of the image and try again.");
+      }else{
+        setShotImport(data); setShotCandidate(candidates[0]); setShotName(candidates[0].name);
+      }
       setFiles(f=>f.includes(file.name)?f:[...f,file.name]);
-    }catch{setError("Could not read the image.")}finally{setIsOCR(false);setProgress(0)}
-  },[addRows]);
+    }catch(e){console.error(e);setError("Could not read the screenshot. Try a clearer crop of the roster table.")}
+    finally{setIsOCR(false);setProgress(0)}
+  },[]);
 
   const handleFiles=useCallback(list=>{
     setError("");
@@ -195,6 +275,21 @@ function App(){
       {isOCR?<><LoaderIcon/><b>Reading roster image…</b><small>{progress}%</small></>:<><Upload size={23}/><b>Upload roster</b><small>CSV · Excel · Screenshot · Photo</small></>}
       <input ref={input} hidden type="file" multiple accept=".csv,.xlsx,.xls,image/*" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
     </section>
+
+
+    {shotImport&&<div className="modalBackdrop"><div className="shotModal">
+      <div className="modalHead"><div><b>Screenshot roster detected</b><small>Choose your row before importing</small></div><button className="iconBtn" onClick={()=>setShotImport(null)}><X size={16}/></button></div>
+      <div className="shotHint"><ScanLine size={16}/><span>For best results, crop the screenshot so the roster table fills the screen. The app reads 14 day columns from left to right.</span></div>
+      <label>Your name<input value={shotName} onChange={e=>setShotName(e.target.value)} placeholder="e.g. PRABHAKAR, Vimal"/></label>
+      <label>First date in roster<input type="date" value={shotImport.startDate} onChange={e=>setShotImport(x=>({...x,startDate:e.target.value}))}/></label>
+      <div className="candidateTitle">Detected staff rows</div>
+      <div className="candidateList">{shotImport.candidates.slice(0,30).map(c=><button key={c.id} className={shotCandidate?.id===c.id?"candidate selected":"candidate"} onClick={()=>{setShotCandidate(c);setShotName(c.name)}}><span><b>{c.name}</b><small>{c.tokens.slice(0,5).join(" · ")}</small></span>{shotCandidate?.id===c.id&&<Check size={16}/>}</button>)}</div>
+      <button className="importBtn" disabled={!shotCandidate||!shotImport.startDate} onClick={()=>{
+        const rows=rowsFromScreenshot(shotImport,shotCandidate,shotName.trim()||shotCandidate.name);
+        if(!rows.length){setError("No shift cells were detected for that row. Try a tighter crop of the table.");return;}
+        addRows(rows); setQuery(shotName.trim()||shotCandidate.name); setView("list"); setShotImport(null);
+      }}><Check size={16}/>Import this roster row</button>
+    </div></div>}
 
     {error&&<div className="error">{error}</div>}
 
