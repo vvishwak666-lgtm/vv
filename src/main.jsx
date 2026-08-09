@@ -365,6 +365,59 @@ function shiftValidation(value){
   return {ok:true,msg:""};
 }
 
+
+function canvasToDataURL(canvas){
+  try{return canvas.toDataURL("image/png")}catch{return ""}
+}
+async function readSelectedRosterRowWithPreviews(source, yPercent, setProgress){
+  const cy=yPercent/100;
+  const half=0.018;
+  const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
+
+  const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
+  let name=(await ocrSmallCanvas(nameCanvas,"7"))
+    .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+
+  const cells=[];
+  const previews=[];
+  const left=0.175, right=0.91;
+  const step=(right-left)/14;
+
+  for(let i=0;i<14;i++){
+    setProgress?.(Math.round((i/14)*100));
+    const x0=left+i*step;
+    const x1=x0+step;
+    const rawCell=cropFractionCanvas(source,x0,y0,x1,y1,7);
+    previews.push(canvasToDataURL(rawCell));
+
+    // OCR the exact cell multiple ways and keep the best valid candidate.
+    const tries=[];
+    for(const psm of ["7","8","10"]){
+      const raw=await ocrSmallCanvas(rawCell,psm);
+      tries.push(cleanManualCell(raw));
+    }
+
+    let chosen=tries.find(validManualCell) || "";
+
+    // Heuristic: combine digit fragments if OCR split a time.
+    if(!chosen){
+      const joined=tries.join(" ").replace(/[^0-9A-Z-]/g,"");
+      const m=joined.match(/(\d{3,4})[-]?(\d{3,4})/);
+      if(m){
+        const candidate=cleanManualCell(`${m[1]}-${m[2]}`);
+        if(validManualCell(candidate)) chosen=candidate;
+      }
+    }
+
+    cells.push(chosen);
+  }
+
+  if(!name || name.length<2) name="PRABHAKAR, Vimal";
+  return {row:{id:"manual-row",name,cells,workingHours:""}, previews};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -378,6 +431,7 @@ function App(){
   const [preview,setPreview]=useState(null);
   const [picker,setPicker]=useState(null);
   const [rowY,setRowY]=useState(50);
+  const [cellPreviews,setCellPreviews]=useState([]);
   const [overtimeThreshold,setOvertimeThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
   const [selectedDate,setSelectedDate]=useState(todayISO());
@@ -404,8 +458,9 @@ function App(){
     if(!picker)return;
     setProcessing(true);setOcrProgress(0);setError("");
     try{
-      const row=await readSelectedRosterRow(picker.canvas,rowY,setOcrProgress);
-      const preferredName=/VIMAL|PRABHAKAR/i.test(row.name)?row.name:row.name;
+      const result=await readSelectedRosterRowWithPreviews(picker.canvas,rowY,setOcrProgress);
+      const row=result.row;
+      setCellPreviews(result.previews);
       setSelectedRow(row.id);
       setOcr({fileName:picker.fileName,rows:[row],mode:"manual-row"});
       setPicker(null);
@@ -577,7 +632,7 @@ function App(){
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review all 14 days. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Each day now shows the original roster cell beside an editable field. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">

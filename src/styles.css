@@ -20,3 +20,35 @@
 .reviewActions{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:10px}
 .secondary{border:1px solid #46505c;background:#151b22;color:#e6e8eb;border-radius:9px;padding:11px;font-weight:700}
 @media(max-width:620px){.reviewActions{grid-template-columns:1fr}.dayrow.editable{grid-template-columns:92px 1fr 42px}}
+
+.dayrow.visual{
+  display:grid;
+  grid-template-columns:92px 92px minmax(140px,1fr) 48px;
+  gap:8px;
+  align-items:center;
+}
+.cellThumb{
+  height:42px;
+  border:1px solid #3a424d;
+  border-radius:7px;
+  background:#fff;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.cellThumb img{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  image-rendering:auto;
+}
+.cellThumb span{color:#333}
+@media(max-width:700px){
+  .dayrow.visual{
+    grid-template-columns:74px 76px minmax(110px,1fr) 40px;
+    gap:6px;
+  }
+  .cellThumb{height:38px}
+  .shiftEdit input{padding:6px}
+}
