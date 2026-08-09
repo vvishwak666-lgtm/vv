@@ -1,0 +1,9 @@
+{
+  "name": "VV Duty Roster",
+  "short_name": "VV Roster",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10151B",
+  "theme_color": "#10151B",
+  "orientation": "portrait"
+}
