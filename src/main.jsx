@@ -249,11 +249,17 @@ function groupNameWords(words){
   });
 }
 function cleanStaffName(s){
-  return cleanText(s)
+  let t=cleanText(s)
     .replace(/^(?:B\s*SHIFT.*?|SHIFT.*?|NAME)\s+/i,"")
     .replace(/\b(?:RDO|TRNG|AL|ALV|ALTH|HACC)\b.*$/i,"")
     .replace(/\s+/g," ")
     .trim();
+
+  // Repair common OCR loss of the first letter in "Vimal".
+  if(/PRABHAKAR/i.test(t) && /\bimal\b/i.test(t) && !/\bVimal\b/i.test(t)){
+    t=t.replace(/\bimal\b/i,"Vimal");
+  }
+  return t;
 }
 function plausibleStaffName(s){
   const t=cleanStaffName(s);
@@ -291,6 +297,74 @@ function attachRowBounds(staff,canvasHeight){
     const lower=next?(r.cy+next.cy)/2:r.cy+Math.max(8,(prev?r.cy-prev.cy:16)/2);
     return {...r,y0:Math.max(0,upper+1),y1:Math.min(canvasHeight,lower-1)};
   });
+}
+
+
+function verticalGridScore(canvas,y0,y1){
+  const ctx=canvas.getContext("2d");
+  const W=canvas.width,H=canvas.height;
+  y0=Math.max(0,Math.floor(y0)); y1=Math.min(H,Math.ceil(y1));
+  const img=ctx.getImageData(0,y0,W,Math.max(1,y1-y0));
+  const d=img.data, h=Math.max(1,y1-y0);
+  const scores=new Array(W).fill(0);
+
+  for(let x=0;x<W;x++){
+    let s=0;
+    for(let y=0;y<h;y+=2){
+      const i=(y*W+x)*4;
+      const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+      if(g<190) s++;
+    }
+    scores[x]=s;
+  }
+
+  // Smooth 3px to strengthen thin grid lines.
+  const sm=new Array(W).fill(0);
+  for(let x=1;x<W-1;x++) sm[x]=(scores[x-1]+scores[x]+scores[x+1])/3;
+  return sm;
+}
+
+function bestLineNear(scores,expected,radius,minX,maxX){
+  const lo=Math.max(minX,Math.floor(expected-radius));
+  const hi=Math.min(maxX,Math.ceil(expected+radius));
+  let best=Math.round(expected),bestScore=-1;
+  for(let x=lo;x<=hi;x++){
+    if((scores[x]||0)>bestScore){bestScore=scores[x]||0;best=x}
+  }
+  return best;
+}
+
+function detectRosterGridBounds(canvas,staff){
+  const W=canvas.width,H=canvas.height;
+  const top=Math.max(0,Math.min(...staff.map(r=>r.y0))-8);
+  const bottom=Math.min(H,Math.max(...staff.map(r=>r.y1))+8);
+  const scores=verticalGridScore(canvas,top,bottom);
+
+  // Use expected layout only as a search seed, then snap each boundary
+  // to the strongest actual vertical grid line nearby.
+  const expected=[];
+  expected.push(W*.03);                 // left edge of name column
+  const dayLeft=W*.175;
+  const dayRight=W*.91;
+  const step=(dayRight-dayLeft)/14;
+  for(let i=0;i<=14;i++) expected.push(dayLeft+i*step);
+  expected.push(W*.985);                // right edge of Working Hours
+
+  const radius=Math.max(5,W*.018);
+  const lines=[];
+  for(let i=0;i<expected.length;i++){
+    const minX=i?lines[i-1]+3:0;
+    const maxX=W-1-(expected.length-1-i)*3;
+    let x=bestLineNear(scores,expected[i],radius,minX,maxX);
+    if(i && x<=lines[i-1]+2) x=Math.max(lines[i-1]+3,Math.round(expected[i]));
+    lines.push(x);
+  }
+
+  // Day columns are boundaries 1..15. Working Hours is 15..16.
+  const dayBounds=lines.slice(1,16);
+  const workingBounds=[lines[15],lines[16]];
+
+  return {lines,dayBounds,workingBounds,top,bottom};
 }
 
 function App(){
@@ -338,17 +412,31 @@ function App(){
       const headerOCR=await worker.recognize(header);
       const firstDate=inferFirstDate(headerOCR.data.text||"");
 
-      const dayLeft=canvas.width*.175;
-      const dayRight=canvas.width*.91;
-      const step=(dayRight-dayLeft)/14;
-      const bounds=Array.from({length:15},(_,i)=>dayLeft+i*step);
-
       const cleanStaff=staff.map((r,i)=>({...r,id:`staff-${i}`}));
-      setTable({fileName:file.name,canvas,staff:cleanStaff,bounds,firstDate});
+      const grid=detectRosterGridBounds(canvas,cleanStaff);
+      const bounds=grid.dayBounds;
+
+      setTable({
+        fileName:file.name,
+        canvas,
+        staff:cleanStaff,
+        bounds,
+        workingBounds:grid.workingBounds,
+        gridLines:grid.lines,
+        firstDate
+      });
       const preferred=cleanStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||cleanStaff[0];
       setSelectedStaff(preferred.id);
       setProgress(65);
-      await readStaffRow({fileName:file.name,canvas,staff:cleanStaff,bounds,firstDate},preferred.id,worker);
+      await readStaffRow({
+        fileName:file.name,
+        canvas,
+        staff:cleanStaff,
+        bounds,
+        workingBounds:grid.workingBounds,
+        gridLines:grid.lines,
+        firstDate
+      },preferred.id,worker);
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -373,8 +461,14 @@ function App(){
       for(let i=0;i<14;i++){
         if(ownWorker)setProgress(Math.round(i/14*88));
         const x0=bounds[i],x1=bounds[i+1];
-        const padX=(x1-x0)*.06, padY=Math.max(1,(row.y1-row.y0)*.08);
-        const rawCrop=cropCanvas(source.canvas,x0+padX,row.y0+padY,x1-padX,row.y1-padY,7);
+        const padX=Math.max(1,(x1-x0)*.025);
+        const padY=Math.max(1,(row.y1-row.y0)*.06);
+        const rawCrop=cropCanvas(
+          source.canvas,
+          x0+padX,row.y0+padY,
+          x1-padX,row.y1-padY,
+          8
+        );
         thumbs.push(dataURL(rawCrop));
         const a=await recognize(worker,rawCrop,"7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
         let chosen=bestCell([a]);
@@ -384,7 +478,9 @@ function App(){
         }
         cells.push(chosen);
       }
-      const whCrop=cropCanvas(source.canvas,source.canvas.width*.915,row.y0,source.canvas.width*.992,row.y1,7);
+      const wh0=source.workingBounds?.[0] ?? source.canvas.width*.915;
+      const wh1=source.workingBounds?.[1] ?? source.canvas.width*.992;
+      const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,7);
       const whText=await recognize(worker,whCrop,"7","0123456789.");
       const whMatch=whText.match(/\d+(?:\.\d+)?/);
       const workingHours=whMatch?Number(whMatch[0]):null;
@@ -499,7 +595,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names are read from the left column. Select an employee and VV Roster reads that exact 14-day row plus Working Hours.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names are read from the left column. Day cells are now snapped to the actual table grid lines for precise row reading.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
