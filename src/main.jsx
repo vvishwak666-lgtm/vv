@@ -1,358 +1,326 @@
+
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
+import Tesseract from "tesseract.js";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import Tesseract from "tesseract.js";
 import {
-  Upload, Search, CalendarDays, Clock3, RotateCcw, Download,
-  Filter, ChevronLeft, ChevronRight, Image as ImageIcon, Save,
-  Settings2, X, Trash2, LayoutDashboard, List, Check, ScanLine
+  Home, CalendarDays, ClipboardList, Search, Menu, Upload, Camera, FileSpreadsheet,
+  Download, Settings2, Trash2, ChevronLeft, ChevronRight, Clock3, X, Check,
+  Image as ImageIcon, AlertTriangle, Save, RotateCcw
 } from "lucide-react";
 import "./styles.css";
 
-const STORE = "vv-roster-complete-v1";
-const DAY = 86400000;
+const STORE="vv-roster-final-v2";
+const CODES = ["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"];
+const shiftRx = /^(?:\d{3,4}|\d{1,2}[:.]\d{2})\s*[-–]\s*(?:\d{3,4}|\d{1,2}[:.]\d{2})$/i;
 
-const SHIFT_TOKEN_RE = /(?:\b(?:RDO|AL|ALLV|ALTH|HACC|TRNG|TRAINING|OFF)\b|\b[0-2]?\d[:.]?\d{2}\s*[-–]\s*[0-2]?\d[:.]?\d{2}\b)/ig;
-function normalizeShiftText(s=""){
-  let x=String(s).toUpperCase().replace(/[—_]/g,"-").replace(/\s+/g," ").trim();
-  x=x.replace(/\b(\d{2})(\d{2})\s*[-–]\s*(\d{2})(\d{2})\b/g,"$1$2-$3$4");
-  return x;
-}
-function shiftTokens(text=""){return normalizeShiftText(text).match(SHIFT_TOKEN_RE)||[];}
-function firstRosterDate(text=""){
-  const range=String(text).match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](20\d{2})\b/);
-  if(range)return `${range[3]}-${String(+range[2]).padStart(2,"0")}-${String(+range[1]).padStart(2,"0")}`;
-  return "";
-}
-function candidateName(line=""){
-  const normalized=normalizeShiftText(line);
-  const m=normalized.match(SHIFT_TOKEN_RE);
-  if(!m)return "";
-  const prefix=line.slice(0,m.index).replace(/\s+/g," ").replace(/[|:;]+$/g,"").trim();
-  if(prefix.length<3 || prefix.length>60)return "";
-  if(/SHIFT|TIER|BAG|AIRPORT|WORKING|HOURS|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY/i.test(prefix))return "";
-  return prefix;
-}
-async function preprocessRosterImage(file){
-  const url=URL.createObjectURL(file);
-  try{
-    const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=url;});
-    const scale=Math.max(2, Math.min(3, 2400/img.width));
-    const canvas=document.createElement("canvas");
-    canvas.width=Math.round(img.width*scale); canvas.height=Math.round(img.height*scale);
-    const ctx=canvas.getContext("2d",{willReadFrequently:true});
-    ctx.drawImage(img,0,0,canvas.width,canvas.height);
-    const data=ctx.getImageData(0,0,canvas.width,canvas.height), a=data.data;
-    for(let i=0;i<a.length;i+=4){
-      const g=.299*a[i]+.587*a[i+1]+.114*a[i+2];
-      const v=g>210?255:g<105?0:Math.max(0,Math.min(255,(g-128)*1.65+128));
-      a[i]=a[i+1]=a[i+2]=v;
-    }
-    ctx.putImageData(data,0,0);
-    return {dataUrl:canvas.toDataURL("image/png"),width:canvas.width,height:canvas.height};
-  } finally { URL.revokeObjectURL(url); }
-}
-function makeScreenshotCandidates(result){
-  const lines=(result.data.lines||[]).map((l,i)=>({id:i,text:(l.text||"").trim(),bbox:l.bbox})).filter(l=>l.text);
-  const candidates=[];
-  for(const l of lines){
-    const tokens=shiftTokens(l.text); const name=candidateName(l.text);
-    if(name && tokens.length>=2)candidates.push({...l,name,tokens});
-  }
-  return candidates;
-}
-function rowsFromScreenshot(importData, candidate, chosenName){
-  const words=importData.words||[];
-  const b=candidate.bbox||{}; const cy=((b.y0||0)+(b.y1||0))/2; const h=Math.max(18,(b.y1||0)-(b.y0||0));
-  const rowWords=words.filter(w=>{const wb=w.bbox||{}; const wy=((wb.y0||0)+(wb.y1||0))/2; return Math.abs(wy-cy)<=h*.8 && String(w.text||"").trim();}).sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
-  const firstShift=rowWords.find(w=>shiftTokens(w.text).length || /^(?:RDO|AL|ALLV|ALTH|HACC|TRNG|OFF)$/i.test(w.text));
-  if(!firstShift)return [];
-  const xStart=Math.max(0,(firstShift.bbox?.x0||0)-4);
-  const hourWord=[...rowWords].reverse().find(w=>/^\d{1,3}[.,]\d{1,2}$/.test(String(w.text||"").trim()));
-  let xEnd=hourWord?.bbox?.x0 || importData.width*.96;
-  if(xEnd<=xStart)xEnd=importData.width*.96;
-  const colW=(xEnd-xStart)/14;
-  const cells=Array.from({length:14},()=>[]);
-  rowWords.forEach(w=>{
-    const wb=w.bbox||{}; const cx=((wb.x0||0)+(wb.x1||0))/2;
-    if(cx<xStart||cx>=xEnd)return;
-    const idx=Math.max(0,Math.min(13,Math.floor((cx-xStart)/colW)));
-    cells[idx].push(String(w.text||"").trim());
-  });
-  return cells.map((parts,i)=>{
-    let cell=normalizeShiftText(parts.join(" "));
-    const pieces=shiftTokens(cell);
-    if(!pieces.length && !/RDO|AL|ALLV|ALTH|HACC|TRNG|OFF/i.test(cell))return null;
-    if(pieces.length) cell=cell.replace(/.*?(?=(?:RDO|AL|ALLV|ALTH|HACC|TRNG|OFF|\d))/i,"").trim();
-    const time=(cell.match(/\b\d{4}\s*[-–]\s*\d{4}\b/)||[])[0]||"";
-    return {id:`shot-${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,name:chosenName||candidate.name,date:addDays(importData.startDate,i),time:cell,hours:time?(hoursFromTime(time)||""):0,team:"",role:"",source:importData.fileName};
-  }).filter(Boolean);
-}
-
-function clean(s=""){return String(s).toLowerCase().replace(/[_-]/g," ").replace(/\s+/g," ").trim();}
-function col(keys, patterns){return keys.find(k=>patterns.some(p=>clean(k).includes(p)));}
-function dateValue(v){
-  if(!v) return "";
-  if(v instanceof Date && !isNaN(v)) return v.toISOString().slice(0,10);
-  const s=String(v).trim();
-  const m=s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{2,4})$/);
-  if(m){let y=+m[3]; if(y<100)y+=2000; return `${y}-${String(+m[2]).padStart(2,"0")}-${String(+m[1]).padStart(2,"0")}`;}
-  const t=Date.parse(s); return isNaN(t)?s:new Date(t).toISOString().slice(0,10);
-}
-function detect(row){
-  const k=Object.keys(row);
-  return {
-    name:col(k,["employee name","staff name","full name","employee","staff","name","person"]),
-    date:col(k,["roster date","work date","shift date","date","day"]),
-    start:col(k,["start time","clock in","in time","start","in"]),
-    end:col(k,["finish time","end time","clock out","out time","finish","end","out"]),
-    time:col(k,["shift time","shift","time"]),
-    hours:col(k,["total hours","paid hours","working hours","hours","hrs"]),
-    team:col(k,["team","crew","group","squad"]),
-    role:col(k,["role","position","job","duty"])
-  };
-}
-function hoursFromTime(time){
-  if(!time) return null;
-  const m=String(time).match(/(\\d{1,2})(?::|\\.)(\\d{2})\\s*(AM|PM)?\\s*[–-]\\s*(\\d{1,2})(?::|\\.)(\\d{2})\\s*(AM|PM)?/i);
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function addDays(iso,n){const d=new Date(iso+"T12:00:00");d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
+function mondayOf(iso){const d=new Date(iso+"T12:00:00");const n=(d.getDay()+6)%7;d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);}
+function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){if(!iso)return "";return new Date(iso+"T12:00:00").toLocaleDateString(undefined,opts);}
+function parseTimeRange(s){
+  if(!s) return null;
+  const z=String(s).replace(/\s/g,"").replace(/[–—]/g,"-").replace(/\./g,":");
+  const m=z.match(/^(\d{1,4})(?::(\d{2}))?-(\d{1,4})(?::(\d{2}))?$/);
   if(!m)return null;
-  let sh=+m[1], sm=+m[2], eh=+m[4], em=+m[5];
-  const ap1=m[3]?.toUpperCase(), ap2=m[6]?.toUpperCase();
-  if(ap1==="PM"&&sh<12)sh+=12; if(ap1==="AM"&&sh===12)sh=0;
-  if(ap2==="PM"&&eh<12)eh+=12; if(ap2==="AM"&&eh===12)eh=0;
+  function hm(a,b){
+    if(b!==undefined){return [+a,+b]}
+    const x=String(a).padStart(4,"0");return [+x.slice(0,-2),+x.slice(-2)];
+  }
+  let [sh,sm]=hm(m[1],m[2]), [eh,em]=hm(m[3],m[4]);
   let mins=eh*60+em-(sh*60+sm); if(mins<0)mins+=1440;
   return mins/60;
 }
-function parseHours(v){if(v===null||v===undefined||v==="")return null; const n=parseFloat(String(v).replace(",",".")); return isNaN(n)?null:n;}
-function normalize(rows, source){
-  if(!rows?.length)return [];
-  const c=detect(rows[0]);
-  return rows.map((r,i)=>{
-    const name=c.name?String(r[c.name]??"").trim():"";
-    if(!name)return null;
-    let time="";
-    if(c.start||c.end){
-      const a=c.start?String(r[c.start]??"").trim():"", b=c.end?String(r[c.end]??"").trim():"";
-      if(a||b)time=`${a}${a||b?" – ":""}${b}`;
+function normalizeToken(t){
+  return String(t||"").toUpperCase().replace(/[|,;]+/g,"").replace(/[O]/g,"0").replace(/\s+/g,"").trim();
+}
+function looksShift(t){
+  const n=normalizeToken(t);
+  if(CODES.includes(n)) return true;
+  if(/^\d{3,4}-\d{3,4}$/.test(n)) return true;
+  if(/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(n)) return true;
+  return false;
+}
+function cleanShift(t){
+  let n=normalizeToken(t).replace(/[—–]/g,"-");
+  // common OCR fixes
+  n=n.replace(/^RD0$/,"RDO").replace(/^TRN6$/,"TRNG");
+  if(/^\d{8}$/.test(n)) n=n.slice(0,4)+"-"+n.slice(4);
+  return n;
+}
+function isNameish(text){
+  const s=String(text||"").trim();
+  return /^[A-Z][A-Z' -]+,\s*[A-Za-z][A-Za-z' -]+/.test(s) || /^[A-Za-z][A-Za-z' -]{2,25}\s+[A-Za-z][A-Za-z' -]{2,25}$/.test(s);
+}
+function groupWordsByRow(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && w.confidence>20);
+  const rows=[];
+  for(const w of good){
+    const cy=(w.bbox.y0+w.bbox.y1)/2;
+    let row=rows.find(r=>Math.abs(r.cy-cy)<Math.max(7,(w.bbox.y1-w.bbox.y0)*0.55));
+    if(!row){row={cy,words:[]};rows.push(row)}
+    row.words.push(w);
+    row.cy=(row.cy*(row.words.length-1)+cy)/row.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
+    const ws=r.words.sort((a,b)=>a.bbox.x0-b.bbox.x0);
+    return {id:"row-"+i,cy:r.cy,words:ws,text:ws.map(w=>w.text).join(" ")};
+  });
+}
+function makeCandidateRows(rows, imageWidth){
+  const out=[];
+  rows.forEach(r=>{
+    const tokens=r.words.map(w=>({text:w.text,x:(w.bbox.x0+w.bbox.x1)/2,x0:w.bbox.x0,x1:w.bbox.x1}));
+    const shiftTokens=tokens.filter(t=>looksShift(t.text));
+    if(!shiftTokens.length) return;
+    const firstShiftX=Math.min(...shiftTokens.map(t=>t.x0));
+    const name=tokens.filter(t=>t.x1<firstShiftX-5).map(t=>t.text).join(" ").replace(/\s+/g," ").trim();
+    if(!name || name.length<3) return;
+    const workingHours=tokens.filter(t=>t.x>imageWidth*0.88).map(t=>t.text).join(" ");
+    out.push({...r,name,shiftTokens,workingHours});
+  });
+  return out;
+}
+function inferColumnCenters(rows, imageWidth){
+  const xs=[];
+  rows.forEach(r=>r.shiftTokens?.forEach(t=>{if(t.x>imageWidth*0.12 && t.x<imageWidth*0.9) xs.push(t.x)}));
+  xs.sort((a,b)=>a-b);
+  if(xs.length<4){
+    const left=imageWidth*0.18,right=imageWidth*0.88, step=(right-left)/13;
+    return Array.from({length:14},(_,i)=>left+i*step);
+  }
+  // Cluster x positions across staff rows.
+  const clusters=[];
+  xs.forEach(x=>{
+    let c=clusters.find(c=>Math.abs(c.mean-x)<imageWidth*0.025);
+    if(!c){c={mean:x,n:0};clusters.push(c)}
+    c.mean=(c.mean*c.n+x)/(c.n+1);c.n++;
+  });
+  let centers=clusters.filter(c=>c.n>=1).sort((a,b)=>a.mean-b.mean).map(c=>c.mean);
+  if(centers.length>14){
+    centers=centers.sort((a,b)=>a-b).slice(0,14);
+  }
+  if(centers.length<14){
+    const left=Math.min(...centers, imageWidth*0.18), right=Math.max(...centers, imageWidth*0.88);
+    const step=(right-left)/13;
+    centers=Array.from({length:14},(_,i)=>left+i*step);
+  }
+  return centers;
+}
+function mapCandidate(candidate, centers){
+  const cells=Array(14).fill("");
+  candidate.shiftTokens.forEach(t=>{
+    let idx=0,best=Infinity;
+    centers.forEach((c,i)=>{const d=Math.abs(c-t.x);if(d<best){best=d;idx=i}});
+    const v=cleanShift(t.text);
+    if(!cells[idx] || looksShift(v)) cells[idx]=v;
+  });
+  return cells;
+}
+function inferFirstDate(rows){
+  for(const r of rows){
+    const m=r.text.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
+    if(m){
+      let y=+m[3]; if(y<100)y+=2000;
+      const a=+m[1],b=+m[2];
+      // Prefer DD/MM for NZ; fall back to MM/DD when clearly needed.
+      const day=a>12?a:b, month=a>12?b:a;
+      const d=new Date(y,month-1,day);
+      if(!isNaN(d)) return d.toISOString().slice(0,10);
     }
-    if(!time&&c.time)time=String(r[c.time]??"").trim();
-    const supplied=c.hours?parseHours(r[c.hours]):null;
-    return {
-      id:`${source}-${i}-${Math.random().toString(36).slice(2)}`,
-      name,date:c.date?dateValue(r[c.date]):"",time,
-      hours:supplied??hoursFromTime(time)??"",
-      team:c.team?String(r[c.team]??"").trim():"",
-      role:c.role?String(r[c.role]??"").trim():"",
-      source
-    };
-  }).filter(Boolean);
+  }
+  return todayISO();
 }
-function isoToday(){return new Date().toISOString().slice(0,10);}
-function addDays(iso,n){const d=new Date(iso+"T12:00:00");d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
-function monthStart(iso){const d=new Date(iso+"T12:00:00");return new Date(d.getFullYear(),d.getMonth(),1);}
-function fmtDate(iso){if(!iso)return "No date"; const d=new Date(iso+"T12:00:00");return d.toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});}
-function fmtShort(iso){if(!iso)return ""; const d=new Date(iso+"T12:00:00");return d.toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"});}
-function keyDate(d){return d.toISOString().slice(0,10);}
-function exportXlsx(rows){
-  const ws=XLSX.utils.json_to_sheet(rows.map(e=>({Name:e.name,Date:e.date,Time:e.time,Hours:e.hours,Team:e.team,Role:e.role,Source:e.source})));
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Roster"); XLSX.writeFile(wb,"vv-roster.xlsx");
-}
-function exportCsv(rows){
-  const csv=Papa.unparse(rows.map(e=>({Name:e.name,Date:e.date,Time:e.time,Hours:e.hours,Team:e.team,Role:e.role,Source:e.source})));
-  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download="vv-roster.csv"; a.click();
-}
-function sumHours(rows){return rows.reduce((s,e)=>s+(parseHours(e.hours)??hoursFromTime(e.time)??0),0);}
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
+function hoursForShift(s){ if(!s || CODES.includes(s)) return 0; return parseTimeRange(s)??0; }
 
 function App(){
   const [entries,setEntries]=useState([]);
-  const [files,setFiles]=useState([]);
+  const [tab,setTab]=useState("dashboard");
   const [query,setQuery]=useState("");
-  const [dateFilter,setDateFilter]=useState("");
-  const [teamFilter,setTeamFilter]=useState("");
-  const [view,setView]=useState("dashboard");
-  const [calendarMonth,setCalendarMonth]=useState(isoToday().slice(0,7)+"-01");
-  const [weekStart,setWeekStart]=useState(addDays(isoToday(),-(new Date().getDay()+6)%7));
-  const [selectedDay,setSelectedDay]=useState(isoToday());
-  const [settings,setSettings]=useState(false);
-  const [overtime,setOvertime]=useState(40);
-  const [isOCR,setIsOCR]=useState(false);
-  const [progress,setProgress]=useState(0);
+  const [ocr,setOcr]=useState(null);
+  const [ocrProgress,setOcrProgress]=useState(0);
+  const [processing,setProcessing]=useState(false);
   const [error,setError]=useState("");
-  const [drag,setDrag]=useState(false);
-  const [shotImport,setShotImport]=useState(null);
-  const [shotName,setShotName]=useState("");
-  const [shotCandidate,setShotCandidate]=useState(null);
-  const input=useRef();
+  const [selectedRow,setSelectedRow]=useState("");
+  const [firstDate,setFirstDate]=useState(todayISO());
+  const [preview,setPreview]=useState(null);
+  const [overtimeThreshold,setOvertimeThreshold]=useState(38);
+  const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
+  const [selectedDate,setSelectedDate]=useState(todayISO());
+  const fileRef=useRef();
 
-  useEffect(()=>{
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setOvertimeThreshold(x.overtimeThreshold||38)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,overtimeThreshold}))}catch{}},[entries,overtimeThreshold]);
+
+  const processImage=useCallback(async(file)=>{
+    setError("");setProcessing(true);setOcrProgress(0);setPreview(URL.createObjectURL(file));
     try{
-      const x=JSON.parse(localStorage.getItem(STORE)||"{}");
-      setEntries(x.entries||[]); setFiles(x.files||[]); setOvertime(x.overtime||40);
-    }catch{}
-  },[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,files,overtime}))}catch{}},[entries,files,overtime]);
-
-  const addRows=useCallback(rows=>{
-    setEntries(old=>{
-      const seen=new Set(old.map(e=>[e.name,e.date,e.time,e.hours,e.team,e.role].join("|")));
-      return [...old,...rows.filter(e=>{const k=[e.name,e.date,e.time,e.hours,e.team,e.role].join("|");if(seen.has(k))return false;seen.add(k);return true;})];
-    });
-  },[]);
-
-  const ocr=useCallback(async file=>{
-    setIsOCR(true);setProgress(0);setError("");
-    try{
-      const prepared=await preprocessRosterImage(file);
-      const r=await Tesseract.recognize(prepared.dataUrl,"eng",{logger:m=>m.status==="recognizing text"&&setProgress(Math.round(m.progress*100))});
-      const candidates=makeScreenshotCandidates(r);
-      const startDate=firstRosterDate(r.data.text)||isoToday();
-      const data={fileName:file.name,text:r.data.text,words:r.data.words||[],lines:r.data.lines||[],width:prepared.width,height:prepared.height,candidates,startDate};
-      if(!candidates.length){
-        setError("I could read the screenshot, but could not confidently find staff rows. Crop the screenshot so the roster table fills most of the image and try again.");
-      }else{
-        setShotImport(data); setShotCandidate(candidates[0]); setShotName(candidates[0].name);
-      }
-      setFiles(f=>f.includes(file.name)?f:[...f,file.name]);
-    }catch(e){console.error(e);setError("Could not read the screenshot. Try a clearer crop of the roster table.")}
-    finally{setIsOCR(false);setProgress(0)}
+      // upscale in canvas for better small-cell recognition
+      const bmp=await createImageBitmap(file);
+      const scale=Math.max(1.8, Math.min(3, 2200/bmp.width));
+      const c=document.createElement("canvas"); c.width=bmp.width*scale; c.height=bmp.height*scale;
+      const ctx=c.getContext("2d");
+      ctx.filter="grayscale(1) contrast(1.7)";
+      ctx.drawImage(bmp,0,0,c.width,c.height);
+      const blob=await new Promise(r=>c.toBlob(r,"image/png"));
+      const result=await Tesseract.recognize(blob,"eng",{logger:m=>{if(m.status==="recognizing text")setOcrProgress(Math.round((m.progress||0)*100))}});
+      const words=result.data.words||[];
+      const rows=groupWordsByRow(words);
+      const width=c.width;
+      const candidates=makeCandidateRows(rows,width);
+      const centers=inferColumnCenters(candidates,width);
+      const first=inferFirstDate(rows);
+      setFirstDate(first);
+      const mapped=candidates.map(r=>({...r,cells:mapCandidate(r,centers)})).filter(r=>r.cells.some(Boolean));
+      if(!mapped.length) throw new Error("No staff rows were confidently detected.");
+      setOcr({fileName:file.name,rows:mapped,centers,width,height:c.height});
+      const preferred=mapped.find(r=>/VIMAL/i.test(r.name))||mapped[0];
+      setSelectedRow(preferred.id);
+    }catch(e){
+      setError(e.message||"Could not read this screenshot. Crop around the roster table and try again.");
+      setOcr(null);
+    }finally{setProcessing(false);setOcrProgress(0)}
   },[]);
 
-  const handleFiles=useCallback(list=>{
-    setError("");
-    [...(list||[])].forEach(file=>{
-      const ext=file.name.split(".").pop().toLowerCase();
-      if(["png","jpg","jpeg","gif","webp"].includes(ext)){ocr(file);return;}
-      if(ext==="csv"){
-        const r=new FileReader(); r.onload=e=>Papa.parse(e.target.result,{header:true,skipEmptyLines:true,complete:x=>{const rows=normalize(x.data,file.name); if(!rows.length)setError(`No employee/name column found in ${file.name}.`); else addRows(rows);}}); r.readAsText(file); setFiles(f=>f.includes(file.name)?f:[...f,file.name]); return;
-      }
-      if(["xlsx","xls"].includes(ext)){
-        const r=new FileReader(); r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"}), sh=wb.Sheets[wb.SheetNames[0]], rows=normalize(XLSX.utils.sheet_to_json(sh,{defval:""}),file.name); if(!rows.length)setError(`No employee/name column found in ${file.name}.`); else addRows(rows);}catch{setError(`Could not read ${file.name}.`)}}; r.readAsArrayBuffer(file); setFiles(f=>f.includes(file.name)?f:[...f,file.name]); return;
-      }
-      setError("Unsupported file. Use CSV, XLSX, XLS or an image.");
-    });
-  },[addRows,ocr]);
+  const importSelected=()=>{
+    const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
+    const cleanName=row.name.replace(/\b(?:TRNG|RDO|ALLV|ALV|ALTH|HACC)\b.*$/i,"").trim();
+    const added=row.cells.map((shift,i)=>shift?({
+      id:`img-${Date.now()}-${i}`,name:cleanName,date:addDays(firstDate,i),
+      time:CODES.includes(shift)?"":shift,code:CODES.includes(shift)?shift:"",
+      hours:hoursForShift(shift),source:ocr.fileName
+    }):null).filter(Boolean);
+    setEntries(old=>[...old.filter(e=>!(e.name===cleanName && added.some(a=>a.date===e.date))),...added]);
+    setOcr(null); setPreview(null); setTab("dashboard");
+  };
 
-  const teams=useMemo(()=>[...new Set(entries.map(e=>e.team).filter(Boolean))].sort(),[entries]);
-  const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
-  const filtered=useMemo(()=>entries.filter(e=>(!query||e.name.toLowerCase().includes(query.toLowerCase()))&&(!dateFilter||e.date===dateFilter)&&(!teamFilter||e.team===teamFilter)).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,query,dateFilter,teamFilter]);
+  const upload=(files)=>{
+    const file=files?.[0]; if(!file)return;
+    const ext=file.name.split(".").pop().toLowerCase();
+    if(["png","jpg","jpeg","webp"].includes(ext)){processImage(file);return;}
+    if(ext==="csv"){
+      Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
+        const rows=r.data.map((x,i)=>({
+          id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",
+          date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",
+          code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||parseTimeRange(x.Time||x.time||"")||0,source:file.name
+        })).filter(x=>x.name);
+        setEntries(e=>[...e,...rows]);
+      }}); return;
+    }
+    if(["xlsx","xls"].includes(ext)){
+      const fr=new FileReader(); fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const sh=wb.Sheets[wb.SheetNames[0]];const rows=XLSX.utils.sheet_to_json(sh,{defval:""}).map((x,i)=>({id:`xls-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||parseTimeRange(x.Time||x.time||"")||0,source:file.name})).filter(x=>x.name);setEntries(v=>[...v,...rows])};fr.readAsArrayBuffer(file);return;
+    }
+    setError("Use a roster screenshot, CSV, XLS or XLSX file.");
+  };
 
-  const thisWeek=useMemo(()=>entries.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7)),[entries,weekStart]);
-  const thisMonth=useMemo(()=>{const m=calendarMonth.slice(0,7);return entries.filter(e=>e.date.startsWith(m))},[entries,calendarMonth]);
-  const upcoming=useMemo(()=>entries.filter(e=>e.date>=isoToday()).sort((a,b)=>a.date.localeCompare(b.date))[0],[entries]);
-  const totalWeek=sumHours(thisWeek), totalMonth=sumHours(thisMonth);
-  const overtimeWeek=Math.max(0,totalWeek-overtime);
+  const names=[...new Set(entries.map(e=>e.name))].sort();
+  const myName=names.find(n=>/VIMAL/i.test(n))||names[0]||"";
+  const mine=entries.filter(e=>!myName||e.name===myName).sort((a,b)=>a.date.localeCompare(b.date));
+  const weekStart=mondayOf(todayISO());
+  const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
+  const month=mine.filter(e=>e.date.startsWith(calendarMonth.slice(0,7)));
+  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0), monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
+  const overtime=Math.max(0,weekHours-overtimeThreshold);
+  const upcoming=mine.find(e=>e.date>=todayISO() && (e.time||e.code!=="RDO"));
 
-  const calendarDays=useMemo(()=>{
-    const start=monthStart(calendarMonth);
-    const first=(start.getDay()+6)%7;
-    const count=new Date(start.getFullYear(),start.getMonth()+1,0).getDate();
-    const cells=[];
-    for(let i=0;i<first;i++)cells.push(null);
-    for(let d=1;d<=count;d++)cells.push(new Date(start.getFullYear(),start.getMonth(),d));
-    while(cells.length%7)cells.push(null);
-    return cells;
-  },[calendarMonth]);
+  const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
-  const reset=()=>{if(confirm("Delete the saved roster from this device?")){setEntries([]);setFiles([]);localStorage.removeItem(STORE)}};
-
-  return <div className="app">
-    <header className="header">
-      <div><div className="logo">VV</div><div className="eyebrow">DUTY ROSTER</div></div>
-      <button className="iconBtn" onClick={()=>setSettings(!settings)}><Settings2 size={18}/></button>
+  return <div className="shell">
+    <header className="top">
+      <div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div>
+      <button className="ghost" onClick={()=>setTab("more")}><Settings2 size={18}/></button>
     </header>
 
-    {settings&&<section className="panel settings">
-      <div><b>Roster settings</b><span className="muted">Local device storage</span></div>
-      <label>Weekly overtime threshold
-        <input type="number" value={overtime} min="1" onChange={e=>setOvertime(+e.target.value||40)}/>
-      </label>
-      <button className="dangerBtn" onClick={reset}><Trash2 size={14}/> Delete all saved roster data</button>
-    </section>}
-
-    <section className="upload" onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFiles(e.dataTransfer.files)}} onClick={()=>!isOCR&&input.current?.click()}>
-      {isOCR?<><LoaderIcon/><b>Reading roster image…</b><small>{progress}%</small></>:<><Upload size={23}/><b>Upload roster</b><small>CSV · Excel · Screenshot · Photo</small></>}
-      <input ref={input} hidden type="file" multiple accept=".csv,.xlsx,.xls,image/*" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
-    </section>
-
-
-    {shotImport&&<div className="modalBackdrop"><div className="shotModal">
-      <div className="modalHead"><div><b>Screenshot roster detected</b><small>Choose your row before importing</small></div><button className="iconBtn" onClick={()=>setShotImport(null)}><X size={16}/></button></div>
-      <div className="shotHint"><ScanLine size={16}/><span>For best results, crop the screenshot so the roster table fills the screen. The app reads 14 day columns from left to right.</span></div>
-      <label>Your name<input value={shotName} onChange={e=>setShotName(e.target.value)} placeholder="e.g. PRABHAKAR, Vimal"/></label>
-      <label>First date in roster<input type="date" value={shotImport.startDate} onChange={e=>setShotImport(x=>({...x,startDate:e.target.value}))}/></label>
-      <div className="candidateTitle">Detected staff rows</div>
-      <div className="candidateList">{shotImport.candidates.slice(0,30).map(c=><button key={c.id} className={shotCandidate?.id===c.id?"candidate selected":"candidate"} onClick={()=>{setShotCandidate(c);setShotName(c.name)}}><span><b>{c.name}</b><small>{c.tokens.slice(0,5).join(" · ")}</small></span>{shotCandidate?.id===c.id&&<Check size={16}/>}</button>)}</div>
-      <button className="importBtn" disabled={!shotCandidate||!shotImport.startDate} onClick={()=>{
-        const rows=rowsFromScreenshot(shotImport,shotCandidate,shotName.trim()||shotCandidate.name);
-        if(!rows.length){setError("No shift cells were detected for that row. Try a tighter crop of the table.");return;}
-        addRows(rows); setQuery(shotName.trim()||shotCandidate.name); setView("list"); setShotImport(null);
-      }}><Check size={16}/>Import this roster row</button>
-    </div></div>}
-
-    {error&&<div className="error">{error}</div>}
-
-    {files.length>0&&<div className="fileRow">{files.map(f=><span key={f}>{f}<button onClick={()=>{setFiles(x=>x.filter(y=>y!==f));setEntries(x=>x.filter(e=>e.source!==f))}}><X size={10}/></button></span>)}</div>}
-
-    <nav className="tabs">
-      <button className={view==="dashboard"?"active":""} onClick={()=>setView("dashboard")}><LayoutDashboard size={15}/>Dashboard</button>
-      <button className={view==="calendar"?"active":""} onClick={()=>setView("calendar")}><CalendarDays size={15}/>Calendar</button>
-      <button className={view==="list"?"active":""} onClick={()=>setView("list")}><List size={15}/>Roster</button>
-    </nav>
-
-    {view==="dashboard"&&<main>
+    {tab==="dashboard" && <main>
       <section className="hero">
-        <div><small>NEXT SHIFT</small>{upcoming?<><h2>{fmtShort(upcoming.date)}</h2><p>{upcoming.name} · {upcoming.time||"Time not listed"}</p></>:<h2>No upcoming shift</h2>}</div>
-        {upcoming&&<div className="badge">{upcoming.team||"Roster"}</div>}
+        <small>UPCOMING SHIFT</small>
+        {upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{upcoming.time||upcoming.code}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}
       </section>
-
       <div className="stats">
-        <Stat label="This week" value={`${totalWeek.toFixed(1)}h`} icon={<Clock3 size={15}/>}/>
-        <Stat label="This month" value={`${totalMonth.toFixed(1)}h`} icon={<CalendarDays size={15}/>}/>
-        <Stat label="Overtime" value={`${overtimeWeek.toFixed(1)}h`} icon={<Clock3 size={15}/>}/>
-      </div>
-
-      <section className="panel">
-        <div className="sectionTitle"><b>This week</b><button onClick={()=>setView("calendar")}>Open calendar →</button></div>
-        <div className="weekStrip">{Array.from({length:7},(_,i)=>addDays(weekStart,i)).map(d=>{
-          const rows=entries.filter(e=>e.date===d);
-          return <button key={d} className={d===selectedDay?"day activeDay":"day"} onClick={()=>{setSelectedDay(d);setView("calendar")}}><small>{new Date(d+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{new Date(d+"T12:00:00").getDate()}</b><span>{rows.length}</span></button>
-        })}</div>
-      </section>
-
-      <section className="panel">
-        <div className="sectionTitle"><b>Upcoming roster</b><span className="muted">{entries.length} records</span></div>
-        <RosterList rows={entries.filter(e=>e.date>=isoToday()).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,8)}/>
-      </section>
-    </main>}
-
-    {view==="calendar"&&<main>
-      <div className="calendarHeader"><button className="iconBtn" onClick={()=>setCalendarMonth(addDays(calendarMonth,-1).slice(0,7)+"-01")}><ChevronLeft/></button><h2>{new Date(calendarMonth+"T12:00:00").toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="iconBtn" onClick={()=>setCalendarMonth(addDays(calendarMonth,32).slice(0,7)+"-01")}><ChevronRight/></button></div>
-      <div className="calendar">
-        {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(x=><div className="dow" key={x}>{x}</div>)}
-        {calendarDays.map((d,i)=>{const iso=d&&keyDate(d), rows=iso?entries.filter(e=>e.date===iso):[]; return <button key={i} disabled={!d} className={"cell "+(iso===isoToday()?"today":"")} onClick={()=>{if(iso){setSelectedDay(iso);setDateFilter(iso)}}}>{d&&<><b>{d.getDate()}</b>{rows.slice(0,3).map((e,j)=><span key={j} className="shiftDot">{e.team||e.name.split(" ")[0]}</span>)}{rows.length>3&&<small>+{rows.length-3}</small>}</>}</button>})}
+        <Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/>
+        <Stat label="OVERTIME" value={overtime.toFixed(2)}/>
       </div>
       <section className="panel">
-        <div className="sectionTitle"><b>{fmtShort(selectedDay)}</b><button onClick={()=>setDateFilter(dateFilter?"":selectedDay)}>{dateFilter?"Clear":"Filter"}</button></div>
-        <RosterList rows={entries.filter(e=>e.date===selectedDay)}/>
+        <div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div>
+        <Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/>
       </section>
     </main>}
 
-    {view==="list"&&<main>
-      <div className="search"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search employee…"/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
-      <div className="filters"><select value={teamFilter} onChange={e=>setTeamFilter(e.target.value)}><option value="">All teams</option>{teams.map(t=><option key={t}>{t}</option>)}</select><select value={dateFilter} onChange={e=>setDateFilter(e.target.value)}><option value="">All dates</option>{[...new Set(entries.map(e=>e.date).filter(Boolean))].sort().map(d=><option key={d}>{d}</option>)}</select></div>
-      <div className="quick">{names.slice(0,12).map(n=><button key={n} onClick={()=>setQuery(n)}>{n}</button>)}</div>
-      <div className="sectionTitle"><b>{filtered.length} entries</b><div className="export"><button onClick={()=>exportCsv(filtered)}><Download size={13}/>CSV</button><button onClick={()=>exportXlsx(filtered)}>Excel</button></div></div>
-      <RosterList rows={filtered}/>
+    {tab==="calendar" && <main>
+      <div className="monthHead"><button className="ghost" onClick={()=>{const d=new Date(calendarMonth+"T12:00:00");d.setMonth(d.getMonth()-1);setCalendarMonth(d.toISOString().slice(0,7)+"-01")}}><ChevronLeft/></button><h2>{new Date(calendarMonth+"T12:00:00").toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>{const d=new Date(calendarMonth+"T12:00:00");d.setMonth(d.getMonth()+1);setCalendarMonth(d.toISOString().slice(0,7)+"-01")}}><ChevronRight/></button></div>
+      <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
+      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)}/></section>
+      <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-overtimeThreshold*4).toFixed(2)}/><Stat label="TARGET" value={(overtimeThreshold*4).toFixed(2)}/></div>
     </main>}
 
-    <footer><Save size={12}/> Saved locally on this device</footer>
+    {tab==="roster" && <main>
+      <div className="seg"><button className="active">Upcoming</button><button>All</button><button>Past</button></div>
+      <Roster rows={mine.filter(e=>e.date>=todayISO())}/>
+    </main>}
+
+    {tab==="search" && <main>
+      <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
+      <section className="panel"><div className="sectionTitle"><b>STAFF</b><span>{filtered.length} records</span></div><Roster rows={filtered.slice(0,30)}/></section>
+    </main>}
+
+    {tab==="more" && <main>
+      <section className="panel menu">
+        <h3>IMPORT</h3>
+        <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload Image (OCR)</b><small>Extract data from roster screenshots</small></span></button>
+      </section>
+      <section className="panel menu">
+        <h3>EXPORT</h3>
+        <button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button>
+      </section>
+      <section className="panel menu">
+        <h3>SETTINGS</h3>
+        <label className="setting">Weekly overtime threshold<input type="number" value={overtimeThreshold} onChange={e=>setOvertimeThreshold(+e.target.value||38)}/></label>
+        <button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button>
+      </section>
+    </main>}
+
+    <input ref={fileRef} hidden type="file" accept=".csv,.xlsx,.xls,image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
+
+    {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
+
+    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Detecting staff rows and 14 roster columns</small></div></div>}
+
+    {ocr&&<div className="modalWrap">
+      <div className="modal">
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Select your staff row, review the 14 days, then import.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="ocrLayout">
+          <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
+          <div className="ocrRight">
+            <label>First date in roster<input type="date" value={firstDate} onChange={e=>setFirstDate(e.target.value)}/></label>
+            <label>Your staff row<select value={selectedRow} onChange={e=>setSelectedRow(e.target.value)}>{ocr.rows.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+            <div className="review">
+              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((s,i)=><div className="reviewRow" key={i}><span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span><b>{s||"—"}</b><em>{s?hoursForShift(s).toFixed(1)+"h":""}</em></div>))}
+            </div>
+          </div>
+        </div>
+        <button className="primary" onClick={importSelected}><Check size={16}/> Import this roster row</button>
+      </div>
+    </div>}
+
+    <nav className="bottom">
+      <Nav id="dashboard" tab={tab} setTab={setTab} icon={<Home/>} label="Dashboard"/>
+      <Nav id="calendar" tab={tab} setTab={setTab} icon={<CalendarDays/>} label="Calendar"/>
+      <Nav id="roster" tab={tab} setTab={setTab} icon={<ClipboardList/>} label="My Roster"/>
+      <Nav id="search" tab={tab} setTab={setTab} icon={<Search/>} label="Search"/>
+      <Nav id="more" tab={tab} setTab={setTab} icon={<Menu/>} label="More"/>
+    </nav>
   </div>
 }
-
-function LoaderIcon(){return <div className="spinner"/>}
-function Stat({label,value,icon}){return <div className="stat"><div>{icon}</div><small>{label}</small><b>{value}</b></div>}
-function RosterList({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="rosterList">{rows.map(e=><article className="shift" key={e.id}><div className="shiftBar"/><div className="shiftMain"><b>{e.name}</b><small>{fmtDate(e.date)} {e.time&&"· "+e.time}</small>{(e.team||e.role)&&<span>{e.team}{e.team&&e.role?" · ":""}{e.role}</span>}</div><strong>{e.hours!==""&&e.hours!=null?`${Number(e.hours).toFixed(1)}h`:"—"}</strong></article>)}</div>}
-
+function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
+function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{e.time||e.code||"Off"}</b><span>{e.name}</span></div><strong>{(+e.hours||0).toFixed(2)}<small> hrs</small></strong></div>)}</div>}
+function CalendarGrid({month,rows,selected,onSelect}){
+  const d=new Date(month+"T12:00:00"), first=new Date(d.getFullYear(),d.getMonth(),1), days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(), lead=(first.getDay()+6)%7;
+  const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);
+  return <div className="cal"><>{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}</>{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10), r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>
+}
+function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click();}
 createRoot(document.getElementById("root")).render(<App/>);

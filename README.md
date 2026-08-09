@@ -1,31 +1,30 @@
-# VV Duty Roster
+# VV Roster Final v2
 
-Complete mobile-first React/Vite roster dashboard.
+This is the complete replacement version.
 
-## Features
-- CSV/XLS/XLSX import
-- Screenshot/photo OCR with Tesseract
-- LocalStorage persistence
-- Dashboard
-- Weekly overview
-- Monthly calendar
-- Search and filters
-- Team filtering
-- Shift-hour calculation from start/end times
-- Weekly/monthly hours
-- Configurable weekly overtime threshold
-- CSV/Excel export
-- iPhone-friendly responsive UI
+## Screenshot workflow
+1. Upload a cropped roster screenshot.
+2. OCR groups words into horizontal staff rows.
+3. The app detects rows containing roster shift codes/time ranges.
+4. It clusters shift positions into 14 day columns.
+5. You select your staff row (Vimal is preferred when detected).
+6. Review all 14 detected shifts and dates.
+7. Import only after approval.
 
-## Run
-npm install
-npm run dev
+## Other features
+- Dashboard, Calendar, My Roster, Search, More
+- Local device storage
+- Weekly and monthly hour totals
+- Overtime threshold
+- CSV / Excel import
+- CSV export
 
-## Build
-npm run build
-npm run preview
+## Replace in GitHub
+Replace your current project with the contents of this ZIP, preserving the folders:
+- `src/main.jsx`
+- `src/styles.css`
+- `public/manifest.json`
+- `index.html`
+- `package.json`
 
-Data is stored locally in the browser. No server/database is included.
-
-## Screenshot roster import (v2)
-Image imports are preprocessed (upscaled, grayscale, contrast enhanced), OCR'd, and scanned for staff rows. A review screen lets you choose your name and the first roster date before importing the 14 daily cells. Recognized codes include RDO, AL/ALLV, ALTH, HACC, TRNG/OFF and HHMM-HHMM time ranges.
+Then commit to `main`. Vercel should redeploy automatically.
