@@ -21,3 +21,5 @@
 
 .preciseRow.bad .cellThumb{outline:2px solid rgba(255,88,88,.75);outline-offset:-2px}
 .preciseRow.bad .editCol input::placeholder{color:#c98080}
+
+.preciseRow.bad .cellThumb{box-shadow:0 0 0 2px rgba(255,82,82,.55) inset}

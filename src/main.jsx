@@ -647,6 +647,111 @@ async function recognizeExactCellFallback(worker,raw){
   return "";
 }
 
+
+function printedCellVariant(raw, threshold=188){
+  const c=document.createElement("canvas");
+  c.width=raw.width; c.height=raw.height;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(raw,0,0);
+
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<threshold?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // White-out outer borders and top/bottom bands where grid lines/handwriting
+  // most often interfere with the printed roster text.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(c.width*.035));
+  const by=Math.max(2,Math.round(c.height*.13));
+  ctx.fillRect(0,0,c.width,by);
+  ctx.fillRect(0,c.height-by,c.width,by);
+  ctx.fillRect(0,0,bx,c.height);
+  ctx.fillRect(c.width-bx,0,bx,c.height);
+  return c;
+}
+
+function extractPrintedCandidates(text){
+  const raw=String(text||"").toUpperCase()
+    .replace(/[–—_]/g,"-")
+    .replace(/\s+/g," ")
+    .replace(/[^0-9A-Z:\- ]/g," ")
+    .trim();
+
+  const found=[];
+  const codeOrder=["RDO","TRNG","ALTH","HACC","ALV","ALLV","SICK","LEAVE","OFF","SL","AL"];
+  for(const code of codeOrder){
+    if(new RegExp(`\\b${code}\\b`).test(raw)) found.push(code);
+  }
+
+  const normalized=raw.replace(/O/g,"0").replace(/[IL|]/g,"1");
+  const timeMatches=normalized.match(/\b\d{3,4}\s*-\s*\d{3,4}\b/g)||[];
+  for(const t of timeMatches) found.push(normalizeShift(t.replace(/\s+/g,"")));
+
+  // Missing dash fallback.
+  const digitGroups=normalized.match(/\b\d{7,8}\b/g)||[];
+  for(const g of digitGroups){
+    if(g.length===8) found.push(normalizeShift(`${g.slice(0,4)}-${g.slice(4)}`));
+    if(g.length===7){
+      found.push(normalizeShift(`${g.slice(0,3)}-${g.slice(3)}`));
+      found.push(normalizeShift(`${g.slice(0,4)}-${g.slice(4)}`));
+    }
+  }
+  return found.filter(Boolean);
+}
+
+function candidateWeight(value, sourceWeight=1){
+  const info=validateShift(value);
+  if(!info.ok)return -999;
+  let score=100*sourceWeight;
+  if(CODES.has(info.value)) score+=25;
+  else{
+    const [a,b]=info.value.split("-");
+    const sm=+a.slice(2),em=+b.slice(2);
+    if([0,30].includes(sm))score+=8;
+    if([0,30].includes(em))score+=8;
+    if((info.hours||0)>=4&&(info.hours||0)<=10.5)score+=12;
+  }
+  return score;
+}
+
+function choosePrintedPreferred(candidates){
+  let best="",score=-Infinity;
+  for(const c of candidates){
+    const s=candidateWeight(c.value,c.weight||1);
+    if(s>score){score=s;best=c.value}
+  }
+  return score>=100?best:"";
+}
+
+async function robustPrintedCellOCR(worker,raw){
+  const passes=[
+    {canvas:printedCellVariant(raw,170),psm:"7",weight:1.4},
+    {canvas:printedCellVariant(raw,188),psm:"7",weight:1.5},
+    {canvas:printedCellVariant(raw,205),psm:"8",weight:1.25},
+    {canvas:printedCellVariant(raw,188),psm:"13",weight:1.15}
+  ];
+  const candidates=[];
+
+  for(const p of passes){
+    const txt=await recognize(worker,p.canvas,p.psm,"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+    for(const v of extractPrintedCandidates(txt)){
+      candidates.push({value:v,weight:p.weight});
+    }
+  }
+
+  // Last pass with no whitelist helps letter codes like RDO/TRNG/SL.
+  const free=await recognize(worker,passes[1].canvas,"8","");
+  for(const v of extractPrintedCandidates(free)){
+    candidates.push({value:v,weight:1.35});
+  }
+
+  return choosePrintedPreferred(candidates);
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
