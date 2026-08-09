@@ -207,6 +207,92 @@ function bestCell(candidates){
   return valid?.value || values[0] || "";
 }
 
+
+function preprocessCanvas(src, scale=3){
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(src.width*scale));
+  c.height=Math.max(1,Math.round(src.height*scale));
+  const ctx=c.getContext("2d");
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,0,0,c.width,c.height);
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g>220?255:(g<105?0:Math.max(0,Math.min(255,(g-105)*3.0)));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+function groupNameWords(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && (w.confidence??100)>8);
+  const heights=good.map(w=>Math.max(4,(w.bbox?.y1||0)-(w.bbox?.y0||0))).sort((a,b)=>a-b);
+  const med=heights.length?heights[Math.floor(heights.length/2)]:10;
+  const tol=Math.max(7,med*.8);
+  const rows=[];
+  for(const w of good){
+    const b=wordBox(w);
+    let row=rows.find(r=>Math.abs(r.cy-b.cy)<=tol);
+    if(!row){row={cy:b.cy,words:[]};rows.push(row)}
+    row.words.push(w);
+    row.cy=(row.cy*(row.words.length-1)+b.cy)/row.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
+    const ws=r.words.sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
+    const text=cleanText(ws.map(w=>w.text).join(" "))
+      .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    const y0=Math.min(...ws.map(w=>w.bbox?.y0||0));
+    const y1=Math.max(...ws.map(w=>w.bbox?.y1||0));
+    return {id:`name-${i}`,text,cy:r.cy,y0,y1};
+  });
+}
+function cleanStaffName(s){
+  return cleanText(s)
+    .replace(/^(?:B\s*SHIFT.*?|SHIFT.*?|NAME)\s+/i,"")
+    .replace(/\b(?:RDO|TRNG|AL|ALV|ALTH|HACC)\b.*$/i,"")
+    .replace(/\s+/g," ")
+    .trim();
+}
+function plausibleStaffName(s){
+  const t=cleanStaffName(s);
+  if(t.length<4 || t.length>45) return false;
+  if(/^(NAME|SHIFT|DATE|WORKING|HOURS|MON|TUE|WED|THU|FRI|SAT|SUN|AIRPORT)/i.test(t)) return false;
+  const letters=(t.match(/[A-Za-z]/g)||[]).length;
+  return letters>=4 && /[A-Za-z]{2,}/.test(t);
+}
+async function detectNamesFromLeftColumn(canvas,worker,onProgress){
+  const crop=cropCanvas(canvas,0,0,canvas.width*.245,canvas.height,1);
+  const hi=preprocessCanvas(crop,4);
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(hi);
+  onProgress?.(45);
+  const scaleY=canvas.height/hi.height;
+  const grouped=groupNameWords(result.data.words||[]);
+  const names=[];
+  for(const g of grouped){
+    const name=cleanStaffName(g.text);
+    if(!plausibleStaffName(name)) continue;
+    if(/\d{1,2}\s+(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)/i.test(name)) continue;
+    names.push({id:`staff-${names.length}`,name,cy:g.cy*scaleY,y0:g.y0*scaleY,y1:g.y1*scaleY});
+  }
+  const dedup=[];
+  for(const n of names){
+    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<5 || x.name.toLowerCase()===n.name.toLowerCase())) dedup.push(n);
+  }
+  return dedup;
+}
+function attachRowBounds(staff,canvasHeight){
+  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
+  return rows.map((r,i)=>{
+    const prev=rows[i-1], next=rows[i+1];
+    const upper=prev?(prev.cy+r.cy)/2:r.cy-Math.max(8,(next?next.cy-r.cy:16)/2);
+    const lower=next?(r.cy+next.cy)/2:r.cy+Math.max(8,(prev?r.cy-prev.cy:16)/2);
+    return {...r,y0:Math.max(0,upper+1),y1:Math.min(canvasHeight,lower-1)};
+  });
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -229,38 +315,40 @@ function App(){
   useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
 
   const scanFullTable=useCallback(async(file)=>{
-    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Reading full roster table…");
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Reading staff name column…");
     let worker;
     try{
       const canvas=await imageToCanvas(file);
       const url=URL.createObjectURL(file);
       setPreview(url);
 
-      worker=await createWorker(p=>setProgress(Math.round(p*65)));
-      await worker.setParameters({preserve_interword_spaces:"1"});
-      const full=await worker.recognize(canvas);
-      const rows=clusterWordsToRows(full.data.words||[]);
-      const staff=detectStaffRows(rows,canvas.width);
-      if(!staff.length) throw new Error("No staff names were detected. Use a clear screenshot where the full roster table is visible.");
+      worker=await createWorker(p=>setProgress(Math.round(p*40)));
+      const staffRaw=await detectNamesFromLeftColumn(canvas,worker,p=>setProgress(p));
+      const staff=attachRowBounds(staffRaw,canvas.height);
 
-      const centers=inferColumnCenters(staff,canvas.width);
-      const bounds=centersToBounds(centers,canvas.width);
-      const firstDate=inferFirstDate(full.data.text||"");
+      if(!staff.length){
+        throw new Error("No staff names were detected in the name column. Use a screenshot with the full left-side name column visible.");
+      }
 
-      const cleanStaff=staff
-        .map((r,i)=>({...r,id:`staff-${i}`}))
-        .sort((a,b)=>a.cy-b.cy);
+      setStatus(`${staff.length} staff names detected`);
+      setProgress(55);
 
-      setTable({
-        fileName:file.name,canvas,staff:cleanStaff,centers,bounds,
-        firstDate,rawText:full.data.text||""
-      });
+      const header=cropCanvas(canvas,0,0,canvas.width,canvas.height*.25,2);
+      await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+      const headerOCR=await worker.recognize(header);
+      const firstDate=inferFirstDate(headerOCR.data.text||"");
 
+      const dayLeft=canvas.width*.175;
+      const dayRight=canvas.width*.91;
+      const step=(dayRight-dayLeft)/14;
+      const bounds=Array.from({length:15},(_,i)=>dayLeft+i*step);
+
+      const cleanStaff=staff.map((r,i)=>({...r,id:`staff-${i}`}));
+      setTable({fileName:file.name,canvas,staff:cleanStaff,bounds,firstDate});
       const preferred=cleanStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||cleanStaff[0];
       setSelectedStaff(preferred.id);
-      setProgress(70);
-      setStatus(`${cleanStaff.length} staff names detected`);
-      await readStaffRow({fileName:file.name,canvas,staff:cleanStaff,centers,bounds,firstDate},preferred.id,worker);
+      setProgress(65);
+      await readStaffRow({fileName:file.name,canvas,staff:cleanStaff,bounds,firstDate},preferred.id,worker);
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -276,32 +364,30 @@ function App(){
     if(!row)return;
     let worker=existingWorker,ownWorker=false;
     try{
-      if(!worker){setProcessing(true);setStatus(`Reading ${row.name}…`);worker=await createWorker();ownWorker=true}
+      if(!worker){
+        setProcessing(true);setStatus(`Reading ${row.name}…`);setProgress(0);
+        worker=await createWorker();ownWorker=true;
+      }
       const bounds=source.bounds;
       const cells=[],thumbs=[];
       for(let i=0;i<14;i++){
-        if(!existingWorker)setProgress(Math.round(i/14*90));
+        if(ownWorker)setProgress(Math.round(i/14*88));
         const x0=bounds[i],x1=bounds[i+1];
-        const rowH=Math.max(8,row.y1-row.y0);
-        const padX=(x1-x0)*.05,padY=rowH*.05;
-        const crop=cropCanvas(source.canvas,x0+padX,row.y0+padY,x1-padX,row.y1-padY,8);
-        thumbs.push(dataURL(crop));
-        const a=await recognize(worker,crop,"7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+        const padX=(x1-x0)*.06, padY=Math.max(1,(row.y1-row.y0)*.08);
+        const rawCrop=cropCanvas(source.canvas,x0+padX,row.y0+padY,x1-padX,row.y1-padY,7);
+        thumbs.push(dataURL(rawCrop));
+        const a=await recognize(worker,rawCrop,"7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
         let chosen=bestCell([a]);
         if(!validateShift(chosen).ok){
-          const b=await recognize(worker,crop,"8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+          const b=await recognize(worker,rawCrop,"8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
           chosen=bestCell([a,b]);
         }
         cells.push(chosen);
       }
-
-      // Working Hours column: right of day-14.
-      const rowH=Math.max(8,row.y1-row.y0);
-      const whCrop=cropCanvas(source.canvas,bounds[14],row.y0,Math.min(source.canvas.width*.985,bounds[14]+source.canvas.width*.075),row.y1,7);
+      const whCrop=cropCanvas(source.canvas,source.canvas.width*.915,row.y0,source.canvas.width*.992,row.y1,7);
       const whText=await recognize(worker,whCrop,"7","0123456789.");
       const whMatch=whText.match(/\d+(?:\.\d+)?/);
       const workingHours=whMatch?Number(whMatch[0]):null;
-
       setReview({
         fileName:source.fileName,staffId:row.id,name:row.name,
         firstDate:source.firstDate,cells,thumbs,workingHours
@@ -397,7 +483,7 @@ function App(){
     {tab==="more"&&<main>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Automatically detect all staff names and rows</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
@@ -409,11 +495,11 @@ function App(){
 
     {processing&&<div className="modalWrap"><div className="modal compact">
       <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading the selected employee row and Working Hours.":"Detecting all staff names, rows and 14 day columns."}</small>
+      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select a name. VV Roster automatically reads that whole row, 14 days and Working Hours.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names are read from the left column. Select an employee and VV Roster reads that exact 14-day row plus Working Hours.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>

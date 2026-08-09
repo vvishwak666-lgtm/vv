@@ -13,3 +13,6 @@
 .workingHoursCard span{display:flex;flex-direction:column}.workingHoursCard small{font-size:8px;color:#818a94}.workingHoursCard b{font-size:22px;margin-top:2px}
 .selectedRowTitle{display:flex;justify-content:space-between;align-items:center;margin:14px 0 7px;padding:0 2px}.selectedRowTitle b{font-size:14px}.selectedRowTitle span{font-size:9px;color:#87909a}
 @media(max-width:720px){.autoLayout{grid-template-columns:1fr}.autoPreview{min-height:180px}.autoPreview img{max-height:38vh}}
+
+.autoControls select{font-size:14px;font-weight:700}
+.detectedBadge{box-shadow:0 3px 16px rgba(0,0,0,.35)}
