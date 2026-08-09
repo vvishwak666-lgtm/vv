@@ -245,186 +245,95 @@ function inferRosterStartDateFromText(text){
 }
 
 
-function makeBWCanvas(bitmap){
-  const scale=Math.max(2.4, Math.min(4.5, 3600/bitmap.width));
+async function canvasFromFile(file){
+  const bmp=await createImageBitmap(file);
   const c=document.createElement("canvas");
-  c.width=Math.round(bitmap.width*scale);
-  c.height=Math.round(bitmap.height*scale);
+  c.width=bmp.width;
+  c.height=bmp.height;
+  c.getContext("2d").drawImage(bmp,0,0);
+  return c;
+}
+function cropFractionCanvas(source,x0f,y0f,x1f,y1f,scale=4){
+  const sx=Math.max(0,Math.floor(source.width*x0f));
+  const sy=Math.max(0,Math.floor(source.height*y0f));
+  const sw=Math.max(1,Math.floor(source.width*(x1f-x0f)));
+  const sh=Math.max(1,Math.floor(source.height*(y1f-y0f)));
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(sw*scale));
+  c.height=Math.max(1,Math.round(sh*scale));
   const ctx=c.getContext("2d");
-  ctx.drawImage(bitmap,0,0,c.width,c.height);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(source,sx,sy,sw,sh,0,0,c.width,c.height);
   const img=ctx.getImageData(0,0,c.width,c.height);
   const d=img.data;
   for(let i=0;i<d.length;i+=4){
     const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-    const v=g>205?255:(g<105?0:Math.max(0,Math.min(255,(g-105)*3.1)));
+    const v=g>205?255:(g<110?0:Math.max(0,Math.min(255,(g-110)*3.0)));
     d[i]=d[i+1]=d[i+2]=v;
   }
   ctx.putImageData(img,0,0);
   return c;
 }
-function projectionLines(canvas,axis){
-  const ctx=canvas.getContext("2d");
-  const {width,height}=canvas;
-  const data=ctx.getImageData(0,0,width,height).data;
-  const arr=axis==="x"?new Array(width).fill(0):new Array(height).fill(0);
-  if(axis==="x"){
-    for(let x=0;x<width;x++){
-      let s=0;
-      for(let y=0;y<height;y+=2){
-        const i=(y*width+x)*4;
-        if(data[i]<80) s++;
-      }
-      arr[x]=s;
-    }
-  } else {
-    for(let y=0;y<height;y++){
-      let s=0;
-      for(let x=0;x<width;x+=2){
-        const i=(y*width+x)*4;
-        if(data[i]<80) s++;
-      }
-      arr[y]=s;
-    }
-  }
-  return arr;
-}
-function clusterPeaks(values,threshold,minGap=4){
-  const peaks=[];
-  let start=null;
-  for(let i=0;i<values.length;i++){
-    if(values[i]>=threshold && start===null) start=i;
-    if((values[i]<threshold || i===values.length-1) && start!==null){
-      const end=values[i]<threshold?i-1:i;
-      const mid=Math.round((start+end)/2);
-      if(!peaks.length || mid-peaks[peaks.length-1]>=minGap) peaks.push(mid);
-      start=null;
-    }
-  }
-  return peaks;
-}
-function findRosterGrid(canvas){
-  const xs=projectionLines(canvas,"x");
-  const ys=projectionLines(canvas,"y");
-  const xThreshold=Math.max(10, canvas.height*0.035);
-  const yThreshold=Math.max(10, canvas.width*0.035);
-  let vx=clusterPeaks(xs,xThreshold,6);
-  let hy=clusterPeaks(ys,yThreshold,6);
-
-  // keep likely central table region and remove page borders/noise
-  vx=vx.filter(x=>x>canvas.width*0.03 && x<canvas.width*0.98);
-  hy=hy.filter(y=>y>canvas.height*0.03 && y<canvas.height*0.96);
-
-  // choose longest run of vertical lines with plausible column spacing
-  let best=null;
-  for(let i=0;i<vx.length;i++){
-    for(let j=i+15;j<vx.length;j++){
-      const run=vx.slice(i,j+1);
-      if(run.length<16) continue; // name + 14 days + hours
-      const span=run[run.length-1]-run[0];
-      if(span<canvas.width*0.45) continue;
-      const gaps=run.slice(1).map((x,k)=>x-run[k]);
-      const med=[...gaps].sort((a,b)=>a-b)[Math.floor(gaps.length/2)];
-      const irregular=gaps.filter(g=>g<med*0.35 || g>med*3.5).length;
-      const score=span-irregular*1000-Math.abs(run.length-16)*300;
-      if(!best || score>best.score) best={score,lines:run};
-    }
-  }
-  const vlines=best?.lines || vx.slice(0,Math.min(16,vx.length));
-
-  // horizontal lines: use lines overlapping same table band, then infer rows
-  const hlines=hy;
-  if(vlines.length<16 || hlines.length<3) return null;
-
-  return {vlines,hlines};
-}
-function cropCanvas(source,x0,y0,x1,y1,pad=2){
-  const c=document.createElement("canvas");
-  const sx=Math.max(0,Math.floor(x0-pad)), sy=Math.max(0,Math.floor(y0-pad));
-  const sw=Math.max(1,Math.ceil(x1-x0+pad*2)), sh=Math.max(1,Math.ceil(y1-y0+pad*2));
-  c.width=sw; c.height=sh;
-  c.getContext("2d").drawImage(source,sx,sy,sw,sh,0,0,sw,sh);
-  return c;
-}
-async function ocrCanvas(canvas,psm="7"){
+async function ocrSmallCanvas(canvas, psm="7"){
   const blob=await new Promise(r=>canvas.toBlob(r,"image/png"));
-  const r=await Tesseract.recognize(blob,"eng",{
+  const res=await Tesseract.recognize(blob,"eng",{
     tessedit_pageseg_mode: psm,
     preserve_interword_spaces:"1"
   });
-  return cleanOCRText(r.data.text||"");
+  return String(res.data.text||"").replace(/\s+/g," ").trim();
 }
-function normalizeNameCell(s){
-  return cleanOCRText(s)
+function cleanManualCell(s){
+  let t=String(s||"").toUpperCase().replace(/[—–]/g,"-").replace(/\s+/g,"").trim();
+  t=t.replace(/[|]/g,"I");
+  const exact={
+    "RD0":"RDO","RDO.":"RDO","TRN6":"TRNG","TRNG.":"TRNG",
+    "ALLV":"ALV","ALIV":"ALV","HACC.":"HACC","ALTH.":"ALTH"
+  };
+  if(exact[t])t=exact[t];
+  // common OCR ambiguity inside numeric times
+  if(/[0-9]/.test(t)) t=t.replace(/O/g,"0").replace(/I/g,"1").replace(/L/g,"1");
+  if(/^\d{8}$/.test(t)) t=t.slice(0,4)+"-"+t.slice(4);
+  if(/^\d{4}[-]?\d{4}$/.test(t) && !t.includes("-")) t=t.slice(0,4)+"-"+t.slice(4);
+  return t;
+}
+function validManualCell(t){
+  if(!t)return false;
+  if(CODES.includes(t))return true;
+  return /^\d{3,4}-\d{3,4}$/.test(t) || /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(t);
+}
+async function readSelectedRosterRow(source, yPercent, setProgress){
+  // Air NZ roster screenshot proportions:
+  // name column ~ 4%-17%, 14 day cells ~17%-91%, working hours after that.
+  // row height is kept narrow around the selected center.
+  const cy=yPercent/100;
+  const half=0.018;
+  const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
+
+  const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
+  let name=(await ocrSmallCanvas(nameCanvas,"7"))
     .replace(/[^\wÀ-ÿ' ,.-]/g," ")
     .replace(/\s+/g," ")
     .trim();
-}
-function chooseDataRows(hlines,canvasHeight){
-  // table rows are generally tightly and regularly spaced.
-  const rows=[];
-  for(let i=0;i<hlines.length-1;i++){
-    const h=hlines[i+1]-hlines[i];
-    if(h>8 && h<canvasHeight*0.08) rows.push([hlines[i],hlines[i+1]]);
-  }
-  // skip very first header-like rows if tiny/large and keep substantial run
-  return rows;
-}
-async function detectGridRoster(canvas,setProgress){
-  const grid=findRosterGrid(canvas);
-  if(!grid) throw new Error("Could not locate the roster grid. Crop the screenshot so the full table fills the image.");
-  const {vlines,hlines}=grid;
-  const rowBands=chooseDataRows(hlines,canvas.height);
-  if(rowBands.length<3) throw new Error("Roster rows were not detected clearly.");
 
-  // We expect: [name][14 days][working hours] => 16 vertical boundaries minimum.
-  let cols=vlines;
-  if(cols.length>16){
-    // select the 16-line sequence spanning most of table
-    let best=cols.slice(0,16), bestSpan=best[15]-best[0];
-    for(let i=0;i<=cols.length-16;i++){
-      const s=cols.slice(i,i+16), span=s[15]-s[0];
-      if(span>bestSpan){best=s;bestSpan=span}
+  const cells=[];
+  const left=0.175, right=0.91;
+  const step=(right-left)/14;
+  for(let i=0;i<14;i++){
+    setProgress?.(Math.round((i/14)*100));
+    const x0=left+i*step;
+    const x1=x0+step;
+    const cc=cropFractionCanvas(source,x0,y0,x1,y1,6);
+    let raw=await ocrSmallCanvas(cc,"7");
+    let v=cleanManualCell(raw);
+    if(!validManualCell(v)){
+      const retry=cleanManualCell(await ocrSmallCanvas(cc,"8"));
+      v=validManualCell(retry)?retry:"";
     }
-    cols=best;
+    cells.push(v);
   }
-  if(cols.length<16) throw new Error("Not enough roster columns were detected.");
 
-  const rows=[];
-  for(let ri=0;ri<rowBands.length;ri++){
-    const [y0,y1]=rowBands[ri];
-    setProgress?.(Math.min(95,5+Math.round(ri/rowBands.length*90)));
-
-    // OCR the name cell first.
-    const nameCanvas=cropCanvas(canvas,cols[0],y0,cols[1],y1,3);
-    let name=normalizeNameCell(await ocrCanvas(nameCanvas,"7"));
-    if(!name || name.length<3) continue;
-    if(/^(NAME|SHIFT|DATE|MON|TUE|WED|THU|FRI|SAT|SUN|WORKING)/i.test(name)) continue;
-
-    // staff names in this roster generally contain comma or two words
-    if(!(/[A-Za-z]{2,}/.test(name))) continue;
-
-    const cells=[];
-    for(let ci=0;ci<14;ci++){
-      const x0=cols[1+ci];
-      const x1=cols[2+ci];
-      if(x1===undefined){cells.push("");continue;}
-      const cc=cropCanvas(canvas,x0,y0,x1,y1,2);
-      let cell=normalizeRosterCell(await ocrCanvas(cc,"7"));
-      // remove junk and only keep accepted roster values
-      if(!isRosterValue(cell)) {
-        // retry with sparse-text mode
-        const retry=normalizeRosterCell(await ocrCanvas(cc,"8"));
-        cell=isRosterValue(retry)?retry:"";
-      }
-      cells.push(cell);
-    }
-
-    const valid=cells.filter(Boolean).length;
-    if(valid<2) continue;
-    rows.push({id:`grid-${ri}`,name,cells,workingHours:""});
-  }
-  if(!rows.length) throw new Error("No staff rows could be read from the detected grid.");
-  return rows;
+  if(!name || name.length<2) name="Selected staff row";
+  return {id:"manual-row",name,cells,workingHours:""};
 }
 
 function App(){
@@ -438,6 +347,8 @@ function App(){
   const [selectedRow,setSelectedRow]=useState("");
   const [firstDate,setFirstDate]=useState(todayISO());
   const [preview,setPreview]=useState(null);
+  const [picker,setPicker]=useState(null);
+  const [rowY,setRowY]=useState(50);
   const [overtimeThreshold,setOvertimeThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
   const [selectedDate,setSelectedDate]=useState(todayISO());
@@ -447,42 +358,34 @@ function App(){
   useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,overtimeThreshold}))}catch{}},[entries,overtimeThreshold]);
 
   const processImage=useCallback(async(file)=>{
-    setError("");setProcessing(true);setOcrProgress(0);setPreview(URL.createObjectURL(file));
+    setError("");setProcessing(false);setOcr(null);setOcrProgress(0);
     try{
-      const bmp=await createImageBitmap(file);
-      const canvas=makeBWCanvas(bmp);
-
-      const detected=await detectGridRoster(canvas,p=>setOcrProgress(p));
-
-      // Prefer any row containing Vimal/Prabhakar.
-      const preferred=
-        detected.find(r=>/VIMAL/i.test(r.name)) ||
-        detected.find(r=>/PRABHAKAR/i.test(r.name)) ||
-        detected[0];
-
-      // Date inference from full screenshot OCR, only once.
-      const fullText=await ocrCanvas(canvas,"6");
-      const first=inferRosterStartDateFromText(fullText);
-      setFirstDate(first);
-
-      setSelectedRow(preferred.id);
-      setOcr({
-        fileName:file.name,
-        rows:detected,
-        width:canvas.width,
-        height:canvas.height,
-        rawText:fullText,
-        mode:"grid"
-      });
-      setOcrProgress(100);
+      const url=URL.createObjectURL(file);
+      const canvas=await canvasFromFile(file);
+      setPreview(url);
+      setPicker({fileName:file.name,canvas,width:canvas.width,height:canvas.height});
+      setRowY(50);
     }catch(e){
-      setError(e.message||"Could not read this roster screenshot.");
-      setOcr(null);
-    }finally{
-      setProcessing(false);
-      setTimeout(()=>setOcrProgress(0),300);
+      setError("Could not open this screenshot.");
     }
   },[]);
+
+
+  const readPickedRow=async()=>{
+    if(!picker)return;
+    setProcessing(true);setOcrProgress(0);setError("");
+    try{
+      const row=await readSelectedRosterRow(picker.canvas,rowY,setOcrProgress);
+      const preferredName=/VIMAL|PRABHAKAR/i.test(row.name)?row.name:row.name;
+      setSelectedRow(row.id);
+      setOcr({fileName:picker.fileName,rows:[row],mode:"manual-row"});
+      setPicker(null);
+    }catch(e){
+      setError(e.message||"Could not read the selected row. Move the selector and try again.");
+    }finally{
+      setProcessing(false);setOcrProgress(0);
+    }
+  };
 
   const importSelected=()=>{
     const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
@@ -587,16 +490,54 @@ function App(){
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
-    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Detecting staff rows and 14 roster columns</small></div></div>}
+    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Reading the selected row cell by cell</small></div></div>}
+
+
+    {picker&&<div className="modalWrap">
+      <div className="modal">
+        <div className="modalHead">
+          <div>
+            <h2>Select your roster row</h2>
+            <p>Move the gold line onto your Vimal row, then read that row.</p>
+          </div>
+          <button className="ghost" onClick={()=>{setPicker(null);setPreview(null)}}><X/></button>
+        </div>
+
+        <div className="pickerImage">
+          <img src={preview}/>
+          <div className="rowGuide" style={{top:`${rowY}%`}}>
+            <span>Tap / move to your row</span>
+          </div>
+          <input
+            className="rowSlider"
+            type="range"
+            min="8"
+            max="92"
+            step="0.2"
+            value={rowY}
+            onChange={e=>setRowY(+e.target.value)}
+          />
+        </div>
+
+        <div className="pickerHelp">
+          <b>How to position it</b>
+          <span>Put the gold line through the centre of your row — the row containing PRABHAKAR, Vimal. Keep the full 14-day table visible in the screenshot.</span>
+        </div>
+
+        <button className="primary" onClick={readPickedRow}>
+          <Search size={16}/> Read this row
+        </button>
+      </div>
+    </div>}
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Select your staff row, review the 14 days, then import.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review the selected row and all 14 detected days before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">
             <label>First date in roster<input type="date" value={firstDate} onChange={e=>setFirstDate(e.target.value)}/></label>
-            <label>Your staff row<select value={selectedRow} onChange={e=>setSelectedRow(e.target.value)}>{ocr.rows.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label>
+            <label>Detected name<input value={ocr.rows[0]?.name||""} onChange={e=>setOcr(o=>({...o,rows:[{...o.rows[0],name:e.target.value}]}))}/></label>
             <div className="review">
               {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((s,i)=><div className="reviewRow" key={i}><span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span><b>{s||"—"}</b><em>{s?hoursForShift(s).toFixed(1)+"h":""}</em></div>))}
             </div>
