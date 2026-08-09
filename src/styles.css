@@ -10,3 +10,13 @@
 .rowSlider{position:absolute;inset:0;width:100%;height:100%;opacity:.01;cursor:ns-resize}
 .pickerHelp{display:flex;flex-direction:column;gap:4px;margin-top:10px;padding:10px 12px;background:#10151b;border:1px solid #28303a;border-radius:9px}
 .pickerHelp b{font-size:10px;color:#e6c27a}.pickerHelp span{font-size:9px;line-height:1.4;color:#8b939d}
+
+.dayrow.editable{align-items:center}
+.shiftEdit{display:flex;flex-direction:column;gap:2px;min-width:0}
+.shiftEdit input{width:100%;box-sizing:border-box;background:#0b1015;border:1px solid #39424d;border-radius:7px;color:#f2f3f5;padding:7px 8px;font:inherit;font-weight:700;text-transform:uppercase}
+.dayrow.bad{background:rgba(255,72,72,.07);outline:1px solid rgba(255,72,72,.42)}
+.dayrow.bad .shiftEdit input{border-color:#ff6262}
+.shiftEdit small{font-size:8px;color:#ff7777}
+.reviewActions{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:10px}
+.secondary{border:1px solid #46505c;background:#151b22;color:#e6e8eb;border-radius:9px;padding:11px;font-weight:700}
+@media(max-width:620px){.reviewActions{grid-template-columns:1fr}.dayrow.editable{grid-template-columns:92px 1fr 42px}}

@@ -336,6 +336,35 @@ async function readSelectedRosterRow(source, yPercent, setProgress){
   return {id:"manual-row",name,cells,workingHours:""};
 }
 
+
+function normalizeEditableShift(value){
+  let t=String(value||"").toUpperCase().trim().replace(/[—–]/g,"-").replace(/\s+/g,"");
+  if(!t) return "";
+  const codeMap={RD0:"RDO",TRN6:"TRNG",ALIV:"ALV",ALLV:"ALV"};
+  if(codeMap[t]) t=codeMap[t];
+  if(CODES.includes(t)) return t;
+  t=t.replace(/O/g,"0");
+  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
+  if(!m) return t;
+  const pad=s=>s.padStart(4,"0");
+  return `${pad(m[1])}-${pad(m[2])}`;
+}
+function shiftValidation(value){
+  const t=normalizeEditableShift(value);
+  if(!t) return {ok:false,msg:"Missing"};
+  if(CODES.includes(t)) return {ok:true,msg:""};
+  const m=t.match(/^(\d{4})-(\d{4})$/);
+  if(!m) return {ok:false,msg:"Use HHMM-HHMM"};
+  const valid=x=>{
+    const h=+x.slice(0,2), min=+x.slice(2);
+    return h>=0&&h<=23&&min>=0&&min<=59;
+  };
+  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid time"};
+  const hrs=hoursFromTime(t);
+  if(hrs>16) return {ok:false,msg:"Check this shift"};
+  return {ok:true,msg:""};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -385,6 +414,22 @@ function App(){
     }finally{
       setProcessing(false);setOcrProgress(0);
     }
+  };
+
+
+  const updateOcrCell=(index,value)=>{
+    setOcr(o=>{
+      if(!o)return o;
+      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map((c,i)=>i===index?value:c)}:r);
+      return {...o,rows};
+    });
+  };
+  const normalizeAllCells=()=>{
+    setOcr(o=>{
+      if(!o)return o;
+      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map(normalizeEditableShift)}:r);
+      return {...o,rows};
+    });
   };
 
   const importSelected=()=>{
@@ -532,7 +577,7 @@ function App(){
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review the selected row and all 14 detected days before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review all 14 days. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">
@@ -543,7 +588,7 @@ function App(){
             </div>
           </div>
         </div>
-        <button className="primary" onClick={importSelected}><Check size={16}/> Import this roster row</button>
+        <div className="reviewActions"><button className="secondary" onClick={normalizeAllCells}>Clean up detected times</button><button className="primary" onClick={importSelected}><Check size={16}/> Import this roster row</button></div>
       </div>
     </div>}
 
