@@ -359,10 +359,9 @@ function shiftValidation(value){
     const h=+x.slice(0,2), min=+x.slice(2);
     return h>=0&&h<=23&&min>=0&&min<=59;
   };
-  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid 24-hour time"};
+  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid time"};
   const hrs=hoursFromTime(t);
-  if(hrs===0) return {ok:false,msg:"Start and end are the same"};
-  if(hrs>14) return {ok:false,msg:"Suspiciously long shift"};
+  if(hrs>16) return {ok:false,msg:"Check this shift"};
   return {ok:true,msg:""};
 }
 
@@ -370,9 +369,9 @@ function shiftValidation(value){
 function canvasToDataURL(canvas){
   try{return canvas.toDataURL("image/png")}catch{return ""}
 }
-async function readSelectedRosterRowWithPreviews(source, yPercent, bandPercent, setProgress){
+async function readSelectedRosterRowWithPreviews(source, yPercent, setProgress){
   const cy=yPercent/100;
-  const half=Math.max(0.012,Math.min(0.035,(bandPercent/100)/2));
+  const half=0.018;
   const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
 
   const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
@@ -419,6 +418,75 @@ async function readSelectedRosterRowWithPreviews(source, yPercent, bandPercent, 
   return {row:{id:"manual-row",name,cells,workingHours:""}, previews};
 }
 
+
+async function readHighlightedRosterRowWithPreviews(source, selection, setProgress){
+  if(!selection) throw new Error("Highlight your name first.");
+
+  const x0=Math.max(0,Math.min(selection.x0,selection.x1));
+  const x1=Math.min(1,Math.max(selection.x0,selection.x1));
+  const sy0=Math.max(0,Math.min(selection.y0,selection.y1));
+  const sy1=Math.min(1,Math.max(selection.y0,selection.y1));
+
+  if((x1-x0)<0.03 || (sy1-sy0)<0.008){
+    throw new Error("Make the highlight box cover your full name.");
+  }
+
+  // Expand the vertical name highlight into the full staff row.
+  const h=sy1-sy0;
+  const cy=(sy0+sy1)/2;
+  const rowHalf=Math.max(h*0.72,0.012);
+  const y0=Math.max(0,cy-rowHalf);
+  const y1=Math.min(1,cy+rowHalf);
+
+  // OCR exactly the user-highlighted name, with a little padding.
+  const nx0=Math.max(0,x0-0.008), nx1=Math.min(1,x1+0.008);
+  const ny0=Math.max(0,sy0-0.004), ny1=Math.min(1,sy1+0.004);
+  const nameCanvas=cropFractionCanvas(source,nx0,ny0,nx1,ny1,6);
+  let name=(await ocrSmallCanvas(nameCanvas,"7"))
+    .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+
+  const cells=[];
+  const previews=[];
+
+  // Air NZ roster layout: the 14 shift columns occupy this horizontal band.
+  const left=0.175, right=0.91;
+  const step=(right-left)/14;
+
+  for(let i=0;i<14;i++){
+    setProgress?.(Math.round((i/14)*100));
+    const cx0=left+i*step;
+    const cx1=cx0+step;
+    const rawCell=cropFractionCanvas(source,cx0,y0,cx1,y1,7);
+    previews.push(canvasToDataURL(rawCell));
+
+    const tries=[];
+    for(const psm of ["7","8","10"]){
+      const raw=await ocrSmallCanvas(rawCell,psm);
+      tries.push(cleanManualCell(raw));
+    }
+
+    let chosen=tries.find(validManualCell) || "";
+    if(!chosen){
+      const joined=tries.join(" ").replace(/[^0-9A-Z-]/g,"");
+      const m=joined.match(/(\d{3,4})[-]?(\d{3,4})/);
+      if(m){
+        const candidate=cleanManualCell(`${m[1]}-${m[2]}`);
+        if(validManualCell(candidate)) chosen=candidate;
+      }
+    }
+    cells.push(chosen);
+  }
+
+  if(!name || name.length<2) name="PRABHAKAR, Vimal";
+  return {
+    row:{id:"highlight-row",name,cells,workingHours:""},
+    previews,
+    rowBounds:{y0,y1}
+  };
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -431,8 +499,8 @@ function App(){
   const [firstDate,setFirstDate]=useState(todayISO());
   const [preview,setPreview]=useState(null);
   const [picker,setPicker]=useState(null);
-  const [rowY,setRowY]=useState(50);
-  const [rowBand,setRowBand]=useState(4.4);
+  const [nameSelection,setNameSelection]=useState(null);
+  const [dragStart,setDragStart]=useState(null);
   const [cellPreviews,setCellPreviews]=useState([]);
   const [overtimeThreshold,setOvertimeThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
@@ -449,33 +517,60 @@ function App(){
       const canvas=await canvasFromFile(file);
       setPreview(url);
       setPicker({fileName:file.name,canvas,width:canvas.width,height:canvas.height});
-      setRowY(50);
-      setRowBand(4.4);
+      setNameSelection(null);
+      setDragStart(null);
     }catch(e){
       setError("Could not open this screenshot.");
     }
   },[]);
 
 
-  const moveRow=(delta)=>setRowY(y=>Math.max(8,Math.min(92,+(y+delta).toFixed(1))));
-  const setRowFromPointer=(e)=>{
+
+  const pickerPoint=(e)=>{
     const rect=e.currentTarget.getBoundingClientRect();
-    const pct=((e.clientY-rect.top)/rect.height)*100;
-    setRowY(Math.max(8,Math.min(92,+pct.toFixed(1))));
+    return {
+      x:Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),
+      y:Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))
+    };
+  };
+  const beginNameHighlight=(e)=>{
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const p=pickerPoint(e);
+    setDragStart(p);
+    setNameSelection({x0:p.x,y0:p.y,x1:p.x,y1:p.y});
+  };
+  const moveNameHighlight=(e)=>{
+    if(!dragStart)return;
+    const p=pickerPoint(e);
+    setNameSelection({x0:dragStart.x,y0:dragStart.y,x1:p.x,y1:p.y});
+  };
+  const endNameHighlight=(e)=>{
+    if(!dragStart)return;
+    const p=pickerPoint(e);
+    setNameSelection({x0:dragStart.x,y0:dragStart.y,x1:p.x,y1:p.y});
+    setDragStart(null);
   };
 
   const readPickedRow=async()=>{
     if(!picker)return;
+    if(!nameSelection){
+      setError("Drag a box around your name first.");
+      return;
+    }
     setProcessing(true);setOcrProgress(0);setError("");
     try{
-      const result=await readSelectedRosterRowWithPreviews(picker.canvas,rowY,rowBand,setOcrProgress);
+      const result=await readHighlightedRosterRowWithPreviews(
+        picker.canvas,
+        nameSelection,
+        setOcrProgress
+      );
       const row=result.row;
       setCellPreviews(result.previews);
       setSelectedRow(row.id);
-      setOcr({fileName:picker.fileName,rows:[row],mode:"manual-row"});
+      setOcr({fileName:picker.fileName,rows:[row],mode:"highlight-name"});
       setPicker(null);
     }catch(e){
-      setError(e.message||"Could not read the selected row. Move the selector and try again.");
+      setError(e.message||"Could not read the highlighted row.");
     }finally{
       setProcessing(false);setOcrProgress(0);
     }
@@ -499,11 +594,6 @@ function App(){
 
   const importSelected=()=>{
     const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
-    const bad=row.cells.map((c,i)=>({i,v:shiftValidation(c)})).filter(x=>!x.v.ok);
-    if(bad.length){
-      setError(`Please correct ${bad.length} highlighted shift ${bad.length===1?"cell":"cells"} before importing.`);
-      return;
-    }
     const cleanName=row.name.replace(/\b(?:TRNG|RDO|ALLV|ALV|ALTH|HACC)\b.*$/i,"").trim();
     const added=row.cells.map((shift,i)=>shift?({
       id:`img-${Date.now()}-${i}`,name:cleanName,date:addDays(firstDate,i),
@@ -605,81 +695,69 @@ function App(){
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
-    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Reading the selected row cell by cell</small></div></div>}
+    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Reading all 14 cells from your highlighted name row</small></div></div>}
 
 
     {picker&&<div className="modalWrap">
       <div className="modal">
         <div className="modalHead">
           <div>
-            <h2>Select your roster row</h2>
-            <p>Move the gold line onto your Vimal row, then read that row.</p>
+            <h2>Highlight your name</h2>
+            <p>Drag a box around <b>PRABHAKAR, Vimal</b>. The app will automatically select that entire roster row.</p>
           </div>
-          <button className="ghost" onClick={()=>{setPicker(null);setPreview(null)}}><X/></button>
+          <button className="ghost" onClick={()=>{setPicker(null);setPreview(null);setNameSelection(null)}}><X/></button>
         </div>
 
-        <div className="pickerImage" onClick={setRowFromPointer}>
-          <img src={preview}/>
-          <div
-            className="rowBand"
-            style={{top:`${rowY}%`,height:`${rowBand}%`}}
-          >
-            <span>PRABHAKAR, Vimal row</span>
-          </div>
+        <div
+          className="namePickerImage"
+          onPointerDown={beginNameHighlight}
+          onPointerMove={moveNameHighlight}
+          onPointerUp={endNameHighlight}
+          onPointerCancel={()=>setDragStart(null)}
+        >
+          <img src={preview} draggable="false"/>
+          {nameSelection&&(()=>{
+            const left=Math.min(nameSelection.x0,nameSelection.x1)*100;
+            const top=Math.min(nameSelection.y0,nameSelection.y1)*100;
+            const width=Math.abs(nameSelection.x1-nameSelection.x0)*100;
+            const height=Math.abs(nameSelection.y1-nameSelection.y0)*100;
+            const rowTop=Math.max(0,top-height*0.22);
+            const rowHeight=Math.min(100-rowTop,height*1.44);
+            return <>
+              <div className="autoRowBand" style={{top:`${rowTop}%`,height:`${rowHeight}%`}}>
+                <span>Whole row selected automatically</span>
+              </div>
+              <div className="nameHighlight" style={{left:`${left}%`,top:`${top}%`,width:`${width}%`,height:`${height}%`}}>
+                <span>Your name</span>
+              </div>
+            </>
+          })()}
         </div>
-
-        <div className="rowControls">
-          <button onClick={()=>moveRow(-1)}>▲ Up</button>
-          <button onClick={()=>moveRow(-0.2)}>Fine ▲</button>
-          <div className="rowPosition">{rowY.toFixed(1)}%</div>
-          <button onClick={()=>moveRow(0.2)}>Fine ▼</button>
-          <button onClick={()=>moveRow(1)}>▼ Down</button>
-        </div>
-
-        <label className="bandControl">
-          <span>Selection height</span>
-          <input type="range" min="2.4" max="7" step="0.2" value={rowBand} onChange={e=>setRowBand(+e.target.value)}/>
-          <b>{rowBand.toFixed(1)}%</b>
-        </label>
 
         <div className="pickerHelp">
-          <b>Position the whole gold band over one row</b>
-          <span>Tap the Vimal row to jump there, then use Fine ▲ / ▼ until the band covers only PRABHAKAR, Vimal from the name through all 14 day cells.</span>
+          <b>Simple selection</b>
+          <span>Click/touch at the start of your name and drag to the end of your name. You only highlight the name — VV Roster extends the selection across all 14 shift columns automatically.</span>
         </div>
 
-        <button className="primary" onClick={readPickedRow}>
-          <Search size={16}/> Read selected band
-        </button>
+        <div className="highlightActions">
+          <button className="secondary" onClick={()=>setNameSelection(null)}>Clear highlight</button>
+          <button className="primary" disabled={!nameSelection} onClick={readPickedRow}>
+            <Search size={16}/> Read my whole row
+          </button>
+        </div>
       </div>
     </div>}
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review the selected row carefully. Suspicious or invalid shifts are blocked until corrected.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Each day now shows the original roster cell beside an editable field. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">
             <label>First date in roster<input type="date" value={firstDate} onChange={e=>setFirstDate(e.target.value)}/></label>
             <label>Detected name<input value={ocr.rows[0]?.name||""} onChange={e=>setOcr(o=>({...o,rows:[{...o.rows[0],name:e.target.value}]}))}/></label>
             <div className="review">
-              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((cell,i)=>{
-                const v=shiftValidation(cell);
-                const normalized=normalizeEditableShift(cell);
-                return <div className={`reviewRow editableVisual ${v.ok?"":"bad"}`} key={i}>
-                  <span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span>
-                  <div className="cellThumb">{cellPreviews[i]?<img src={cellPreviews[i]} alt={`Cell ${i+1}`}/>:<span>—</span>}</div>
-                  <div className="shiftEdit">
-                    <input
-                      value={cell}
-                      placeholder="RDO / 0500-1300"
-                      onChange={e=>updateOcrCell(i,e.target.value)}
-                      onBlur={e=>updateOcrCell(i,normalizeEditableShift(e.target.value))}
-                    />
-                    {!v.ok&&<small>{v.msg}</small>}
-                  </div>
-                  <em>{v.ok?`${hoursForShift(normalized).toFixed(1)}h`:"—"}</em>
-                </div>
-              }))}
+              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((s,i)=><div className="reviewRow" key={i}><span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span><b>{s||"—"}</b><em>{s?hoursForShift(s).toFixed(1)+"h":""}</em></div>))}
             </div>
           </div>
         </div>
