@@ -5,796 +5,455 @@ import Tesseract from "tesseract.js";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import {
-  Home, CalendarDays, ClipboardList, Search, Menu, Upload, Camera, FileSpreadsheet,
-  Download, Settings2, Trash2, ChevronLeft, ChevronRight, Clock3, X, Check,
-  Image as ImageIcon, AlertTriangle, Save, RotateCcw
+  Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
+  Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
+  Users, Clock3
 } from "lucide-react";
 import "./styles.css";
 
-const STORE="vv-roster-final-v2";
-const CODES = ["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"];
-const shiftRx = /^(?:\d{3,4}|\d{1,2}[:.]\d{2})\s*[-–]\s*(?:\d{3,4}|\d{1,2}[:.]\d{2})$/i;
+const STORE = "vv-roster-auto-table-v4";
+const CODES = new Set(["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
 
 function todayISO(){ return new Date().toISOString().slice(0,10); }
-function addDays(iso,n){const d=new Date(iso+"T12:00:00");d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
-function mondayOf(iso){const d=new Date(iso+"T12:00:00");const n=(d.getDay()+6)%7;d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);}
-function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){if(!iso)return "";return new Date(iso+"T12:00:00").toLocaleDateString(undefined,opts);}
-function parseTimeRange(s){
-  if(!s) return null;
-  const z=String(s).replace(/\s/g,"").replace(/[–—]/g,"-").replace(/\./g,":");
-  const m=z.match(/^(\d{1,4})(?::(\d{2}))?-(\d{1,4})(?::(\d{2}))?$/);
-  if(!m)return null;
-  function hm(a,b){
-    if(b!==undefined){return [+a,+b]}
-    const x=String(a).padStart(4,"0");return [+x.slice(0,-2),+x.slice(-2)];
-  }
-  let [sh,sm]=hm(m[1],m[2]), [eh,em]=hm(m[3],m[4]);
-  let mins=eh*60+em-(sh*60+sm); if(mins<0)mins+=1440;
-  return mins/60;
-}
-function normalizeToken(t){
-  return String(t||"").toUpperCase().replace(/[|,;]+/g,"").replace(/[O]/g,"0").replace(/\s+/g,"").trim();
-}
-function looksShift(t){
-  const n=normalizeToken(t);
-  if(CODES.includes(n)) return true;
-  if(/^\d{3,4}-\d{3,4}$/.test(n)) return true;
-  if(/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(n)) return true;
-  return false;
-}
-function cleanShift(t){
-  let n=normalizeToken(t).replace(/[—–]/g,"-");
-  // common OCR fixes
-  n=n.replace(/^RD0$/,"RDO").replace(/^TRN6$/,"TRNG");
-  if(/^\d{8}$/.test(n)) n=n.slice(0,4)+"-"+n.slice(4);
-  return n;
-}
-function isNameish(text){
-  const s=String(text||"").trim();
-  return /^[A-Z][A-Z' -]+,\s*[A-Za-z][A-Za-z' -]+/.test(s) || /^[A-Za-z][A-Za-z' -]{2,25}\s+[A-Za-z][A-Za-z' -]{2,25}$/.test(s);
-}
-function groupWordsByRow(words){
-  const good=(words||[]).filter(w=>w.text?.trim() && w.confidence>20);
-  const rows=[];
-  for(const w of good){
-    const cy=(w.bbox.y0+w.bbox.y1)/2;
-    let row=rows.find(r=>Math.abs(r.cy-cy)<Math.max(7,(w.bbox.y1-w.bbox.y0)*0.55));
-    if(!row){row={cy,words:[]};rows.push(row)}
-    row.words.push(w);
-    row.cy=(row.cy*(row.words.length-1)+cy)/row.words.length;
-  }
-  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
-    const ws=r.words.sort((a,b)=>a.bbox.x0-b.bbox.x0);
-    return {id:"row-"+i,cy:r.cy,words:ws,text:ws.map(w=>w.text).join(" ")};
-  });
-}
-function makeCandidateRows(rows, imageWidth){
-  const out=[];
-  rows.forEach(r=>{
-    const tokens=r.words.map(w=>({text:w.text,x:(w.bbox.x0+w.bbox.x1)/2,x0:w.bbox.x0,x1:w.bbox.x1}));
-    const shiftTokens=tokens.filter(t=>looksShift(t.text));
-    if(!shiftTokens.length) return;
-    const firstShiftX=Math.min(...shiftTokens.map(t=>t.x0));
-    const name=tokens.filter(t=>t.x1<firstShiftX-5).map(t=>t.text).join(" ").replace(/\s+/g," ").trim();
-    if(!name || name.length<3) return;
-    const workingHours=tokens.filter(t=>t.x>imageWidth*0.88).map(t=>t.text).join(" ");
-    out.push({...r,name,shiftTokens,workingHours});
-  });
-  return out;
-}
-function inferColumnCenters(rows, imageWidth){
-  const xs=[];
-  rows.forEach(r=>r.shiftTokens?.forEach(t=>{if(t.x>imageWidth*0.12 && t.x<imageWidth*0.9) xs.push(t.x)}));
-  xs.sort((a,b)=>a-b);
-  if(xs.length<4){
-    const left=imageWidth*0.18,right=imageWidth*0.88, step=(right-left)/13;
-    return Array.from({length:14},(_,i)=>left+i*step);
-  }
-  // Cluster x positions across staff rows.
-  const clusters=[];
-  xs.forEach(x=>{
-    let c=clusters.find(c=>Math.abs(c.mean-x)<imageWidth*0.025);
-    if(!c){c={mean:x,n:0};clusters.push(c)}
-    c.mean=(c.mean*c.n+x)/(c.n+1);c.n++;
-  });
-  let centers=clusters.filter(c=>c.n>=1).sort((a,b)=>a.mean-b.mean).map(c=>c.mean);
-  if(centers.length>14){
-    centers=centers.sort((a,b)=>a-b).slice(0,14);
-  }
-  if(centers.length<14){
-    const left=Math.min(...centers, imageWidth*0.18), right=Math.max(...centers, imageWidth*0.88);
-    const step=(right-left)/13;
-    centers=Array.from({length:14},(_,i)=>left+i*step);
-  }
-  return centers;
-}
-function mapCandidate(candidate, centers){
-  const cells=Array(14).fill("");
-  candidate.shiftTokens.forEach(t=>{
-    let idx=0,best=Infinity;
-    centers.forEach((c,i)=>{const d=Math.abs(c-t.x);if(d<best){best=d;idx=i}});
-    const v=cleanShift(t.text);
-    if(!cells[idx] || looksShift(v)) cells[idx]=v;
-  });
-  return cells;
-}
-function inferFirstDate(rows){
-  for(const r of rows){
-    const m=r.text.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
-    if(m){
-      let y=+m[3]; if(y<100)y+=2000;
-      const a=+m[1],b=+m[2];
-      // Prefer DD/MM for NZ; fall back to MM/DD when clearly needed.
-      const day=a>12?a:b, month=a>12?b:a;
-      const d=new Date(y,month-1,day);
-      if(!isNaN(d)) return d.toISOString().slice(0,10);
-    }
-  }
-  return todayISO();
-}
-function hoursForShift(s){ if(!s || CODES.includes(s)) return 0; return parseTimeRange(s)??0; }
+function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
 
-
-function cleanOCRText(s){
-  return String(s||"")
-    .replace(/[|]/g,"I")
-    .replace(/[—–]/g,"-")
-    .replace(/\s+/g," ")
-    .trim();
-}
-function normalizeRosterCell(s){
-  let t=cleanOCRText(s).toUpperCase().replace(/\s/g,"");
-  t=t.replace(/O/g,"0");
-  const aliases={RD0:"RDO",TRN6:"TRNG",ALL:"AL",ALLV:"ALV"};
+function normalizeShift(value){
+  let t=String(value||"").toUpperCase().trim().replace(/[–—]/g,"-").replace(/\s+/g,"");
+  const aliases={RD0:"RDO",TRN6:"TRNG",ALLV:"ALV",ALIV:"ALV"};
   if(aliases[t]) t=aliases[t];
-  if(/^\d{8}$/.test(t)) t=t.slice(0,4)+"-"+t.slice(4);
-  if(/^\d{7}$/.test(t)){
-    // common missing zero at start/end
-    if(/^\d{3}-?\d{4}$/.test(t)) t=t.slice(0,3)+"-"+t.slice(3);
-  }
+  if(CODES.has(t)) return t;
+  if(/[0-9]/.test(t)) t=t.replace(/O/g,"0").replace(/[IL]/g,"1");
+  if(/^\d{8}$/.test(t)) t=`${t.slice(0,4)}-${t.slice(4)}`;
+  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
+  if(m) t=`${m[1].padStart(4,"0")}-${m[2].padStart(4,"0")}`;
   return t;
 }
-function isRosterValue(s){
-  const t=normalizeRosterCell(s);
-  if(CODES.includes(t)) return true;
-  return /^\d{3,4}-\d{3,4}$/.test(t) || /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(t);
+function validateShift(value){
+  const v=normalizeShift(value);
+  if(!v) return {ok:false,value:v,reason:"Missing"};
+  if(CODES.has(v)) return {ok:true,value:v,hours:0};
+  const m=v.match(/^(\d{4})-(\d{4})$/);
+  if(!m) return {ok:false,value:v,reason:"Use HHMM-HHMM"};
+  const sh=+m[1].slice(0,2), sm=+m[1].slice(2), eh=+m[2].slice(0,2), em=+m[2].slice(2);
+  if(sh>23||eh>23) return {ok:false,value:v,reason:"Hour must be 00–23"};
+  if(sm>59||em>59) return {ok:false,value:v,reason:"Minutes must be 00–59"};
+  let mins=eh*60+em-(sh*60+sm); if(mins<0) mins+=1440;
+  if(mins===0) return {ok:false,value:v,reason:"Same start/end"};
+  const hours=mins/60;
+  if(hours>14) return {ok:false,value:v,reason:"Suspiciously long"};
+  return {ok:true,value:v,hours};
 }
-function rowTextFromWords(ws){
-  return ws.sort((a,b)=>a.bbox.x0-b.bbox.x0).map(w=>cleanOCRText(w.text)).join(" ");
-}
-function clusterRows(words){
-  const good=(words||[]).filter(w=>w.text?.trim() && w.confidence>15);
-  const rows=[];
-  for(const w of good){
-    const cy=(w.bbox.y0+w.bbox.y1)/2;
-    const h=Math.max(6,w.bbox.y1-w.bbox.y0);
-    let row=rows.find(r=>Math.abs(r.cy-cy)<Math.max(8,h*0.65));
-    if(!row){row={cy,words:[]};rows.push(row)}
-    row.words.push(w);
-    row.cy=(row.cy*(row.words.length-1)+cy)/row.words.length;
-  }
-  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>({id:`r${i}`,cy:r.cy,words:r.words.sort((a,b)=>a.bbox.x0-b.bbox.x0),text:rowTextFromWords(r.words)}));
-}
-function guessNameAndCells(row, imageWidth){
-  const ws=row.words;
-  const vals=ws.filter(w=>isRosterValue(w.text));
-  if(vals.length<2) return null;
+function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
 
-  const firstValX=Math.min(...vals.map(w=>w.bbox.x0));
-  let nameWords=ws.filter(w=>w.bbox.x1<firstValX-4);
-  let name=cleanOCRText(nameWords.map(w=>w.text).join(" "));
-  name=name.replace(/\b(?:TRNG|RDO|AL|ALV|ALLV|ALTH|HACC)\b.*$/i,"").trim();
-  if(name.length<3) return null;
-
-  // Ignore headers / date rows.
-  if(/^(SHIFT|DATE|MON|TUE|WED|THU|FRI|SAT|SUN|WORKING HOURS)/i.test(name)) return null;
-
-  // Estimate left/right edge of the 14-day roster region from detected values.
-  const centers=vals.map(w=>(w.bbox.x0+w.bbox.x1)/2).filter(x=>x<imageWidth*0.92).sort((a,b)=>a-b);
-  if(centers.length<2) return null;
-
-  const left=Math.max(imageWidth*0.14, Math.min(...centers)-imageWidth*0.01);
-  const right=Math.min(imageWidth*0.90, Math.max(...centers)+imageWidth*0.01);
-  const step=(right-left)/13;
-  const colCenters=Array.from({length:14},(_,i)=>left+i*step);
-
-  const cells=Array(14).fill("");
-  vals.forEach(w=>{
-    const x=(w.bbox.x0+w.bbox.x1)/2;
-    let best=0,dist=Infinity;
-    colCenters.forEach((c,i)=>{const d=Math.abs(c-x);if(d<dist){dist=d;best=i}});
-    const v=normalizeRosterCell(w.text);
-    if(!cells[best] || isRosterValue(v)) cells[best]=v;
-  });
-
-  // Working-hours value is usually rightmost numeric token after final day.
-  const rightWords=ws.filter(w=>w.bbox.x0>imageWidth*0.90);
-  const workingHours=cleanOCRText(rightWords.map(w=>w.text).join(" "));
-  return {name,cells,workingHours,rowText:row.text};
-}
-function detectAirNZRows(rows,imageWidth){
-  const candidates=[];
-  for(const row of rows){
-    const g=guessNameAndCells(row,imageWidth);
-    if(g && g.cells.filter(Boolean).length>=2){
-      candidates.push({...g,id:row.id,cy:row.cy});
-    }
-  }
-  // Prefer rows that look like "SURNAME, Firstname"
-  candidates.sort((a,b)=>{
-    const av=/^[A-Z' -]+,\s*[A-Za-z]/.test(a.name)?1:0;
-    const bv=/^[A-Z' -]+,\s*[A-Za-z]/.test(b.name)?1:0;
-    if(av!==bv) return bv-av;
-    return a.cy-b.cy;
-  });
-  return candidates;
-}
-function inferRosterStartDateFromText(text){
-  const m=text.match(/\b(\d{1,2})\s*(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)[a-z]*\s*(\d{4})/i);
-  if(m){
-    const d=Date.parse(m[0]);
-    if(!isNaN(d)) return new Date(d).toISOString().slice(0,10);
-  }
-  const dmy=text.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
-  if(dmy){
-    let y=+dmy[3]; if(y<100)y+=2000;
-    const day=+dmy[1], month=+dmy[2];
-    if(month<=12) return new Date(y,month-1,day,12).toISOString().slice(0,10);
-  }
-  return todayISO();
-}
-
-
-async function canvasFromFile(file){
+async function imageToCanvas(file){
   const bmp=await createImageBitmap(file);
   const c=document.createElement("canvas");
-  c.width=bmp.width;
-  c.height=bmp.height;
+  c.width=bmp.width; c.height=bmp.height;
   c.getContext("2d").drawImage(bmp,0,0);
   return c;
 }
-function cropFractionCanvas(source,x0f,y0f,x1f,y1f,scale=4){
-  const sx=Math.max(0,Math.floor(source.width*x0f));
-  const sy=Math.max(0,Math.floor(source.height*y0f));
-  const sw=Math.max(1,Math.floor(source.width*(x1f-x0f)));
-  const sh=Math.max(1,Math.floor(source.height*(y1f-y0f)));
+function cropCanvas(src,x0,y0,x1,y1,scale=5){
+  const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
+  const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
   const c=document.createElement("canvas");
-  c.width=Math.max(1,Math.round(sw*scale));
-  c.height=Math.max(1,Math.round(sh*scale));
-  const ctx=c.getContext("2d");
-  ctx.imageSmoothingEnabled=false;
-  ctx.drawImage(source,sx,sy,sw,sh,0,0,c.width,c.height);
-  const img=ctx.getImageData(0,0,c.width,c.height);
-  const d=img.data;
+  c.width=Math.max(1,Math.round(sw*scale)); c.height=Math.max(1,Math.round(sh*scale));
+  const ctx=c.getContext("2d"); ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
   for(let i=0;i<d.length;i+=4){
-    const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-    const v=g>205?255:(g<110?0:Math.max(0,Math.min(255,(g-110)*3.0)));
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g>220?255:(g<105?0:Math.max(0,Math.min(255,(g-105)*2.8)));
     d[i]=d[i+1]=d[i+2]=v;
   }
   ctx.putImageData(img,0,0);
   return c;
 }
-async function ocrSmallCanvas(canvas, psm="7"){
-  const blob=await new Promise(r=>canvas.toBlob(r,"image/png"));
-  const res=await Tesseract.recognize(blob,"eng",{
-    tessedit_pageseg_mode: psm,
-    preserve_interword_spaces:"1"
+function dataURL(c){ try{return c.toDataURL("image/png")}catch{return ""} }
+
+function cleanText(s){ return String(s||"").replace(/\s+/g," ").trim(); }
+function wordBox(w){
+  const b=w.bbox||{};
+  return {x0:b.x0||0,y0:b.y0||0,x1:b.x1||0,y1:b.y1||0,cx:((b.x0||0)+(b.x1||0))/2,cy:((b.y0||0)+(b.y1||0))/2};
+}
+function looksNameText(s){
+  const t=cleanText(s);
+  if(t.length<4) return false;
+  if(/^(NAME|SHIFT|DATE|WORKING|HOURS|MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(t)) return false;
+  const letters=(t.match(/[A-Za-z]/g)||[]).length;
+  return letters>=4 && /[A-Za-z]{2,}/.test(t);
+}
+function isShiftLike(s){
+  const t=normalizeShift(s);
+  return CODES.has(t) || /^\d{3,4}-\d{3,4}$/.test(t);
+}
+function clusterWordsToRows(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && (w.confidence??100)>12);
+  const heights=good.map(w=>Math.max(4,(w.bbox?.y1||0)-(w.bbox?.y0||0))).sort((a,b)=>a-b);
+  const medianH=heights.length?heights[Math.floor(heights.length/2)]:10;
+  const tol=Math.max(6,medianH*.65);
+  const rows=[];
+  for(const w of good){
+    const b=wordBox(w);
+    let r=rows.find(r=>Math.abs(r.cy-b.cy)<=tol);
+    if(!r){r={cy:b.cy,words:[]};rows.push(r)}
+    r.words.push(w);
+    r.cy=(r.cy*(r.words.length-1)+b.cy)/r.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
+    const ws=r.words.sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
+    const y0=Math.min(...ws.map(w=>w.bbox?.y0||0)), y1=Math.max(...ws.map(w=>w.bbox?.y1||0));
+    return {id:`row-${i}`,cy:r.cy,y0,y1,words:ws,text:cleanText(ws.map(w=>w.text).join(" "))};
   });
-  return String(res.data.text||"").replace(/\s+/g," ").trim();
 }
-function cleanManualCell(s){
-  let t=String(s||"").toUpperCase().replace(/[—–]/g,"-").replace(/\s+/g,"").trim();
-  t=t.replace(/[|]/g,"I");
-  const exact={
-    "RD0":"RDO","RDO.":"RDO","TRN6":"TRNG","TRNG.":"TRNG",
-    "ALLV":"ALV","ALIV":"ALV","HACC.":"HACC","ALTH.":"ALTH"
-  };
-  if(exact[t])t=exact[t];
-  // common OCR ambiguity inside numeric times
-  if(/[0-9]/.test(t)) t=t.replace(/O/g,"0").replace(/I/g,"1").replace(/L/g,"1");
-  if(/^\d{8}$/.test(t)) t=t.slice(0,4)+"-"+t.slice(4);
-  if(/^\d{4}[-]?\d{4}$/.test(t) && !t.includes("-")) t=t.slice(0,4)+"-"+t.slice(4);
-  return t;
-}
-function validManualCell(t){
-  if(!t)return false;
-  if(CODES.includes(t))return true;
-  return /^\d{3,4}-\d{3,4}$/.test(t) || /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(t);
-}
-async function readSelectedRosterRow(source, yPercent, setProgress){
-  // Air NZ roster screenshot proportions:
-  // name column ~ 4%-17%, 14 day cells ~17%-91%, working hours after that.
-  // row height is kept narrow around the selected center.
-  const cy=yPercent/100;
-  const half=0.018;
-  const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
+function detectStaffRows(rows,W){
+  const result=[];
+  for(const r of rows){
+    const leftWords=r.words.filter(w=>(w.bbox?.x1||0)<W*.23);
+    if(!leftWords.length) continue;
+    const name=cleanText(leftWords.map(w=>w.text).join(" "))
+      .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    if(!looksNameText(name)) continue;
 
-  const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
-  let name=(await ocrSmallCanvas(nameCanvas,"7"))
-    .replace(/[^\wÀ-ÿ' ,.-]/g," ")
-    .replace(/\s+/g," ")
-    .trim();
+    const shiftWords=r.words.filter(w=>{
+      const x=wordBox(w).cx;
+      return x>W*.18 && x<W*.92 && isShiftLike(w.text);
+    });
+    if(shiftWords.length<2) continue;
 
-  const cells=[];
-  const left=0.175, right=0.91;
-  const step=(right-left)/14;
-  for(let i=0;i<14;i++){
-    setProgress?.(Math.round((i/14)*100));
-    const x0=left+i*step;
-    const x1=x0+step;
-    const cc=cropFractionCanvas(source,x0,y0,x1,y1,6);
-    let raw=await ocrSmallCanvas(cc,"7");
-    let v=cleanManualCell(raw);
-    if(!validManualCell(v)){
-      const retry=cleanManualCell(await ocrSmallCanvas(cc,"8"));
-      v=validManualCell(retry)?retry:"";
-    }
-    cells.push(v);
+    const rowH=Math.max(5,r.y1-r.y0);
+    result.push({
+      id:r.id,name,cy:r.cy,
+      y0:Math.max(0,r.cy-rowH*.8),
+      y1:r.cy+rowH*.8,
+      words:r.words
+    });
   }
 
-  if(!name || name.length<2) name="Selected staff row";
-  return {id:"manual-row",name,cells,workingHours:""};
-}
-
-
-function normalizeEditableShift(value){
-  return normalizeStrictShift(value);
-}
-function shiftValidation(value){
-  const info=strictShiftInfo(value);
-  return {ok:info.ok,msg:info.ok?"":info.reason};
-}
-
-
-function canvasToDataURL(canvas){
-  try{return canvas.toDataURL("image/png")}catch{return ""}
-}
-async function readSelectedRosterRowWithPreviews(source, yPercent, setProgress){
-  const cy=yPercent/100;
-  const half=0.018;
-  const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
-
-  const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
-  let name=(await ocrSmallCanvas(nameCanvas,"7"))
-    .replace(/[^\wÀ-ÿ' ,.-]/g," ")
-    .replace(/\s+/g," ")
-    .trim();
-
-  const cells=[];
-  const previews=[];
-  const left=0.175, right=0.91;
-  const step=(right-left)/14;
-
-  for(let i=0;i<14;i++){
-    setProgress?.(Math.round((i/14)*100));
-    const x0=left+i*step;
-    const x1=x0+step;
-    const rawCell=cropFractionCanvas(source,x0,y0,x1,y1,7);
-    previews.push(canvasToDataURL(rawCell));
-
-    // OCR the exact cell multiple ways and keep the best valid candidate.
-    const tries=[];
-    for(const psm of ["7","8","10"]){
-      const raw=await ocrSmallCanvas(rawCell,psm);
-      tries.push(cleanManualCell(raw));
-    }
-
-    let chosen=tries.find(validManualCell) || "";
-
-    // Heuristic: combine digit fragments if OCR split a time.
-    if(!chosen){
-      const joined=tries.join(" ").replace(/[^0-9A-Z-]/g,"");
-      const m=joined.match(/(\d{3,4})[-]?(\d{3,4})/);
-      if(m){
-        const candidate=cleanManualCell(`${m[1]}-${m[2]}`);
-        if(validManualCell(candidate)) chosen=candidate;
-      }
-    }
-
-    cells.push(chosen);
+  // Deduplicate near-identical rows/names.
+  const dedup=[];
+  for(const r of result){
+    if(!dedup.some(x=>Math.abs(x.cy-r.cy)<4 && x.name.toLowerCase()===r.name.toLowerCase())) dedup.push(r);
   }
-
-  if(!name || name.length<2) name="PRABHAKAR, Vimal";
-  return {row:{id:"manual-row",name,cells,workingHours:""}, previews};
+  return dedup;
 }
-
-
-async function readHighlightedRosterRowWithPreviews(source, selection, setProgress){
-  if(!selection) throw new Error("Highlight your name first.");
-
-  const x0=Math.max(0,Math.min(selection.x0,selection.x1));
-  const x1=Math.min(1,Math.max(selection.x0,selection.x1));
-  const sy0=Math.max(0,Math.min(selection.y0,selection.y1));
-  const sy1=Math.min(1,Math.max(selection.y0,selection.y1));
-
-  if((x1-x0)<0.03 || (sy1-sy0)<0.008){
-    throw new Error("Make the highlight box cover your full name.");
-  }
-
-  // Expand the vertical name highlight into the full staff row.
-  const h=sy1-sy0;
-  const cy=(sy0+sy1)/2;
-  const rowHalf=Math.max(h*0.72,0.012);
-  const y0=Math.max(0,cy-rowHalf);
-  const y1=Math.min(1,cy+rowHalf);
-
-  // OCR exactly the user-highlighted name, with a little padding.
-  const nx0=Math.max(0,x0-0.008), nx1=Math.min(1,x1+0.008);
-  const ny0=Math.max(0,sy0-0.004), ny1=Math.min(1,sy1+0.004);
-  const nameCanvas=cropFractionCanvas(source,nx0,ny0,nx1,ny1,6);
-  let name=(await ocrSmallCanvas(nameCanvas,"7"))
-    .replace(/[^\wÀ-ÿ' ,.-]/g," ")
-    .replace(/\s+/g," ")
-    .trim();
-
-  const cells=[];
-  const previews=[];
-
-  // Air NZ roster layout: the 14 shift columns occupy this horizontal band.
-  const left=0.175, right=0.91;
-  const step=(right-left)/14;
-
-  for(let i=0;i<14;i++){
-    setProgress?.(Math.round((i/14)*100));
-    const cx0=left+i*step;
-    const cx1=cx0+step;
-    const rawCell=cropFractionCanvas(source,cx0,y0,cx1,y1,7);
-    previews.push(canvasToDataURL(rawCell));
-
-    const tries=[];
-    for(const psm of ["7","8","10"]){
-      const raw=await ocrSmallCanvas(rawCell,psm);
-      tries.push(cleanManualCell(raw));
+function inferColumnCenters(staff,W){
+  const xs=[];
+  for(const r of staff){
+    for(const w of r.words){
+      const x=wordBox(w).cx;
+      if(x>W*.18 && x<W*.92 && isShiftLike(w.text)) xs.push(x);
     }
-
-    let chosen=tries.find(validManualCell) || "";
-    if(!chosen){
-      const joined=tries.join(" ").replace(/[^0-9A-Z-]/g,"");
-      const m=joined.match(/(\d{3,4})[-]?(\d{3,4})/);
-      if(m){
-        const candidate=cleanManualCell(`${m[1]}-${m[2]}`);
-        if(validManualCell(candidate)) chosen=candidate;
-      }
-    }
-    cells.push(chosen);
   }
+  if(xs.length<10) return Array.from({length:14},(_,i)=>W*(.19+i*(.72/13)));
 
-  if(!name || name.length<2) name="PRABHAKAR, Vimal";
-  return {
-    row:{id:"highlight-row",name,cells,workingHours:""},
-    previews,
-    rowBounds:{y0,y1}
-  };
-}
-
-
-function normalizeStrictShift(value){
-  let t=String(value||"").toUpperCase().trim().replace(/[—–]/g,"-").replace(/\s+/g,"");
-  if(!t) return "";
-  const codeAliases={RD0:"RDO",TRN6:"TRNG",ALLV:"ALV",ALIV:"ALV"};
-  if(codeAliases[t]) t=codeAliases[t];
-  if(CODES.includes(t)) return t;
-
-  // Only repair OCR confusions inside strings that are predominantly numeric.
-  if(/[0-9]/.test(t)){
-    t=t.replace(/O/g,"0").replace(/[IL]/g,"1");
+  xs.sort((a,b)=>a-b);
+  const clusters=[];
+  const tol=W*.018;
+  for(const x of xs){
+    let c=clusters.find(c=>Math.abs(c.mean-x)<=tol);
+    if(!c){c={mean:x,n:0};clusters.push(c)}
+    c.mean=(c.mean*c.n+x)/(c.n+1); c.n++;
   }
-
-  // Accept 3-4 digit sides, then zero-pad to HHMM.
-  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
-  if(!m) return t;
-  const a=m[1].padStart(4,"0");
-  const b=m[2].padStart(4,"0");
-  return `${a}-${b}`;
+  let centers=clusters.sort((a,b)=>b.n-a.n).slice(0,14).map(c=>c.mean).sort((a,b)=>a-b);
+  if(centers.length<14){
+    const left=centers[0]||W*.19, right=centers[centers.length-1]||W*.91;
+    centers=Array.from({length:14},(_,i)=>left+i*((right-left)/13));
+  }
+  return centers;
 }
-
-function strictShiftInfo(value){
-  const t=normalizeStrictShift(value);
-
-  if(!t) return {ok:false, value:t, reason:"Missing shift"};
-  if(CODES.includes(t)) return {ok:true, value:t, hours:0};
-
-  const m=t.match(/^(\d{4})-(\d{4})$/);
-  if(!m) return {ok:false, value:t, reason:"Use HHMM-HHMM"};
-
-  const parse = s => ({
-    h:Number(s.slice(0,2)),
-    m:Number(s.slice(2,4))
+function centersToBounds(centers,W){
+  const b=[];
+  for(let i=0;i<=14;i++){
+    if(i===0) b.push(Math.max(W*.16, centers[0]-(centers[1]-centers[0])/2));
+    else if(i===14) b.push(Math.min(W*.93, centers[13]+(centers[13]-centers[12])/2));
+    else b.push((centers[i-1]+centers[i])/2);
+  }
+  return b;
+}
+function inferFirstDate(text){
+  const s=String(text||"");
+  const months="Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
+  const m=s.match(new RegExp(`\\b(\\d{1,2})\\s+(${months})[a-z]*\\s+(\\d{4})\\b`,"i"));
+  if(m){const d=Date.parse(`${m[1]} ${m[2]} ${m[3]}`);if(!isNaN(d))return new Date(d).toISOString().slice(0,10);}
+  const dm=s.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\b/);
+  if(dm){
+    const day=+dm[1],month=+dm[2],year=+dm[3];
+    if(day<=31&&month<=12)return new Date(year,month-1,day,12).toISOString().slice(0,10);
+  }
+  return todayISO();
+}
+async function createWorker(onProgress){
+  const worker=await Tesseract.createWorker("eng",1,{
+    logger:m=>{if(m.status==="recognizing text"&&onProgress)onProgress(m.progress||0)}
   });
-  const start=parse(m[1]), end=parse(m[2]);
-
-  if(start.h>23 || end.h>23) return {ok:false, value:t, reason:"Hour must be 00–23"};
-  if(start.m>59 || end.m>59) return {ok:false, value:t, reason:"Minutes must be 00–59"};
-
-  let mins=(end.h*60+end.m)-(start.h*60+start.m);
-  if(mins<0) mins+=1440;
-
-  if(mins===0) return {ok:false, value:t, reason:"Start and end are the same"};
-  const hours=mins/60;
-
-  // Roster shifts longer than 14h are suspicious and should always be reviewed.
-  if(hours>14) return {ok:false, value:t, reason:"Suspiciously long shift"};
-
-  return {ok:true, value:t, hours};
+  return worker;
+}
+async function recognize(worker,canvas,psm="7",whitelist=""){
+  await worker.setParameters({
+    tessedit_pageseg_mode:psm,
+    preserve_interword_spaces:"1",
+    ...(whitelist?{tessedit_char_whitelist:whitelist}:{})
+  });
+  const r=await worker.recognize(canvas);
+  return cleanText(r.data.text||"");
+}
+function bestCell(candidates){
+  const values=candidates.map(normalizeShift).filter(Boolean);
+  const valid=values.map(v=>validateShift(v)).find(x=>x.ok);
+  return valid?.value || values[0] || "";
 }
 
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
   const [query,setQuery]=useState("");
-  const [ocr,setOcr]=useState(null);
-  const [ocrProgress,setOcrProgress]=useState(0);
-  const [processing,setProcessing]=useState(false);
-  const [error,setError]=useState("");
-  const [selectedRow,setSelectedRow]=useState("");
-  const [firstDate,setFirstDate]=useState(todayISO());
-  const [preview,setPreview]=useState(null);
-  const [picker,setPicker]=useState(null);
-  const [nameSelection,setNameSelection]=useState(null);
-  const [dragStart,setDragStart]=useState(null);
-  const [cellPreviews,setCellPreviews]=useState([]);
-  const [overtimeThreshold,setOvertimeThreshold]=useState(38);
+  const [threshold,setThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
   const [selectedDate,setSelectedDate]=useState(todayISO());
-  const fileRef=useRef();
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setOvertimeThreshold(x.overtimeThreshold||38)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,overtimeThreshold}))}catch{}},[entries,overtimeThreshold]);
+  const [table,setTable]=useState(null);
+  const [preview,setPreview]=useState(null);
+  const [selectedStaff,setSelectedStaff]=useState("");
+  const [review,setReview]=useState(null);
+  const [processing,setProcessing]=useState(false);
+  const [progress,setProgress]=useState(0);
+  const [status,setStatus]=useState("");
+  const [error,setError]=useState("");
+  const fileRef=useRef(null);
 
-  const processImage=useCallback(async(file)=>{
-    setError("");setProcessing(false);setOcr(null);setOcrProgress(0);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
+
+  const scanFullTable=useCallback(async(file)=>{
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Reading full roster table…");
+    let worker;
     try{
+      const canvas=await imageToCanvas(file);
       const url=URL.createObjectURL(file);
-      const canvas=await canvasFromFile(file);
       setPreview(url);
-      setPicker({fileName:file.name,canvas,width:canvas.width,height:canvas.height});
-      setNameSelection(null);
-      setDragStart(null);
+
+      worker=await createWorker(p=>setProgress(Math.round(p*65)));
+      await worker.setParameters({preserve_interword_spaces:"1"});
+      const full=await worker.recognize(canvas);
+      const rows=clusterWordsToRows(full.data.words||[]);
+      const staff=detectStaffRows(rows,canvas.width);
+      if(!staff.length) throw new Error("No staff names were detected. Use a clear screenshot where the full roster table is visible.");
+
+      const centers=inferColumnCenters(staff,canvas.width);
+      const bounds=centersToBounds(centers,canvas.width);
+      const firstDate=inferFirstDate(full.data.text||"");
+
+      const cleanStaff=staff
+        .map((r,i)=>({...r,id:`staff-${i}`}))
+        .sort((a,b)=>a.cy-b.cy);
+
+      setTable({
+        fileName:file.name,canvas,staff:cleanStaff,centers,bounds,
+        firstDate,rawText:full.data.text||""
+      });
+
+      const preferred=cleanStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||cleanStaff[0];
+      setSelectedStaff(preferred.id);
+      setProgress(70);
+      setStatus(`${cleanStaff.length} staff names detected`);
+      await readStaffRow({fileName:file.name,canvas,staff:cleanStaff,centers,bounds,firstDate},preferred.id,worker);
     }catch(e){
-      setError("Could not open this screenshot.");
+      setError(e?.message||"Could not read this roster image.");
+    }finally{
+      if(worker)try{await worker.terminate()}catch{}
+      setProcessing(false);setProgress(0);setStatus("");
     }
   },[]);
 
-
-
-  const pickerPoint=(e)=>{
-    const rect=e.currentTarget.getBoundingClientRect();
-    return {
-      x:Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),
-      y:Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))
-    };
-  };
-  const beginNameHighlight=(e)=>{
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    const p=pickerPoint(e);
-    setDragStart(p);
-    setNameSelection({x0:p.x,y0:p.y,x1:p.x,y1:p.y});
-  };
-  const moveNameHighlight=(e)=>{
-    if(!dragStart)return;
-    const p=pickerPoint(e);
-    setNameSelection({x0:dragStart.x,y0:dragStart.y,x1:p.x,y1:p.y});
-  };
-  const endNameHighlight=(e)=>{
-    if(!dragStart)return;
-    const p=pickerPoint(e);
-    setNameSelection({x0:dragStart.x,y0:dragStart.y,x1:p.x,y1:p.y});
-    setDragStart(null);
-  };
-
-  const readPickedRow=async()=>{
-    if(!picker)return;
-    if(!nameSelection){
-      setError("Drag a box around your name first.");
-      return;
-    }
-    setProcessing(true);setOcrProgress(0);setError("");
+  const readStaffRow=async(tableData,staffId,existingWorker=null)=>{
+    const source=tableData||table;
+    if(!source)return;
+    const row=source.staff.find(r=>r.id===staffId);
+    if(!row)return;
+    let worker=existingWorker,ownWorker=false;
     try{
-      const result=await readHighlightedRosterRowWithPreviews(
-        picker.canvas,
-        nameSelection,
-        setOcrProgress
-      );
-      const row=result.row;
-      setCellPreviews(result.previews);
-      setSelectedRow(row.id);
-      setOcr({fileName:picker.fileName,rows:[row],mode:"highlight-name"});
-      setPicker(null);
-    }catch(e){
-      setError(e.message||"Could not read the highlighted row.");
+      if(!worker){setProcessing(true);setStatus(`Reading ${row.name}…`);worker=await createWorker();ownWorker=true}
+      const bounds=source.bounds;
+      const cells=[],thumbs=[];
+      for(let i=0;i<14;i++){
+        if(!existingWorker)setProgress(Math.round(i/14*90));
+        const x0=bounds[i],x1=bounds[i+1];
+        const rowH=Math.max(8,row.y1-row.y0);
+        const padX=(x1-x0)*.05,padY=rowH*.05;
+        const crop=cropCanvas(source.canvas,x0+padX,row.y0+padY,x1-padX,row.y1-padY,8);
+        thumbs.push(dataURL(crop));
+        const a=await recognize(worker,crop,"7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+        let chosen=bestCell([a]);
+        if(!validateShift(chosen).ok){
+          const b=await recognize(worker,crop,"8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+          chosen=bestCell([a,b]);
+        }
+        cells.push(chosen);
+      }
+
+      // Working Hours column: right of day-14.
+      const rowH=Math.max(8,row.y1-row.y0);
+      const whCrop=cropCanvas(source.canvas,bounds[14],row.y0,Math.min(source.canvas.width*.985,bounds[14]+source.canvas.width*.075),row.y1,7);
+      const whText=await recognize(worker,whCrop,"7","0123456789.");
+      const whMatch=whText.match(/\d+(?:\.\d+)?/);
+      const workingHours=whMatch?Number(whMatch[0]):null;
+
+      setReview({
+        fileName:source.fileName,staffId:row.id,name:row.name,
+        firstDate:source.firstDate,cells,thumbs,workingHours
+      });
     }finally{
-      setProcessing(false);setOcrProgress(0);
+      if(ownWorker&&worker)try{await worker.terminate()}catch{}
+      if(ownWorker){setProcessing(false);setProgress(0);setStatus("")}
     }
   };
 
-
-  const updateOcrCell=(index,value)=>{
-    setOcr(o=>{
-      if(!o)return o;
-      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map((c,i)=>i===index?value:c)}:r);
-      return {...o,rows};
-    });
-  };
-  const normalizeAllCells=()=>{
-    setOcr(o=>{
-      if(!o)return o;
-      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map(normalizeStrictShift)}:r);
-      return {...o,rows};
-    });
-  };
-
-  const importSelected=()=>{
-    const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
-    const cleanName=row.name.replace(/\b(?:TRNG|RDO|ALLV|ALV|ALTH|HACC)\b.*$/i,"").trim();
-    const added=row.cells.map((rawShift,i)=>{const shift=normalizeStrictShift(rawShift);return shift?({
-      id:`img-${Date.now()}-${i}`,name:cleanName,date:addDays(firstDate,i),
-      time:CODES.includes(shift)?"":shift,code:CODES.includes(shift)?shift:"",
-      hours:(strictShiftInfo(shift).hours||0),source:ocr.fileName
-    }):null}).filter(Boolean);
-    setEntries(old=>[...old.filter(e=>!(e.name===cleanName && added.some(a=>a.date===e.date))),...added]);
-    setOcr(null); setPreview(null); setTab("dashboard");
+  const selectStaff=async(id)=>{
+    setSelectedStaff(id);
+    setReview(null);
+    await readStaffRow(table,id);
   };
 
   const upload=(files)=>{
-    const file=files?.[0]; if(!file)return;
+    const file=files?.[0];if(!file)return;
     const ext=file.name.split(".").pop().toLowerCase();
-    if(["png","jpg","jpeg","webp"].includes(ext)){processImage(file);return;}
+    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTable(file);return;}
     if(ext==="csv"){
       Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
-        const rows=r.data.map((x,i)=>({
-          id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",
-          date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",
-          code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||parseTimeRange(x.Time||x.time||"")||0,source:file.name
-        })).filter(x=>x.name);
-        setEntries(e=>[...e,...rows]);
-      }}); return;
+        const rows=r.data.map((x,i)=>({id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
+        setEntries(old=>[...old,...rows]);
+      }});return;
     }
     if(["xlsx","xls"].includes(ext)){
-      const fr=new FileReader(); fr.onload=e=>{const wb=XLSX.read(e.target.result,{type:"array"});const sh=wb.Sheets[wb.SheetNames[0]];const rows=XLSX.utils.sheet_to_json(sh,{defval:""}).map((x,i)=>({id:`xls-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||parseTimeRange(x.Time||x.time||"")||0,source:file.name})).filter(x=>x.name);setEntries(v=>[...v,...rows])};fr.readAsArrayBuffer(file);return;
+      const fr=new FileReader();
+      fr.onload=e=>{
+        const wb=XLSX.read(e.target.result,{type:"array"}),sh=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(sh,{defval:""}).map((x,i)=>({id:`xls-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
+        setEntries(old=>[...old,...rows]);
+      };
+      fr.readAsArrayBuffer(file);return;
     }
     setError("Use a roster screenshot, CSV, XLS or XLSX file.");
   };
 
-  const names=[...new Set(entries.map(e=>e.name))].sort();
-  const myName=names.find(n=>/VIMAL/i.test(n))||names[0]||"";
-  const mine=entries.filter(e=>!myName||e.name===myName).sort((a,b)=>a.date.localeCompare(b.date));
+  const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
+  const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
+  const importReview=()=>{
+    if(!review)return;
+    const bad=review.cells.filter(c=>!validateShift(c).ok).length;
+    if(bad){setError(`Correct ${bad} highlighted shift ${bad===1?"cell":"cells"} first.`);return;}
+    const added=review.cells.map((raw,i)=>{
+      const info=validateShift(raw),v=info.value;
+      return {
+        id:`img-${Date.now()}-${i}`,name:review.name,date:addDays(review.firstDate,i),
+        time:CODES.has(v)?"":v,code:CODES.has(v)?v:"",hours:info.hours||0,source:review.fileName
+      };
+    });
+    setEntries(old=>[
+      ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
+      ...added
+    ]);
+    setReview(null);setTable(null);setPreview(null);setTab("dashboard");
+  };
+
+  const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
+  const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
+  const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
   const weekStart=mondayOf(todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
-  const month=mine.filter(e=>e.date.startsWith(calendarMonth.slice(0,7)));
-  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0), monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
-  const overtime=Math.max(0,weekHours-overtimeThreshold);
-  const upcoming=mine.find(e=>e.date>=todayISO() && (e.time||e.code!=="RDO"));
-
+  const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
+  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
+  const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
+  const upcoming=mine.find(e=>e.date>=todayISO()&&(e.time||e.code!=="RDO"));
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
-    <header className="top">
-      <div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div>
-      <button className="ghost" onClick={()=>setTab("more")}><Settings2 size={18}/></button>
-    </header>
+    <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
-    {tab==="dashboard" && <main>
-      <section className="hero">
-        <small>UPCOMING SHIFT</small>
-        {upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{upcoming.time||upcoming.code}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}
-      </section>
-      <div className="stats">
-        <Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/>
-        <Stat label="OVERTIME" value={overtime.toFixed(2)}/>
-      </div>
-      <section className="panel">
-        <div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div>
-        <Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/>
-      </section>
+    {tab==="dashboard"&&<main>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{upcoming.time||upcoming.code}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
     </main>}
 
-    {tab==="calendar" && <main>
-      <div className="monthHead"><button className="ghost" onClick={()=>{const d=new Date(calendarMonth+"T12:00:00");d.setMonth(d.getMonth()-1);setCalendarMonth(d.toISOString().slice(0,7)+"-01")}}><ChevronLeft/></button><h2>{new Date(calendarMonth+"T12:00:00").toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>{const d=new Date(calendarMonth+"T12:00:00");d.setMonth(d.getMonth()+1);setCalendarMonth(d.toISOString().slice(0,7)+"-01")}}><ChevronRight/></button></div>
+    {tab==="calendar"&&<main>
+      <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
       <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
       <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)}/></section>
-      <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-overtimeThreshold*4).toFixed(2)}/><Stat label="TARGET" value={(overtimeThreshold*4).toFixed(2)}/></div>
+      <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-threshold*4).toFixed(2)}/><Stat label="TARGET" value={(threshold*4).toFixed(2)}/></div>
     </main>}
 
-    {tab==="roster" && <main>
-      <div className="seg"><button className="active">Upcoming</button><button>All</button><button>Past</button></div>
-      <Roster rows={mine.filter(e=>e.date>=todayISO())}/>
-    </main>}
+    {tab==="roster"&&<main><Roster rows={mine}/></main>}
 
-    {tab==="search" && <main>
+    {tab==="search"&&<main>
       <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
-      <section className="panel"><div className="sectionTitle"><b>STAFF</b><span>{filtered.length} records</span></div><Roster rows={filtered.slice(0,30)}/></section>
+      <section className="panel"><Roster rows={filtered.slice(0,50)}/></section>
     </main>}
 
-    {tab==="more" && <main>
-      <section className="panel menu">
-        <h3>IMPORT</h3>
+    {tab==="more"&&<main>
+      <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload Image (OCR)</b><small>Extract data from roster screenshots</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Automatically detect all staff names and rows</small></span></button>
       </section>
-      <section className="panel menu">
-        <h3>EXPORT</h3>
-        <button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button>
-      </section>
-      <section className="panel menu">
-        <h3>SETTINGS</h3>
-        <label className="setting">Weekly overtime threshold<input type="number" value={overtimeThreshold} onChange={e=>setOvertimeThreshold(+e.target.value||38)}/></label>
-        <button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button>
-      </section>
+      <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
+      <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
 
     <input ref={fileRef} hidden type="file" accept=".csv,.xlsx,.xls,image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
-    {processing&&<div className="modalWrap"><div className="modal compact"><div className="spinner"/><h3>Reading roster screenshot…</h3><p>{ocrProgress}%</p><small>Reading all 14 cells from your highlighted name row</small></div></div>}
+    {processing&&<div className="modalWrap"><div className="modal compact">
+      <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
+      <small>{table?"Reading the selected employee row and Working Hours.":"Detecting all staff names, rows and 14 day columns."}</small>
+    </div></div>}
 
+    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select a name. VV Roster automatically reads that whole row, 14 days and Working Hours.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
-    {picker&&<div className="modalWrap">
-      <div className="modal">
-        <div className="modalHead">
-          <div>
-            <h2>Highlight your name</h2>
-            <p>Drag a box around <b>PRABHAKAR, Vimal</b>. The app will automatically select that entire roster row.</p>
-          </div>
-          <button className="ghost" onClick={()=>{setPicker(null);setPreview(null);setNameSelection(null)}}><X/></button>
-        </div>
-
-        <div
-          className="namePickerImage"
-          onPointerDown={beginNameHighlight}
-          onPointerMove={moveNameHighlight}
-          onPointerUp={endNameHighlight}
-          onPointerCancel={()=>setDragStart(null)}
-        >
-          <img src={preview} draggable="false"/>
-          {nameSelection&&(()=>{
-            const left=Math.min(nameSelection.x0,nameSelection.x1)*100;
-            const top=Math.min(nameSelection.y0,nameSelection.y1)*100;
-            const width=Math.abs(nameSelection.x1-nameSelection.x0)*100;
-            const height=Math.abs(nameSelection.y1-nameSelection.y0)*100;
-            const rowTop=Math.max(0,top-height*0.22);
-            const rowHeight=Math.min(100-rowTop,height*1.44);
-            return <>
-              <div className="autoRowBand" style={{top:`${rowTop}%`,height:`${rowHeight}%`}}>
-                <span>Whole row selected automatically</span>
-              </div>
-              <div className="nameHighlight" style={{left:`${left}%`,top:`${top}%`,width:`${width}%`,height:`${height}%`}}>
-                <span>Your name</span>
-              </div>
-            </>
-          })()}
-        </div>
-
-        <div className="pickerHelp">
-          <b>Simple selection</b>
-          <span>Click/touch at the start of your name and drag to the end of your name. You only highlight the name — VV Roster extends the selection across all 14 shift columns automatically.</span>
-        </div>
-
-        <div className="highlightActions">
-          <button className="secondary" onClick={()=>setNameSelection(null)}>Clear highlight</button>
-          <button className="primary" disabled={!nameSelection} onClick={readPickedRow}>
-            <Search size={16}/> Read my whole row
-          </button>
+      <div className="autoLayout">
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
+        <div className="autoControls">
+          <label>Employee
+            <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
+              {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </label>
+          {review&&<>
+            <label>First date
+              <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
+            </label>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
+          </>}
         </div>
       </div>
-    </div>}
 
-    {ocr&&<div className="modalWrap">
-      <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Check every highlighted shift. Red cells are blocked until the time/code is corrected.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
-        <div className="ocrLayout">
-          <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
-          <div className="ocrRight">
-            <label>First date in roster<input type="date" value={firstDate} onChange={e=>setFirstDate(e.target.value)}/></label>
-            <label>Detected name<input value={ocr.rows[0]?.name||""} onChange={e=>setOcr(o=>({...o,rows:[{...o.rows[0],name:e.target.value}]}))}/></label>
-            <div className="review">
-              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((s,i)=><div className="reviewRow" key={i}><span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span><b>{s||"—"}</b><em>{s?hoursForShift(s).toFixed(1)+"h":""}</em></div>))}
+      {review&&<>
+        <div className="selectedRowTitle"><b>{review.name}</b><span>14-day row</span></div>
+        <div className="preciseReview">
+          {review.cells.map((cell,i)=>{
+            const info=validateShift(cell);
+            return <div className={`preciseRow ${info.ok?"":"bad"}`} key={i}>
+              <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
+              <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
+              <div className="editCol">
+                <input value={cell} placeholder="RDO or 0500-1300" onChange={e=>updateCell(i,e.target.value)} onBlur={e=>updateCell(i,normalizeShift(e.target.value))}/>
+                {!info.ok&&<small>{info.reason}</small>}
+              </div>
+              <div className="hoursCol">{info.ok?`${(info.hours||0).toFixed(1)}h`:"—"}</div>
             </div>
-          </div>
+          })}
         </div>
-        <div className="reviewActions"><button className="secondary" onClick={normalizeAllCells}>Clean up detected times</button><button className="primary" onClick={importSelected}><Check size={16}/> Import this roster row</button></div>
-      </div>
-    </div>}
+        <div className="importFooter">
+          <span className={allValid?"ready":"notReady"}>{allValid?"✓ All 14 days valid":`${review.cells.filter(c=>!validateShift(c).ok).length} cells need correction`}</span>
+          <button className="primary" disabled={!allValid} onClick={importReview}><Check size={16}/> Import {review.name}</button>
+        </div>
+      </>}
+    </div></div>}
 
     <nav className="bottom">
       <Nav id="dashboard" tab={tab} setTab={setTab} icon={<Home/>} label="Dashboard"/>
@@ -803,15 +462,14 @@ function App(){
       <Nav id="search" tab={tab} setTab={setTab} icon={<Search/>} label="Search"/>
       <Nav id="more" tab={tab} setTab={setTab} icon={<Menu/>} label="More"/>
     </nav>
-  </div>
+  </div>;
 }
+
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
 function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{e.time||e.code||"Off"}</b><span>{e.name}</span></div><strong>{(+e.hours||0).toFixed(2)}<small> hrs</small></strong></div>)}</div>}
-function CalendarGrid({month,rows,selected,onSelect}){
-  const d=new Date(month+"T12:00:00"), first=new Date(d.getFullYear(),d.getMonth(),1), days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(), lead=(first.getDay()+6)%7;
-  const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);
-  return <div className="cal"><>{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}</>{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10), r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>
-}
-function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click();}
+function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
+function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click()}
+
 createRoot(document.getElementById("root")).render(<App/>);
