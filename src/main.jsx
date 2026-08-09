@@ -359,9 +359,10 @@ function shiftValidation(value){
     const h=+x.slice(0,2), min=+x.slice(2);
     return h>=0&&h<=23&&min>=0&&min<=59;
   };
-  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid time"};
+  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid 24-hour time"};
   const hrs=hoursFromTime(t);
-  if(hrs>16) return {ok:false,msg:"Check this shift"};
+  if(hrs===0) return {ok:false,msg:"Start and end are the same"};
+  if(hrs>14) return {ok:false,msg:"Suspiciously long shift"};
   return {ok:true,msg:""};
 }
 
@@ -369,9 +370,9 @@ function shiftValidation(value){
 function canvasToDataURL(canvas){
   try{return canvas.toDataURL("image/png")}catch{return ""}
 }
-async function readSelectedRosterRowWithPreviews(source, yPercent, setProgress){
+async function readSelectedRosterRowWithPreviews(source, yPercent, bandPercent, setProgress){
   const cy=yPercent/100;
-  const half=0.018;
+  const half=Math.max(0.012,Math.min(0.035,(bandPercent/100)/2));
   const y0=Math.max(0,cy-half), y1=Math.min(1,cy+half);
 
   const nameCanvas=cropFractionCanvas(source,0.035,y0,0.175,y1,5);
@@ -431,6 +432,7 @@ function App(){
   const [preview,setPreview]=useState(null);
   const [picker,setPicker]=useState(null);
   const [rowY,setRowY]=useState(50);
+  const [rowBand,setRowBand]=useState(4.4);
   const [cellPreviews,setCellPreviews]=useState([]);
   const [overtimeThreshold,setOvertimeThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
@@ -448,17 +450,25 @@ function App(){
       setPreview(url);
       setPicker({fileName:file.name,canvas,width:canvas.width,height:canvas.height});
       setRowY(50);
+      setRowBand(4.4);
     }catch(e){
       setError("Could not open this screenshot.");
     }
   },[]);
 
 
+  const moveRow=(delta)=>setRowY(y=>Math.max(8,Math.min(92,+(y+delta).toFixed(1))));
+  const setRowFromPointer=(e)=>{
+    const rect=e.currentTarget.getBoundingClientRect();
+    const pct=((e.clientY-rect.top)/rect.height)*100;
+    setRowY(Math.max(8,Math.min(92,+pct.toFixed(1))));
+  };
+
   const readPickedRow=async()=>{
     if(!picker)return;
     setProcessing(true);setOcrProgress(0);setError("");
     try{
-      const result=await readSelectedRosterRowWithPreviews(picker.canvas,rowY,setOcrProgress);
+      const result=await readSelectedRosterRowWithPreviews(picker.canvas,rowY,rowBand,setOcrProgress);
       const row=result.row;
       setCellPreviews(result.previews);
       setSelectedRow(row.id);
@@ -489,6 +499,11 @@ function App(){
 
   const importSelected=()=>{
     const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
+    const bad=row.cells.map((c,i)=>({i,v:shiftValidation(c)})).filter(x=>!x.v.ok);
+    if(bad.length){
+      setError(`Please correct ${bad.length} highlighted shift ${bad.length===1?"cell":"cells"} before importing.`);
+      return;
+    }
     const cleanName=row.name.replace(/\b(?:TRNG|RDO|ALLV|ALV|ALTH|HACC)\b.*$/i,"").trim();
     const added=row.cells.map((shift,i)=>shift?({
       id:`img-${Date.now()}-${i}`,name:cleanName,date:addDays(firstDate,i),
@@ -603,43 +618,68 @@ function App(){
           <button className="ghost" onClick={()=>{setPicker(null);setPreview(null)}}><X/></button>
         </div>
 
-        <div className="pickerImage">
+        <div className="pickerImage" onClick={setRowFromPointer}>
           <img src={preview}/>
-          <div className="rowGuide" style={{top:`${rowY}%`}}>
-            <span>Tap / move to your row</span>
+          <div
+            className="rowBand"
+            style={{top:`${rowY}%`,height:`${rowBand}%`}}
+          >
+            <span>PRABHAKAR, Vimal row</span>
           </div>
-          <input
-            className="rowSlider"
-            type="range"
-            min="8"
-            max="92"
-            step="0.2"
-            value={rowY}
-            onChange={e=>setRowY(+e.target.value)}
-          />
         </div>
 
+        <div className="rowControls">
+          <button onClick={()=>moveRow(-1)}>▲ Up</button>
+          <button onClick={()=>moveRow(-0.2)}>Fine ▲</button>
+          <div className="rowPosition">{rowY.toFixed(1)}%</div>
+          <button onClick={()=>moveRow(0.2)}>Fine ▼</button>
+          <button onClick={()=>moveRow(1)}>▼ Down</button>
+        </div>
+
+        <label className="bandControl">
+          <span>Selection height</span>
+          <input type="range" min="2.4" max="7" step="0.2" value={rowBand} onChange={e=>setRowBand(+e.target.value)}/>
+          <b>{rowBand.toFixed(1)}%</b>
+        </label>
+
         <div className="pickerHelp">
-          <b>How to position it</b>
-          <span>Put the gold line through the centre of your row — the row containing PRABHAKAR, Vimal. Keep the full 14-day table visible in the screenshot.</span>
+          <b>Position the whole gold band over one row</b>
+          <span>Tap the Vimal row to jump there, then use Fine ▲ / ▼ until the band covers only PRABHAKAR, Vimal from the name through all 14 day cells.</span>
         </div>
 
         <button className="primary" onClick={readPickedRow}>
-          <Search size={16}/> Read this row
+          <Search size={16}/> Read selected band
         </button>
       </div>
     </div>}
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Each day now shows the original roster cell beside an editable field. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Review the selected row carefully. Suspicious or invalid shifts are blocked until corrected.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">
             <label>First date in roster<input type="date" value={firstDate} onChange={e=>setFirstDate(e.target.value)}/></label>
             <label>Detected name<input value={ocr.rows[0]?.name||""} onChange={e=>setOcr(o=>({...o,rows:[{...o.rows[0],name:e.target.value}]}))}/></label>
             <div className="review">
-              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((s,i)=><div className="reviewRow" key={i}><span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span><b>{s||"—"}</b><em>{s?hoursForShift(s).toFixed(1)+"h":""}</em></div>))}
+              {ocr.rows.filter(r=>r.id===selectedRow).map(r=>r.cells.map((cell,i)=>{
+                const v=shiftValidation(cell);
+                const normalized=normalizeEditableShift(cell);
+                return <div className={`reviewRow editableVisual ${v.ok?"":"bad"}`} key={i}>
+                  <span>{fmt(addDays(firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</span>
+                  <div className="cellThumb">{cellPreviews[i]?<img src={cellPreviews[i]} alt={`Cell ${i+1}`}/>:<span>—</span>}</div>
+                  <div className="shiftEdit">
+                    <input
+                      value={cell}
+                      placeholder="RDO / 0500-1300"
+                      onChange={e=>updateOcrCell(i,e.target.value)}
+                      onBlur={e=>updateOcrCell(i,normalizeEditableShift(e.target.value))}
+                    />
+                    {!v.ok&&<small>{v.msg}</small>}
+                  </div>
+                  <em>{v.ok?`${hoursForShift(normalized).toFixed(1)}h`:"—"}</em>
+                </div>
+              }))}
             </div>
           </div>
         </div>
