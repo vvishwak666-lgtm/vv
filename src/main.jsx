@@ -367,6 +367,161 @@ function detectRosterGridBounds(canvas,staff){
   return {lines,dayBounds,workingBounds,top,bottom};
 }
 
+
+function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
+  const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
+  const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(sw*scale));
+  c.height=Math.max(1,Math.round(sh*scale));
+  const ctx=c.getContext("2d");
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  return c;
+}
+
+function makeCellVariant(raw, threshold=190, trim=.12, thicken=false){
+  const top=Math.round(raw.height*trim);
+  const bottom=Math.round(raw.height*(1-trim));
+  const side=Math.round(raw.width*.035);
+
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,raw.width-side*2);
+  c.height=Math.max(1,bottom-top);
+  const ctx=c.getContext("2d");
+  ctx.drawImage(raw,side,top,c.width,c.height,0,0,c.width,c.height);
+
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<threshold?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // Remove remnants of table borders.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(c.width*.025));
+  const by=Math.max(2,Math.round(c.height*.06));
+  ctx.fillRect(0,0,c.width,by);
+  ctx.fillRect(0,c.height-by,c.width,by);
+  ctx.fillRect(0,0,bx,c.height);
+  ctx.fillRect(c.width-bx,0,bx,c.height);
+
+  if(thicken){
+    const current=ctx.getImageData(0,0,c.width,c.height);
+    const srcd=current.data;
+    const out=new Uint8ClampedArray(srcd);
+    for(let y=1;y<c.height-1;y++){
+      for(let x=1;x<c.width-1;x++){
+        const i=(y*c.width+x)*4;
+        if(srcd[i]<80){
+          for(let yy=-1;yy<=1;yy++){
+            for(let xx=-1;xx<=1;xx++){
+              const j=((y+yy)*c.width+(x+xx))*4;
+              out[j]=out[j+1]=out[j+2]=0; out[j+3]=255;
+            }
+          }
+        }
+      }
+    }
+    current.data.set(out);
+    ctx.putImageData(current,0,0);
+  }
+  return c;
+}
+
+function candidateShiftStrings(text){
+  const raw=String(text||"").toUpperCase()
+    .replace(/[–—_]/g,"-")
+    .replace(/\s+/g,"")
+    .replace(/[^0-9A-Z:-]/g,"");
+
+  const candidates=new Set();
+  if(raw)candidates.add(raw);
+
+  // Codes first.
+  for(const code of CODES){
+    if(raw===code || raw.includes(code)) candidates.add(code);
+  }
+
+  // OCR confusions only when text contains digits.
+  const numeric=raw.replace(/O/g,"0").replace(/[IL|]/g,"1").replace(/S(?=\d)/g,"5");
+  if(numeric)candidates.add(numeric);
+
+  // Pull two time-like groups even if OCR missed the dash.
+  const groups=numeric.match(/\d{3,4}/g)||[];
+  if(groups.length>=2){
+    candidates.add(`${groups[0]}-${groups[1]}`);
+  }
+
+  // 7/8 consecutive digits can be a missing dash.
+  const digits=numeric.replace(/\D/g,"");
+  if(digits.length===8)candidates.add(`${digits.slice(0,4)}-${digits.slice(4)}`);
+  if(digits.length===7){
+    // Try zero-padding either side, but validation chooses only plausible results.
+    candidates.add(`${digits.slice(0,3)}-${digits.slice(3)}`);
+    candidates.add(`${digits.slice(0,4)}-${digits.slice(4)}`);
+  }
+
+  return [...candidates].map(normalizeShift);
+}
+
+function scoreShiftCandidate(v){
+  const info=validateShift(v);
+  if(!info.ok)return -1000;
+
+  let score=100;
+  if(CODES.has(info.value)) return 115;
+
+  const [a,b]=info.value.split("-");
+  // Normal roster times usually use 00/30 minute boundaries; don't require it,
+  // just prefer them when OCR candidates compete.
+  const sm=+a.slice(2), em=+b.slice(2);
+  if([0,30].includes(sm))score+=5;
+  if([0,30].includes(em))score+=5;
+  if((info.hours||0)>=4 && (info.hours||0)<=10.5)score+=8;
+  if((info.hours||0)<2)score-=10;
+  return score;
+}
+
+function chooseBestShift(texts){
+  let best="",bestScore=-Infinity;
+  for(const text of texts){
+    for(const c of candidateShiftStrings(text)){
+      const s=scoreShiftCandidate(c);
+      if(s>bestScore){bestScore=s;best=c}
+    }
+  }
+  return bestScore>=100?best:"";
+}
+
+async function recognizeShiftCell(worker,raw){
+  const variants=[
+    makeCellVariant(raw,170,.15,false),
+    makeCellVariant(raw,190,.13,false),
+    makeCellVariant(raw,210,.11,false),
+    makeCellVariant(raw,190,.13,true)
+  ];
+  const texts=[];
+
+  for(let i=0;i<variants.length;i++){
+    const psm=i===3?"13":(i===2?"8":"7");
+    texts.push(await recognize(
+      worker,
+      variants[i],
+      psm,
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+    ));
+    const chosen=chooseBestShift(texts);
+    if(chosen && validateShift(chosen).ok && texts.length>=2) return chosen;
+  }
+
+  // One final pass without a whitelist can recover RDO/TRNG when letters are weak.
+  texts.push(await recognize(worker,variants[1],"8",""));
+  return chooseBestShift(texts);
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -461,22 +616,28 @@ function App(){
       for(let i=0;i<14;i++){
         if(ownWorker)setProgress(Math.round(i/14*88));
         const x0=bounds[i],x1=bounds[i+1];
-        const padX=Math.max(1,(x1-x0)*.025);
-        const padY=Math.max(1,(row.y1-row.y0)*.06);
-        const rawCrop=cropCanvas(
+
+        // Preserve the exact cell for the user-facing thumbnail.
+        const thumbCrop=rawCropCanvas(
           source.canvas,
-          x0+padX,row.y0+padY,
-          x1-padX,row.y1-padY,
-          8
+          x0+1,row.y0+1,
+          x1-1,row.y1-1,
+          6
         );
-        thumbs.push(dataURL(rawCrop));
-        const a=await recognize(worker,rawCrop,"7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
-        let chosen=bestCell([a]);
-        if(!validateShift(chosen).ok){
-          const b=await recognize(worker,rawCrop,"8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
-          chosen=bestCell([a,b]);
-        }
-        cells.push(chosen);
+        thumbs.push(dataURL(thumbCrop));
+
+        // OCR a tighter copy and remove the table/grid borders internally.
+        const ocrRaw=rawCropCanvas(
+          source.canvas,
+          x0+1,row.y0+1,
+          x1-1,row.y1-1,
+          10
+        );
+        const chosen=await recognizeShiftCell(worker,ocrRaw);
+
+        // Never display a guessed invalid value. A low-confidence cell remains
+        // blank/red so the user can copy the visible source-cell text manually.
+        cells.push(validateShift(chosen).ok?chosen:"");
       }
       const wh0=source.workingBounds?.[0] ?? source.canvas.width*.915;
       const wh1=source.workingBounds?.[1] ?? source.canvas.width*.992;
@@ -595,7 +756,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names are read from the left column. Day cells are now snapped to the actual table grid lines for precise row reading.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. Each shift cell now uses multi-pass OCR with border removal; uncertain cells stay blank for safe correction.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
@@ -623,7 +784,7 @@ function App(){
               <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
               <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
               <div className="editCol">
-                <input value={cell} placeholder="RDO or 0500-1300" onChange={e=>updateCell(i,e.target.value)} onBlur={e=>updateCell(i,normalizeShift(e.target.value))}/>
+                <input value={cell} placeholder="Check cell → RDO or 0500-1300" onChange={e=>updateCell(i,e.target.value)} onBlur={e=>updateCell(i,normalizeShift(e.target.value))}/>
                 {!info.ok&&<small>{info.reason}</small>}
               </div>
               <div className="hoursCol">{info.ok?`${(info.hours||0).toFixed(1)}h`:"—"}</div>
