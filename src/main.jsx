@@ -522,6 +522,131 @@ async function recognizeShiftCell(worker,raw){
   return chooseBestShift(texts);
 }
 
+
+function buildRowOCRCanvas(source,row,bounds,scale=9){
+  const x0=bounds[0], x1=bounds[14];
+  const y0=row.y0, y1=row.y1;
+  const raw=rawCropCanvas(source,x0,y0,x1,y1,scale);
+  const ctx=raw.getContext("2d");
+  const img=ctx.getImageData(0,0,raw.width,raw.height),d=img.data;
+
+  // High-contrast grayscale without crushing thin digits.
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    let v=(g-95)*2.15;
+    v=Math.max(0,Math.min(255,v));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // Remove horizontal borders and the known internal vertical grid lines.
+  ctx.fillStyle="#fff";
+  const by=Math.max(2,Math.round(raw.height*.08));
+  ctx.fillRect(0,0,raw.width,by);
+  ctx.fillRect(0,raw.height-by,raw.width,by);
+  for(let i=1;i<14;i++){
+    const local=((bounds[i]-x0)/(x1-x0))*raw.width;
+    const bw=Math.max(2,Math.round(raw.width*.0025));
+    ctx.fillRect(Math.round(local-bw),0,bw*2+1,raw.height);
+  }
+  return raw;
+}
+
+function wordsByDay(words,rowCanvas,bounds){
+  const out=Array.from({length:14},()=>[]);
+  const x0=bounds[0],x1=bounds[14];
+  for(const w of words||[]){
+    const text=cleanText(w.text||"");
+    if(!text)continue;
+    const b=w.bbox||{};
+    const cx=((b.x0||0)+(b.x1||0))/2;
+    const frac=cx/rowCanvas.width;
+    const sourceX=x0+frac*(x1-x0);
+    let idx=-1;
+    for(let i=0;i<14;i++){
+      if(sourceX>=bounds[i]&&sourceX<bounds[i+1]){idx=i;break}
+    }
+    if(idx>=0)out[idx].push(w);
+  }
+  return out;
+}
+
+function textFromWords(words){
+  return cleanText((words||[])
+    .slice()
+    .sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0))
+    .map(w=>w.text||"")
+    .join(" "));
+}
+
+async function recognizeWholeSelectedRow(worker,source,row,bounds){
+  const canvas=buildRowOCRCanvas(source.canvas,row,bounds,10);
+  await worker.setParameters({
+    tessedit_pageseg_mode:"6",
+    preserve_interword_spaces:"1",
+    tessedit_char_whitelist:"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+  });
+  const result=await worker.recognize(canvas);
+  const grouped=wordsByDay(result.data.words||[],canvas,bounds);
+  const cells=grouped.map(ws=>chooseBestShift([textFromWords(ws)]));
+
+  // Second row-level pass with sparse text. It often recovers RDO/TRNG or faint times.
+  await worker.setParameters({
+    tessedit_pageseg_mode:"11",
+    preserve_interword_spaces:"1",
+    tessedit_char_whitelist:"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+  });
+  const sparse=await worker.recognize(canvas);
+  const grouped2=wordsByDay(sparse.data.words||[],canvas,bounds);
+  for(let i=0;i<14;i++){
+    if(validateShift(cells[i]).ok)continue;
+    const best=chooseBestShift([textFromWords(grouped[i]),textFromWords(grouped2[i])]);
+    if(validateShift(best).ok)cells[i]=best;
+  }
+  return cells;
+}
+
+function makeGentleCellVariant(raw,mode=0){
+  const trimY=[.08,.13,.17][mode]??.1;
+  const trimX=.045;
+  const sx=Math.round(raw.width*trimX),sy=Math.round(raw.height*trimY);
+  const w=Math.max(1,raw.width-sx*2),h=Math.max(1,raw.height-sy*2);
+  const c=document.createElement("canvas");c.width=w;c.height=h;
+  const ctx=c.getContext("2d");ctx.drawImage(raw,sx,sy,w,h,0,0,w,h);
+  const img=ctx.getImageData(0,0,w,h),d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    let v;
+    if(mode===0) v=Math.max(0,Math.min(255,(g-85)*2.0));
+    else if(mode===1) v=g<195?0:255;
+    else v=g<215?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  // Clear only the outer edge; do not erase thin digits near the center.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(w*.018)),by=Math.max(2,Math.round(h*.04));
+  ctx.fillRect(0,0,w,by);ctx.fillRect(0,h-by,w,by);
+  ctx.fillRect(0,0,bx,h);ctx.fillRect(w-bx,0,bx,h);
+  return c;
+}
+
+async function recognizeExactCellFallback(worker,raw){
+  const texts=[];
+  const variants=[makeGentleCellVariant(raw,0),makeGentleCellVariant(raw,1),makeGentleCellVariant(raw,2)];
+  const configs=[
+    ["7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"],
+    ["8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"],
+    ["13",""]
+  ];
+  for(let i=0;i<variants.length;i++){
+    texts.push(await recognize(worker,variants[i],configs[i][0],configs[i][1]));
+    const chosen=chooseBestShift(texts);
+    if(validateShift(chosen).ok)return chosen;
+  }
+  return "";
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -612,39 +737,35 @@ function App(){
         worker=await createWorker();ownWorker=true;
       }
       const bounds=source.bounds;
-      const cells=[],thumbs=[];
-      for(let i=0;i<14;i++){
-        if(ownWorker)setProgress(Math.round(i/14*88));
-        const x0=bounds[i],x1=bounds[i+1];
+      const thumbs=[];
 
-        // Preserve the exact cell for the user-facing thumbnail.
-        const thumbCrop=rawCropCanvas(
-          source.canvas,
-          x0+1,row.y0+1,
-          x1-1,row.y1-1,
-          6
-        );
+      // First OCR the selected employee's complete 14-day row. This gives Tesseract
+      // more context than isolated tiny cells, while the detected grid maps each
+      // recognized word back into the correct day column.
+      let cells=await recognizeWholeSelectedRow(worker,source,row,bounds);
+      if(ownWorker)setProgress(45);
+
+      for(let i=0;i<14;i++){
+        const x0=bounds[i],x1=bounds[i+1];
+        const thumbCrop=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumbCrop));
 
-        // OCR a tighter copy and remove the table/grid borders internally.
-        const ocrRaw=rawCropCanvas(
-          source.canvas,
-          x0+1,row.y0+1,
-          x1-1,row.y1-1,
-          10
-        );
-        const chosen=await recognizeShiftCell(worker,ocrRaw);
-
-        // Never display a guessed invalid value. A low-confidence cell remains
-        // blank/red so the user can copy the visible source-cell text manually.
-        cells.push(validateShift(chosen).ok?chosen:"");
+        // Only retry cells the row-level OCR did not read confidently.
+        if(!validateShift(cells[i]).ok){
+          const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
+          const fallback=await recognizeExactCellFallback(worker,raw);
+          cells[i]=validateShift(fallback).ok?fallback:"";
+        }
+        if(ownWorker)setProgress(45+Math.round((i+1)/14*45));
       }
+
       const wh0=source.workingBounds?.[0] ?? source.canvas.width*.915;
       const wh1=source.workingBounds?.[1] ?? source.canvas.width*.992;
-      const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,7);
+      const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,8);
       const whText=await recognize(worker,whCrop,"7","0123456789.");
       const whMatch=whText.match(/\d+(?:\.\d+)?/);
       const workingHours=whMatch?Number(whMatch[0]):null;
+
       setReview({
         fileName:source.fileName,staffId:row.id,name:row.name,
         firstDate:source.firstDate,cells,thumbs,workingHours
@@ -756,7 +877,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. Each shift cell now uses multi-pass OCR with border removal; uncertain cells stay blank for safe correction.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. VV Roster reads the whole selected row first, then retries only uncertain individual cells.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
