@@ -338,31 +338,11 @@ async function readSelectedRosterRow(source, yPercent, setProgress){
 
 
 function normalizeEditableShift(value){
-  let t=String(value||"").toUpperCase().trim().replace(/[—–]/g,"-").replace(/\s+/g,"");
-  if(!t) return "";
-  const codeMap={RD0:"RDO",TRN6:"TRNG",ALIV:"ALV",ALLV:"ALV"};
-  if(codeMap[t]) t=codeMap[t];
-  if(CODES.includes(t)) return t;
-  t=t.replace(/O/g,"0");
-  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
-  if(!m) return t;
-  const pad=s=>s.padStart(4,"0");
-  return `${pad(m[1])}-${pad(m[2])}`;
+  return normalizeStrictShift(value);
 }
 function shiftValidation(value){
-  const t=normalizeEditableShift(value);
-  if(!t) return {ok:false,msg:"Missing"};
-  if(CODES.includes(t)) return {ok:true,msg:""};
-  const m=t.match(/^(\d{4})-(\d{4})$/);
-  if(!m) return {ok:false,msg:"Use HHMM-HHMM"};
-  const valid=x=>{
-    const h=+x.slice(0,2), min=+x.slice(2);
-    return h>=0&&h<=23&&min>=0&&min<=59;
-  };
-  if(!valid(m[1])||!valid(m[2])) return {ok:false,msg:"Invalid time"};
-  const hrs=hoursFromTime(t);
-  if(hrs>16) return {ok:false,msg:"Check this shift"};
-  return {ok:true,msg:""};
+  const info=strictShiftInfo(value);
+  return {ok:info.ok,msg:info.ok?"":info.reason};
 }
 
 
@@ -487,6 +467,57 @@ async function readHighlightedRosterRowWithPreviews(source, selection, setProgre
   };
 }
 
+
+function normalizeStrictShift(value){
+  let t=String(value||"").toUpperCase().trim().replace(/[—–]/g,"-").replace(/\s+/g,"");
+  if(!t) return "";
+  const codeAliases={RD0:"RDO",TRN6:"TRNG",ALLV:"ALV",ALIV:"ALV"};
+  if(codeAliases[t]) t=codeAliases[t];
+  if(CODES.includes(t)) return t;
+
+  // Only repair OCR confusions inside strings that are predominantly numeric.
+  if(/[0-9]/.test(t)){
+    t=t.replace(/O/g,"0").replace(/[IL]/g,"1");
+  }
+
+  // Accept 3-4 digit sides, then zero-pad to HHMM.
+  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
+  if(!m) return t;
+  const a=m[1].padStart(4,"0");
+  const b=m[2].padStart(4,"0");
+  return `${a}-${b}`;
+}
+
+function strictShiftInfo(value){
+  const t=normalizeStrictShift(value);
+
+  if(!t) return {ok:false, value:t, reason:"Missing shift"};
+  if(CODES.includes(t)) return {ok:true, value:t, hours:0};
+
+  const m=t.match(/^(\d{4})-(\d{4})$/);
+  if(!m) return {ok:false, value:t, reason:"Use HHMM-HHMM"};
+
+  const parse = s => ({
+    h:Number(s.slice(0,2)),
+    m:Number(s.slice(2,4))
+  });
+  const start=parse(m[1]), end=parse(m[2]);
+
+  if(start.h>23 || end.h>23) return {ok:false, value:t, reason:"Hour must be 00–23"};
+  if(start.m>59 || end.m>59) return {ok:false, value:t, reason:"Minutes must be 00–59"};
+
+  let mins=(end.h*60+end.m)-(start.h*60+start.m);
+  if(mins<0) mins+=1440;
+
+  if(mins===0) return {ok:false, value:t, reason:"Start and end are the same"};
+  const hours=mins/60;
+
+  // Roster shifts longer than 14h are suspicious and should always be reviewed.
+  if(hours>14) return {ok:false, value:t, reason:"Suspiciously long shift"};
+
+  return {ok:true, value:t, hours};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -587,7 +618,7 @@ function App(){
   const normalizeAllCells=()=>{
     setOcr(o=>{
       if(!o)return o;
-      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map(normalizeEditableShift)}:r);
+      const rows=o.rows.map(r=>r.id===selectedRow?{...r,cells:r.cells.map(normalizeStrictShift)}:r);
       return {...o,rows};
     });
   };
@@ -595,11 +626,11 @@ function App(){
   const importSelected=()=>{
     const row=ocr?.rows.find(r=>r.id===selectedRow); if(!row)return;
     const cleanName=row.name.replace(/\b(?:TRNG|RDO|ALLV|ALV|ALTH|HACC)\b.*$/i,"").trim();
-    const added=row.cells.map((shift,i)=>shift?({
+    const added=row.cells.map((rawShift,i)=>{const shift=normalizeStrictShift(rawShift);return shift?({
       id:`img-${Date.now()}-${i}`,name:cleanName,date:addDays(firstDate,i),
       time:CODES.includes(shift)?"":shift,code:CODES.includes(shift)?shift:"",
-      hours:hoursForShift(shift),source:ocr.fileName
-    }):null).filter(Boolean);
+      hours:(strictShiftInfo(shift).hours||0),source:ocr.fileName
+    }):null}).filter(Boolean);
     setEntries(old=>[...old.filter(e=>!(e.name===cleanName && added.some(a=>a.date===e.date))),...added]);
     setOcr(null); setPreview(null); setTab("dashboard");
   };
@@ -750,7 +781,7 @@ function App(){
 
     {ocr&&<div className="modalWrap">
       <div className="modal">
-        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Each day now shows the original roster cell beside an editable field. Correct any highlighted OCR mistakes before importing.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
+        <div className="modalHead"><div><h2>Screenshot roster detected</h2><p>Check every highlighted shift. Red cells are blocked until the time/code is corrected.</p></div><button className="ghost" onClick={()=>setOcr(null)}><X/></button></div>
         <div className="ocrLayout">
           <div className="imageBox">{preview?<img src={preview}/>:<ImageIcon/>}</div>
           <div className="ocrRight">
