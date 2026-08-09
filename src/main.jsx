@@ -134,6 +134,116 @@ function inferFirstDate(rows){
 }
 function hoursForShift(s){ if(!s || CODES.includes(s)) return 0; return parseTimeRange(s)??0; }
 
+
+function cleanOCRText(s){
+  return String(s||"")
+    .replace(/[|]/g,"I")
+    .replace(/[—–]/g,"-")
+    .replace(/\s+/g," ")
+    .trim();
+}
+function normalizeRosterCell(s){
+  let t=cleanOCRText(s).toUpperCase().replace(/\s/g,"");
+  t=t.replace(/O/g,"0");
+  const aliases={RD0:"RDO",TRN6:"TRNG",ALL:"AL",ALLV:"ALV"};
+  if(aliases[t]) t=aliases[t];
+  if(/^\d{8}$/.test(t)) t=t.slice(0,4)+"-"+t.slice(4);
+  if(/^\d{7}$/.test(t)){
+    // common missing zero at start/end
+    if(/^\d{3}-?\d{4}$/.test(t)) t=t.slice(0,3)+"-"+t.slice(3);
+  }
+  return t;
+}
+function isRosterValue(s){
+  const t=normalizeRosterCell(s);
+  if(CODES.includes(t)) return true;
+  return /^\d{3,4}-\d{3,4}$/.test(t) || /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(t);
+}
+function rowTextFromWords(ws){
+  return ws.sort((a,b)=>a.bbox.x0-b.bbox.x0).map(w=>cleanOCRText(w.text)).join(" ");
+}
+function clusterRows(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && w.confidence>15);
+  const rows=[];
+  for(const w of good){
+    const cy=(w.bbox.y0+w.bbox.y1)/2;
+    const h=Math.max(6,w.bbox.y1-w.bbox.y0);
+    let row=rows.find(r=>Math.abs(r.cy-cy)<Math.max(8,h*0.65));
+    if(!row){row={cy,words:[]};rows.push(row)}
+    row.words.push(w);
+    row.cy=(row.cy*(row.words.length-1)+cy)/row.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>({id:`r${i}`,cy:r.cy,words:r.words.sort((a,b)=>a.bbox.x0-b.bbox.x0),text:rowTextFromWords(r.words)}));
+}
+function guessNameAndCells(row, imageWidth){
+  const ws=row.words;
+  const vals=ws.filter(w=>isRosterValue(w.text));
+  if(vals.length<2) return null;
+
+  const firstValX=Math.min(...vals.map(w=>w.bbox.x0));
+  let nameWords=ws.filter(w=>w.bbox.x1<firstValX-4);
+  let name=cleanOCRText(nameWords.map(w=>w.text).join(" "));
+  name=name.replace(/\b(?:TRNG|RDO|AL|ALV|ALLV|ALTH|HACC)\b.*$/i,"").trim();
+  if(name.length<3) return null;
+
+  // Ignore headers / date rows.
+  if(/^(SHIFT|DATE|MON|TUE|WED|THU|FRI|SAT|SUN|WORKING HOURS)/i.test(name)) return null;
+
+  // Estimate left/right edge of the 14-day roster region from detected values.
+  const centers=vals.map(w=>(w.bbox.x0+w.bbox.x1)/2).filter(x=>x<imageWidth*0.92).sort((a,b)=>a-b);
+  if(centers.length<2) return null;
+
+  const left=Math.max(imageWidth*0.14, Math.min(...centers)-imageWidth*0.01);
+  const right=Math.min(imageWidth*0.90, Math.max(...centers)+imageWidth*0.01);
+  const step=(right-left)/13;
+  const colCenters=Array.from({length:14},(_,i)=>left+i*step);
+
+  const cells=Array(14).fill("");
+  vals.forEach(w=>{
+    const x=(w.bbox.x0+w.bbox.x1)/2;
+    let best=0,dist=Infinity;
+    colCenters.forEach((c,i)=>{const d=Math.abs(c-x);if(d<dist){dist=d;best=i}});
+    const v=normalizeRosterCell(w.text);
+    if(!cells[best] || isRosterValue(v)) cells[best]=v;
+  });
+
+  // Working-hours value is usually rightmost numeric token after final day.
+  const rightWords=ws.filter(w=>w.bbox.x0>imageWidth*0.90);
+  const workingHours=cleanOCRText(rightWords.map(w=>w.text).join(" "));
+  return {name,cells,workingHours,rowText:row.text};
+}
+function detectAirNZRows(rows,imageWidth){
+  const candidates=[];
+  for(const row of rows){
+    const g=guessNameAndCells(row,imageWidth);
+    if(g && g.cells.filter(Boolean).length>=2){
+      candidates.push({...g,id:row.id,cy:row.cy});
+    }
+  }
+  // Prefer rows that look like "SURNAME, Firstname"
+  candidates.sort((a,b)=>{
+    const av=/^[A-Z' -]+,\s*[A-Za-z]/.test(a.name)?1:0;
+    const bv=/^[A-Z' -]+,\s*[A-Za-z]/.test(b.name)?1:0;
+    if(av!==bv) return bv-av;
+    return a.cy-b.cy;
+  });
+  return candidates;
+}
+function inferRosterStartDateFromText(text){
+  const m=text.match(/\b(\d{1,2})\s*(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)[a-z]*\s*(\d{4})/i);
+  if(m){
+    const d=Date.parse(m[0]);
+    if(!isNaN(d)) return new Date(d).toISOString().slice(0,10);
+  }
+  const dmy=text.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
+  if(dmy){
+    let y=+dmy[3]; if(y<100)y+=2000;
+    const day=+dmy[1], month=+dmy[2];
+    if(month<=12) return new Date(y,month-1,day,12).toISOString().slice(0,10);
+  }
+  return todayISO();
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -156,31 +266,47 @@ function App(){
   const processImage=useCallback(async(file)=>{
     setError("");setProcessing(true);setOcrProgress(0);setPreview(URL.createObjectURL(file));
     try{
-      // upscale in canvas for better small-cell recognition
       const bmp=await createImageBitmap(file);
-      const scale=Math.max(1.8, Math.min(3, 2200/bmp.width));
-      const c=document.createElement("canvas"); c.width=bmp.width*scale; c.height=bmp.height*scale;
+      const scale=Math.max(2.2, Math.min(4, 3200/bmp.width));
+      const c=document.createElement("canvas");
+      c.width=Math.round(bmp.width*scale);
+      c.height=Math.round(bmp.height*scale);
       const ctx=c.getContext("2d");
-      ctx.filter="grayscale(1) contrast(1.7)";
+
+      // High-contrast preprocessing for dense roster screenshots.
       ctx.drawImage(bmp,0,0,c.width,c.height);
+      const img=ctx.getImageData(0,0,c.width,c.height);
+      const d=img.data;
+      for(let i=0;i<d.length;i+=4){
+        const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+        const v=g>190?255:(g<115?0:Math.max(0,Math.min(255,(g-115)*3.4)));
+        d[i]=d[i+1]=d[i+2]=v;
+      }
+      ctx.putImageData(img,0,0);
+
       const blob=await new Promise(r=>c.toBlob(r,"image/png"));
-      const result=await Tesseract.recognize(blob,"eng",{logger:m=>{if(m.status==="recognizing text")setOcrProgress(Math.round((m.progress||0)*100))}});
-      const words=result.data.words||[];
-      const rows=groupWordsByRow(words);
-      const width=c.width;
-      const candidates=makeCandidateRows(rows,width);
-      const centers=inferColumnCenters(candidates,width);
-      const first=inferFirstDate(rows);
+      const result=await Tesseract.recognize(blob,"eng",{
+        logger:m=>{if(m.status==="recognizing text")setOcrProgress(Math.round((m.progress||0)*100))}
+      });
+
+      const rows=clusterRows(result.data.words||[]);
+      const candidates=detectAirNZRows(rows,c.width);
+      const fullText=cleanOCRText(result.data.text||"");
+      const first=inferRosterStartDateFromText(fullText);
       setFirstDate(first);
-      const mapped=candidates.map(r=>({...r,cells:mapCandidate(r,centers)})).filter(r=>r.cells.some(Boolean));
-      if(!mapped.length) throw new Error("No staff rows were confidently detected.");
-      setOcr({fileName:file.name,rows:mapped,centers,width,height:c.height});
-      const preferred=mapped.find(r=>/VIMAL/i.test(r.name))||mapped[0];
+
+      if(!candidates.length) throw new Error("No staff rows were detected. Crop the image to the roster table, keeping names and all 14 day columns visible.");
+
+      // Prefer Vimal automatically when present.
+      const preferred=candidates.find(r=>/VIMAL/i.test(r.name))||candidates[0];
       setSelectedRow(preferred.id);
+      setOcr({fileName:file.name,rows:candidates,width:c.width,height:c.height,rawText:fullText});
     }catch(e){
-      setError(e.message||"Could not read this screenshot. Crop around the roster table and try again.");
+      setError(e.message||"Could not read this roster screenshot.");
       setOcr(null);
-    }finally{setProcessing(false);setOcrProgress(0)}
+    }finally{
+      setProcessing(false);setOcrProgress(0);
+    }
   },[]);
 
   const importSelected=()=>{
