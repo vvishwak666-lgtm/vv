@@ -1587,8 +1587,8 @@ function App(){
   const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
-  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
-  const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
+  const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const upcoming=mine.find(e=>!!e.time && e.date>=todayISO()) || mine.find(e=>!!e.time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
@@ -1695,6 +1695,17 @@ function App(){
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
+
+function effectiveEntryHours(e){
+  const stored=Number(e?.hours);
+  if(Number.isFinite(stored) && stored>0) return stored;
+
+  const parsed=parseDisplayedRosterValue(
+    e?.canonicalValue || e?.display || e?.rawCellText || e?.time || e?.code || ""
+  );
+  return Number(parsed.hours)||0;
+}
+
 function entryRosterText(e){
   if(e.canonicalValue)return e.canonicalValue;
   if(e.display)return e.display;
@@ -1713,7 +1724,7 @@ function Roster({rows}){
       {e.sourceCell
         ? <div className="savedSourceCell"><img src={e.sourceCell} alt={entryRosterText(e)||"Roster cell"}/></div>
         : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
-      <strong>{e.code==="RDO"?"RDO":e.hours?`${(+e.hours).toFixed(1)}h`:""}</strong>
+      <strong>{e.code==="RDO"?"RDO":effectiveEntryHours(e)>0?`${effectiveEntryHours(e).toFixed(1)}h`:""}</strong>
     </div>)}
   </div>
 }
