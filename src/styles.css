@@ -34,3 +34,50 @@
 .preciseRow.bad{background:transparent!important}
 .preciseRow.bad .editCol input{border-color:#37414c!important;background:#0c1117!important}
 .preciseRow.bad .cellThumb{outline:none!important;box-shadow:none!important}
+
+/* Exact source-cell mode: selected employee view shows original roster cells */
+.exactSourceReview{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  margin-top:10px;
+}
+.exactSourceRow{
+  display:grid;
+  grid-template-columns:130px minmax(190px,1fr);
+  align-items:center;
+  gap:12px;
+  padding:9px 10px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+}
+.exactDate{
+  font-size:13px;
+  font-weight:800;
+  white-space:nowrap;
+}
+.exactRosterCell{
+  min-height:54px;
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:9px;
+  background:#fff;
+}
+.exactRosterCell img{
+  width:100%;
+  height:64px;
+  display:block;
+  object-fit:contain;
+  object-position:left center;
+}
+.exactModeFooter .ready{color:#e8bf63}
+@media(max-width:620px){
+  .exactSourceRow{grid-template-columns:92px 1fr;gap:8px;padding:7px}
+  .exactDate{font-size:11px}
+  .exactRosterCell{min-height:48px}
+  .exactRosterCell img{height:56px}
+}

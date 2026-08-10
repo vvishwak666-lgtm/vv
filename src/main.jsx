@@ -1345,7 +1345,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster replicates the text shown in each roster cell exactly as read, including RDO, times, TRNG, and other codes.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
@@ -1365,27 +1365,32 @@ function App(){
       </div>
 
       {review&&<>
-        <div className="selectedRowTitle"><b>{review.name}</b><span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span></div>
-        <div className="preciseReview">
-          {review.cells.map((cell,i)=>{
-            const info=validateShift(cell);
-            return <div className={`preciseRow ${info.ok?"":"bad"}`} key={i}>
-              <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
-              <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
-              <div className="editCol">
-                <input
-                  value={cell}
-                  placeholder="Cell text"
-                  onChange={e=>updateCell(i,e.target.value)}
-                />
-              </div>
-              <div className="hoursCol rosterStatus">{/RDO/i.test(cell)?"RDO":/TRNG/i.test(cell)?"TRNG":""}</div>
-            </div>
-          })}
+        <div className="selectedRowTitle">
+          <b>{review.name}</b>
+          <span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span>
         </div>
-        <div className="importFooter">
-          <span className="ready">✓ Replicating selected employee cells as shown</span>
-          <button className="primary" disabled={!allValid} onClick={importReview}><Check size={16}/> Import {review.name}</button>
+
+        <div className="exactSourceReview">
+          {review.cells.map((cell,i)=>(
+            <div className="exactSourceRow" key={i}>
+              <div className="exactDate">
+                {fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}
+              </div>
+              <div className="exactRosterCell" title={cell||""}>
+                {review.thumbs[i]
+                  ? <img src={review.thumbs[i]} alt={`Roster cell ${i+1}`}/>
+                  : <span>—</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="importFooter exactModeFooter">
+          <span className="ready">✓ Showing the original selected employee cells exactly as uploaded</span>
+          <button className="primary" disabled={!allValid} onClick={importReview}>
+            <Check size={16}/> Import {review.name}
+          </button>
+        </div>
         </div>
       </>}
     </div></div>}
