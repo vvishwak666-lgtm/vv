@@ -368,55 +368,6 @@ function detectRosterGridBounds(canvas,staff){
 }
 
 
-
-function groupStaffIntoTables(staff,canvasHeight){
-  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
-  if(!rows.length)return [];
-  const gaps=[];
-  for(let i=1;i<rows.length;i++)gaps.push(rows[i].cy-rows[i-1].cy);
-  const sorted=[...gaps].sort((a,b)=>a-b);
-  const med=sorted.length?sorted[Math.floor(sorted.length/2)]:18;
-  const splitGap=Math.max(med*2.4,36);
-  const groups=[];
-  let current=[];
-  for(let i=0;i<rows.length;i++){
-    if(current.length && rows[i].cy-current[current.length-1].cy>splitGap){groups.push(current);current=[]}
-    current.push(rows[i]);
-  }
-  if(current.length)groups.push(current);
-  return groups.filter(g=>g.length>=2).map((g,i)=>{
-    const top=Math.max(0,g[0].cy-med*2.2);
-    const bottom=Math.min(canvasHeight,g[g.length-1].cy+med*2.2);
-    return {id:`table-${i}`,index:i+1,top,bottom,staff:g};
-  });
-}
-
-function clipRowBoundsToTable(staff,top,bottom){
-  const bounded=attachRowBounds(staff,bottom);
-  return bounded.map(r=>({...r,y0:Math.max(top,r.y0),y1:Math.min(bottom,r.y1)}));
-}
-
-function detectAllRosterTablesFromOCR(result,canvas){
-  const rows=clusterWordsToRows(result.data.words||[]);
-  const rawStaff=detectStaffRows(rows,canvas.width);
-  const groups=groupStaffIntoTables(rawStaff,canvas.height);
-  return groups.map(g=>{
-    const staff=clipRowBoundsToTable(g.staff,g.top,g.bottom);
-    const grid=detectRosterGridBounds(canvas,staff);
-    return {...g,staff,grid};
-  });
-}
-
-async function inferTableFirstDate(worker,canvas,table){
-  const rowSpacing=table.staff.length>1?table.staff[1].cy-table.staff[0].cy:22;
-  const headerTop=Math.max(0,table.top-rowSpacing*2.8);
-  const headerBottom=Math.max(headerTop+10,table.staff[0].y0-1);
-  const header=cropCanvas(canvas,0,headerTop,canvas.width,headerBottom,3);
-  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
-  const ocr=await worker.recognize(header);
-  return inferFirstDate(ocr.data.text||"");
-}
-
 function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
   const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
@@ -801,6 +752,166 @@ async function robustPrintedCellOCR(worker,raw){
   return choosePrintedPreferred(candidates);
 }
 
+
+function detectRosterTableRegions(canvas){
+  const W=canvas.width,H=canvas.height,ctx=canvas.getContext("2d");
+  const img=ctx.getImageData(0,0,W,H),d=img.data;
+  const x0=Math.floor(W*.03),x1=Math.ceil(W*.97);
+  const xStep=Math.max(1,Math.floor(W/700));
+  const active=new Array(H).fill(false);
+
+  for(let y=0;y<H;y++){
+    let dark=0,total=0;
+    for(let x=x0;x<x1;x+=xStep){
+      const i=(y*W+x)*4;
+      const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+      if(g<205)dark++;
+      total++;
+    }
+    active[y]=dark>Math.max(4,total*.012);
+  }
+
+  const runs=[];
+  let start=null,last=null;
+  const maxGap=Math.max(8,Math.round(H*.018));
+  for(let y=0;y<H;y++){
+    if(active[y]){
+      if(start===null)start=y;
+      last=y;
+    }else if(start!==null && y-last>maxGap){
+      runs.push([start,last]);
+      start=null;last=null;
+    }
+  }
+  if(start!==null)runs.push([start,last]);
+
+  const regions=[];
+  for(const [ry0,ry1] of runs){
+    const h=ry1-ry0;
+    if(h<H*.055)continue;
+
+    // Estimate horizontal table extent from dark pixels inside the band.
+    const colScore=new Array(W).fill(0);
+    const yStep=Math.max(1,Math.floor(h/160));
+    for(let y=ry0;y<=ry1;y+=yStep){
+      for(let x=0;x<W;x+=2){
+        const i=(y*W+x)*4;
+        const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+        if(g<195){colScore[x]++;if(x+1<W)colScore[x+1]++}
+      }
+    }
+    const maxScore=Math.max(...colScore,1);
+    const threshold=Math.max(2,maxScore*.08);
+    let left=0,right=W-1;
+    for(let x=0;x<W;x++){if(colScore[x]>=threshold){left=x;break}}
+    for(let x=W-1;x>=0;x--){if(colScore[x]>=threshold){right=x;break}}
+
+    const width=right-left;
+    if(width<W*.35)continue;
+    const px=Math.max(3,Math.round(width*.01));
+    const py=Math.max(3,Math.round(h*.035));
+    regions.push({
+      id:`table-${regions.length}`,
+      x0:Math.max(0,left-px),x1:Math.min(W,right+px),
+      y0:Math.max(0,ry0-py),y1:Math.min(H,ry1+py)
+    });
+  }
+
+  // Prefer substantial table-sized bands and keep vertical order.
+  return regions
+    .filter(r=>(r.y1-r.y0)>H*.07)
+    .sort((a,b)=>a.y0-b.y0);
+}
+
+async function detectNamesInTableRegion(canvas,region,worker){
+  const tw=region.x1-region.x0, th=region.y1-region.y0;
+  // Name column is the first wide column of the table; exclude the row-number/title margin.
+  const nx0=region.x0;
+  const nx1=region.x0+tw*.19;
+  const crop=rawCropCanvas(canvas,nx0,region.y0,nx1,region.y1,4);
+  const hi=preprocessCanvas(crop,1.5);
+
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(hi);
+  const scaleY=th/hi.height;
+  const grouped=groupNameWords(result.data.words||[]);
+  const candidates=[];
+
+  for(const g of grouped){
+    const localY=g.cy*scaleY;
+    // Skip the table title/header band.
+    if(localY<th*.10)continue;
+    const name=cleanStaffName(g.text);
+    if(!plausibleStaffName(name))continue;
+    if(/\b(?:WORKING|HOURS|SHIFT|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)\b/i.test(name))continue;
+    candidates.push({
+      name,
+      cy:region.y0+localY,
+      rawY0:region.y0+g.y0*scaleY,
+      rawY1:region.y0+g.y1*scaleY
+    });
+  }
+
+  const dedup=[];
+  for(const n of candidates){
+    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<4 || x.name.toLowerCase()===n.name.toLowerCase())){
+      dedup.push(n);
+    }
+  }
+  return dedup.sort((a,b)=>a.cy-b.cy);
+}
+
+function attachBoundsWithinTable(staff,region){
+  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
+  if(!rows.length)return [];
+  const typicalGap=rows.length>1
+    ? [...rows.slice(1).map((r,i)=>r.cy-rows[i].cy)].sort((a,b)=>a-b)[Math.floor((rows.length-1)/2)]
+    : Math.max(10,(region.y1-region.y0)*.045);
+
+  return rows.map((r,i)=>{
+    const prev=rows[i-1],next=rows[i+1];
+    const upper=prev?(prev.cy+r.cy)/2:r.cy-typicalGap/2;
+    const lower=next?(r.cy+next.cy)/2:r.cy+typicalGap/2;
+    return {...r,y0:Math.max(region.y0,upper+1),y1:Math.min(region.y1,lower-1)};
+  });
+}
+
+function detectGridInTableRegion(canvas,region,staff){
+  const W=canvas.width;
+  const tw=region.x1-region.x0;
+  const top=Math.max(region.y0,Math.min(...staff.map(r=>r.y0))-4);
+  const bottom=Math.min(region.y1,Math.max(...staff.map(r=>r.y1))+4);
+  const scores=verticalGridScore(canvas,top,bottom);
+
+  // Expected geometry is relative to THIS table, not the whole screenshot.
+  const expected=[];
+  expected.push(region.x0+tw*.005);
+  const dayLeft=region.x0+tw*.145;
+  const dayRight=region.x0+tw*.925;
+  const step=(dayRight-dayLeft)/14;
+  for(let i=0;i<=14;i++)expected.push(dayLeft+i*step);
+  expected.push(region.x0+tw*.995);
+
+  const radius=Math.max(4,tw*.018);
+  const lines=[];
+  for(let i=0;i<expected.length;i++){
+    const minX=i?lines[i-1]+2:region.x0;
+    const maxX=Math.min(region.x1,W-1);
+    let x=bestLineNear(scores,expected[i],radius,minX,maxX);
+    if(i&&x<=lines[i-1]+1)x=Math.max(lines[i-1]+2,Math.round(expected[i]));
+    lines.push(x);
+  }
+  return {dayBounds:lines.slice(1,16),workingBounds:[lines[15],lines[16]],lines};
+}
+
+async function inferFirstDateForRegion(canvas,region,worker){
+  const h=region.y1-region.y0;
+  const header=rawCropCanvas(canvas,region.x0,region.y0,region.x1,Math.min(region.y1,region.y0+h*.22),3);
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(header);
+  return inferFirstDate(result.data.text||"");
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -823,72 +934,67 @@ function App(){
   useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
 
   const scanFullTable=useCallback(async(file)=>{
-    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Finding every roster table…");
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
+    setStatus("Detecting roster tables…");
     let worker;
     try{
       const canvas=await imageToCanvas(file);
       const url=URL.createObjectURL(file);
       setPreview(url);
+      worker=await createWorker(p=>setProgress(Math.round(p*25)));
 
-      worker=await createWorker(p=>setProgress(Math.round(p*40)));
-      const page=preprocessCanvas(canvas,2.5);
-      await worker.setParameters({tessedit_pageseg_mode:"11",preserve_interword_spaces:"1"});
-      const fullOCR=await worker.recognize(page);
-
-      // Convert OCR coordinates back to the original uploaded image.
-      const sx=canvas.width/page.width, sy=canvas.height/page.height;
-      const scaledWords=(fullOCR.data.words||[]).map(w=>({
-        ...w,
-        bbox:{
-          x0:(w.bbox?.x0||0)*sx,y0:(w.bbox?.y0||0)*sy,
-          x1:(w.bbox?.x1||0)*sx,y1:(w.bbox?.y1||0)*sy
-        }
-      }));
-      const normalizedResult={data:{words:scaledWords}};
-      let tables=detectAllRosterTablesFromOCR(normalizedResult,canvas);
-
-      if(!tables.length){
-        // Fallback for difficult photos: read the left column, then group the names
-        // into separate physical table blocks.
-        const fallbackRaw=await detectNamesFromLeftColumn(canvas,worker);
-        const groups=groupStaffIntoTables(fallbackRaw,canvas.height);
-        tables=groups.map(g=>{
-          const staff=clipRowBoundsToTable(g.staff,g.top,g.bottom);
-          return {...g,staff,grid:detectRosterGridBounds(canvas,staff)};
-        });
-      }
-      if(!tables.length)throw new Error("No roster tables with employee rows were detected. Make sure the complete left-side employee column and table grid are visible.");
-
-      setStatus(`Reading dates from ${tables.length} roster ${tables.length===1?"table":"tables"}…`);
-      setProgress(48);
-      for(let i=0;i<tables.length;i++){
-        tables[i].firstDate=await inferTableFirstDate(worker,canvas,tables[i]);
-        setProgress(48+Math.round((i+1)/tables.length*15));
+      let regions=detectRosterTableRegions(canvas);
+      if(!regions.length){
+        // Safe fallback: treat the visible content as one table.
+        regions=[{id:"table-0",x0:0,x1:canvas.width,y0:0,y1:canvas.height}];
       }
 
-      // Create one combined employee directory, while retaining the exact table/row.
-      const staff=[];
-      for(const t of tables){
-        for(let r=0;r<t.staff.length;r++){
-          const row=t.staff[r];
-          const name=cleanStaffName(row.name);
-          if(!plausibleStaffName(name))continue;
-          // Reject short OCR fragments/headings. Staff rows must have been detected
-          // from an actual table row containing roster shift values.
-          if(/^EC\s*TT$/i.test(name)||/^(AIRPORT|ROSTER|WORKING|HOURS|DATE|SHIFT)\b/i.test(name))continue;
-          const id=`${t.id}-staff-${r}`;
-          const entry={...row,id,name,tableId:t.id,rowIndex:r};
-          staff.push(entry);
-          t.staff[r]=entry;
+      const allStaff=[];
+      const tables=[];
+      for(let ti=0;ti<regions.length;ti++){
+        const region=regions[ti];
+        setStatus(`Reading employee names — table ${ti+1} of ${regions.length}`);
+        setProgress(25+Math.round((ti/regions.length)*45));
+
+        const names=await detectNamesInTableRegion(canvas,region,worker);
+        if(!names.length)continue;
+        const staff=attachBoundsWithinTable(names,region);
+        const firstDate=await inferFirstDateForRegion(canvas,region,worker);
+        const grid=detectGridInTableRegion(canvas,region,staff);
+
+        const tableInfo={
+          id:region.id,index:tables.length,region,firstDate,
+          bounds:grid.dayBounds,workingBounds:grid.workingBounds,gridLines:grid.lines
+        };
+        tables.push(tableInfo);
+
+        for(const r of staff){
+          allStaff.push({
+            ...r,
+            id:`staff-${allStaff.length}`,
+            tableId:tableInfo.id,
+            tableIndex:tableInfo.index,
+            firstDate,
+            bounds:tableInfo.bounds,
+            workingBounds:tableInfo.workingBounds
+          });
         }
       }
-      if(!staff.length)throw new Error("Roster tables were found, but no valid employee names were read from the left column.");
 
-      const source={fileName:file.name,canvas,tables,staff};
+      if(!allStaff.length){
+        throw new Error("No employee rows were detected. Make sure the full roster tables and their left-side name columns are visible.");
+      }
+
+      // Sort dropdown by employee name while preserving table/row identity.
+      allStaff.sort((a,b)=>a.name.localeCompare(b.name)||a.cy-b.cy);
+      setStatus(`${allStaff.length} staff across ${tables.length} roster ${tables.length===1?"table":"tables"}`);
+      setProgress(75);
+
+      const source={fileName:file.name,canvas,staff:allStaff,tables};
       setTable(source);
-      const preferred=staff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||staff[0];
+
+      const preferred=allStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||allStaff[0];
       setSelectedStaff(preferred.id);
-      setProgress(68);
       await readStaffRow(source,preferred.id,worker);
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
@@ -903,45 +1009,53 @@ function App(){
     if(!source)return;
     const row=source.staff.find(r=>r.id===staffId);
     if(!row)return;
-    const rosterTable=source.tables.find(t=>t.id===row.tableId);
-    if(!rosterTable)return;
+
     let worker=existingWorker,ownWorker=false;
     try{
       if(!worker){
-        setProcessing(true);setStatus(`Reading ${row.name} from table ${rosterTable.index}…`);setProgress(0);
+        setProcessing(true);setStatus(`Reading ${row.name}…`);setProgress(0);
         worker=await createWorker();ownWorker=true;
       }
-      const bounds=rosterTable.grid.dayBounds;
-      const thumbs=[];
-      const rowSource={canvas:source.canvas};
+
+      const bounds=row.bounds;
+      const rowSource={
+        canvas:source.canvas,
+        fileName:source.fileName,
+        bounds,
+        workingBounds:row.workingBounds,
+        firstDate:row.firstDate
+      };
+
       let cells=await recognizeWholeSelectedRow(worker,rowSource,row,bounds);
-      if(ownWorker)setProgress(42);
+      const thumbs=[];
 
       for(let i=0;i<14;i++){
         const x0=bounds[i],x1=bounds[i+1];
-        const thumbCrop=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
-        thumbs.push(dataURL(thumbCrop));
-        if(!validateShift(cells[i]).ok){
+        const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
+        thumbs.push(dataURL(thumb));
+
+        const info=validateShift(cells[i]);
+        if(!info.ok || (!CODES.has(info.value) && ((info.hours||0)>12 || (info.hours||0)<2))){
           const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-          let fallback=await robustPrintedCellOCR(worker,raw);
-          if(!validateShift(fallback).ok)fallback=await recognizeExactCellFallback(worker,raw);
-          cells[i]=validateShift(fallback).ok?fallback:"";
+          const exact=await robustPrintedCellOCR(worker,raw);
+          cells[i]=validateShift(exact).ok?exact:"";
         }
-        if(ownWorker)setProgress(42+Math.round((i+1)/14*50));
+        if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
 
-      const wh0=rosterTable.grid.workingBounds?.[0] ?? source.canvas.width*.915;
-      const wh1=rosterTable.grid.workingBounds?.[1] ?? source.canvas.width*.992;
-      const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,8);
-      const whText=await recognize(worker,whCrop,"7","0123456789.");
-      const whMatch=whText.match(/\d+(?:\.\d+)?/);
-      const printedHours=whMatch?Number(whMatch[0]):null;
-      const calculatedHours=cells.reduce((sum,v)=>sum+hoursOf(v),0);
+      const wh0=row.workingBounds?.[0],wh1=row.workingBounds?.[1];
+      let workingHours=null;
+      if(Number.isFinite(wh0)&&Number.isFinite(wh1)&&wh1>wh0){
+        const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,8);
+        const whText=await recognize(worker,whCrop,"7","0123456789.");
+        const whMatch=whText.match(/\d+(?:\.\d+)?/);
+        workingHours=whMatch?Number(whMatch[0]):null;
+      }
 
       setReview({
-        fileName:source.fileName,staffId:row.id,name:row.name,tableId:row.tableId,tableIndex:rosterTable.index,
-        firstDate:rosterTable.firstDate,cells,thumbs,printedHours,workingHours:calculatedHours,
-        rowTopPct:row.y0/source.canvas.height*100,rowHeightPct:(row.y1-row.y0)/source.canvas.height*100
+        fileName:source.fileName,staffId:row.id,name:row.name,
+        firstDate:row.firstDate,cells,thumbs,workingHours,
+        tableIndex:row.tableIndex
       });
     }finally{
       if(ownWorker&&worker)try{await worker.terminate()}catch{}
@@ -977,10 +1091,7 @@ function App(){
     setError("Use a roster screenshot, CSV, XLS or XLSX file.");
   };
 
-  const updateCell=(i,v)=>setReview(r=>{
-    const cells=r.cells.map((x,j)=>j===i?v:x);
-    return {...r,cells,workingHours:cells.reduce((sum,x)=>sum+hoursOf(x),0)};
-  });
+  const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
   const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
   const importReview=()=>{
     if(!review)return;
@@ -1037,7 +1148,7 @@ function App(){
     {tab==="more"&&<main>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads all roster tables, employee names and dates</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
@@ -1049,33 +1160,31 @@ function App(){
 
     {processing&&<div className="modalWrap"><div className="modal compact">
       <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading the selected employee row and Working Hours.":"Finding all roster tables and employee rows first."}</small>
+      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>All roster tables are indexed. Employee names come only from the left column of detected staff rows; select a name to read that exact row.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. VV Roster reads the whole selected row first, then retries only uncertain individual cells.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/>{review&&<div className="selectedRosterBand" style={{top:`${review.rowTopPct}%`,height:`${review.rowHeightPct}%`}}><span>{review.name}</span></div>}<div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables.length} {table.tables.length===1?"table":"tables"}</div></div>
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
         <div className="autoControls">
           <label>Employee
             <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
-              {table.tables.map(t=><optgroup key={t.id} label={`Roster table ${t.index} • ${fmt(t.firstDate,{day:"numeric",month:"short",year:"numeric"})}`}>
-                {table.staff.filter(s=>s.tableId===t.id).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-              </optgroup>)}
+              {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
           </label>
           {review&&<>
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            <div className="workingHoursCard"><Clock3 size={17}/><span><small>CALCULATED WORKING HOURS</small><b>{review.workingHours.toFixed(2)}</b></span></div>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
           </>}
         </div>
       </div>
 
       {review&&<>
-        <div className="selectedRowTitle"><b>{review.name}</b><span>Roster table {review.tableIndex} • 14-day row</span></div>
+        <div className="selectedRowTitle"><b>{review.name}</b><span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span></div>
         <div className="preciseReview">
           {review.cells.map((cell,i)=>{
             const info=validateShift(cell);

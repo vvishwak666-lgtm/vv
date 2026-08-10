@@ -23,5 +23,5 @@
 .preciseRow.bad .editCol input::placeholder{color:#c98080}
 
 .preciseRow.bad .cellThumb{box-shadow:0 0 0 2px rgba(255,82,82,.55) inset}
-.selectedRosterBand{position:absolute;left:0;right:0;border:2px solid #ffd24d;background:rgba(255,202,55,.12);box-shadow:0 0 12px rgba(255,202,55,.35) inset;pointer-events:none;z-index:4}
-.selectedRosterBand span{position:absolute;left:5px;top:50%;transform:translateY(-50%);background:#ffd24d;color:#111;border-radius:5px;padding:2px 6px;font-size:8px;font-weight:800;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.detectedBadge{max-width:calc(100% - 20px)}
