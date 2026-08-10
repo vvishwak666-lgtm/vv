@@ -1420,8 +1420,15 @@ function App(){
         const literal=cleanReplicatedCellText(review.cells[i]);
         const thumb=review.thumbs?.[i]||"";
 
-        // Calculations come from the exact cropped source cell itself.
-        const parsed=await readCalculationValueFromSourceCell(worker,thumb);
+        // Prefer the already-read cell value when it contains a valid roster time/code.
+        // This prevents a second OCR pass from turning a correct value such as
+        // 1630-2030 into 0103-0203. Only fall back to source-cell OCR when the
+        // replicated text does not contain a usable roster value.
+        const literalParsed=parseRosterSourceText(literal);
+        const literalIsUsable=!!(literalParsed.time || literalParsed.code);
+        const parsed=literalIsUsable
+          ? literalParsed
+          : await readCalculationValueFromSourceCell(worker,thumb);
 
         added.push({
           id:`img-${Date.now()}-${i}`,
