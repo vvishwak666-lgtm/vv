@@ -1135,6 +1135,97 @@ function parseRosterSourceText(text){
   return {display:raw,time:"",code:"",hours:0};
 }
 
+
+async function canvasFromDataURL(url){
+  const img=await new Promise((resolve,reject)=>{
+    const el=new Image();
+    el.onload=()=>resolve(el);
+    el.onerror=reject;
+    el.src=url;
+  });
+  const c=document.createElement("canvas");
+  c.width=img.naturalWidth||img.width;
+  c.height=img.naturalHeight||img.height;
+  c.getContext("2d").drawImage(img,0,0);
+  return c;
+}
+
+async function readCalculationValueFromSourceCell(worker,dataUrl){
+  if(!dataUrl) return {display:"",time:"",code:"",hours:0};
+
+  const raw=await canvasFromDataURL(dataUrl);
+
+  // First detect roster codes from the exact cropped source cell.
+  const codeCanvas=printedCellVariant(raw,188);
+  const codeText=String(await recognize(worker,codeCanvas,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:")||"")
+    .toUpperCase()
+    .replace(/\s+/g," ")
+    .trim();
+
+  if(/\bRD[O0]\b/.test(codeText)){
+    return {display:"RDO",time:"",code:"RDO",hours:0};
+  }
+
+  const hasTRNG=/\bTRN[G6]\b/.test(codeText);
+
+  // Numeric-only passes on the exact source cell.
+  const candidates=[];
+  for(const th of [160,175,190,205,220]){
+    const c=printedCellVariant(raw,th);
+    for(const psm of ["7","8","13"]){
+      const txt=String(await recognize(worker,c,psm,"0123456789-:")||"");
+      const normalized=txt.replace(/[^0-9:-]/g,"").replace(/:/g,"");
+
+      const direct=normalized.match(/(\d{3,4})-(\d{3,4})/);
+      if(direct){
+        candidates.push([direct[1].padStart(4,"0"),direct[2].padStart(4,"0")]);
+      }
+
+      const digits=normalized.replace(/\D/g,"");
+      if(digits.length===8){
+        candidates.push([digits.slice(0,4),digits.slice(4)]);
+      }
+    }
+  }
+
+  // Validate and vote. Exact roster times normally use sensible clock values
+  // and shift lengths up to 14h, including overnight.
+  const scored=[];
+  for(const [a,b] of candidates){
+    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+    if(sh>23||eh>23||sm>59||em>59) continue;
+
+    let mins=eh*60+em-(sh*60+sm);
+    if(mins<0) mins+=1440;
+    if(mins<=0||mins>14*60) continue;
+
+    let score=100;
+    if([0,30].includes(sm)) score+=8;
+    if([0,30].includes(em)) score+=8;
+    if(mins>=180&&mins<=600) score+=12;
+
+    const key=`${a}-${b}`;
+    const repeats=candidates.filter(x=>`${x[0]}-${x[1]}`===key).length;
+    score+=repeats*20;
+
+    scored.push({a,b,mins,score});
+  }
+
+  scored.sort((x,y)=>y.score-x.score);
+  if(scored.length){
+    const best=scored[0];
+    return {
+      display:`${best.a}-${best.b}${hasTRNG?" TRNG":""}`,
+      time:`${best.a}-${best.b}`,
+      code:hasTRNG?"TRNG":"",
+      hours:best.mins/60
+    };
+  }
+
+  // Fall back only if source-cell OCR genuinely cannot recover a time/code.
+  return parseRosterSourceText(codeText);
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1314,59 +1405,69 @@ function App(){
 
   const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
   const allValid=!!review;
-  const importReview=()=>{
+  const importReview=async()=>{
     if(!review)return;
 
-    const added=review.cells.map((raw,i)=>{
-      const literal=cleanReplicatedCellText(raw);
-      const parsed=parseRosterSourceText(literal);
-      const thumb=review.thumbs?.[i]||"";
+    setProcessing(true);
+    setStatus("Reading exact roster cells for calculations…");
+    let worker;
 
-      return {
-        id:`img-${Date.now()}-${i}`,
-        name:review.name,
-        date:addDays(review.firstDate,i),
+    try{
+      worker=await createWorker(p=>setProgress(Math.round(p*100)));
 
-        // Single source of truth for calculations and upcoming shift.
-        time:parsed.time,
-        code:parsed.code,
-        hours:parsed.hours,
-        display:parsed.display,
+      const added=[];
+      for(let i=0;i<review.cells.length;i++){
+        const literal=cleanReplicatedCellText(review.cells[i]);
+        const thumb=review.thumbs?.[i]||"";
 
-        // Preserve the exact visible source cell for review/My Roster/Calendar.
-        rawCellText:literal,
-        sourceCell:thumb,
-        source:review.fileName,
-        tableIndex:review.tableIndex
-      };
-    });
+        // Calculations come from the exact cropped source cell itself.
+        const parsed=await readCalculationValueFromSourceCell(worker,thumb);
 
-    setEntries(old=>[
-      ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
-      ...added
-    ]);
+        added.push({
+          id:`img-${Date.now()}-${i}`,
+          name:review.name,
+          date:addDays(review.firstDate,i),
+          time:parsed.time,
+          code:parsed.code,
+          hours:parsed.hours,
+          display:parsed.display || literal,
+          rawCellText:literal,
+          sourceCell:thumb,
+          source:review.fileName,
+          tableIndex:review.tableIndex
+        });
+      }
 
-    setSelectedDate(review.firstDate);
-    setCalendarMonth(review.firstDate.slice(0,7)+"-01");
-    setReview(null);setTable(null);setPreview(null);setTab("dashboard");
+      setEntries(old=>[
+        ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
+        ...added
+      ]);
+
+      setSelectedDate(review.firstDate);
+      setCalendarMonth(review.firstDate.slice(0,7)+"-01");
+      setReview(null);setTable(null);setPreview(null);setTab("dashboard");
+    }finally{
+      if(worker)try{await worker.terminate()}catch{}
+      setProcessing(false);setProgress(0);setStatus("");
+    }
   };
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
   const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
-  const weekStart=mondayOf(todayISO());
+  const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
   const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
-  const upcoming=mine.find(e=>e.date>=todayISO() && !!e.time);
+  const upcoming=mine.find(e=>!!e.time && e.date>=todayISO()) || mine.find(e=>!!e.time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
-      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)||"See roster cell"}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)}/></section>
     </main>}
