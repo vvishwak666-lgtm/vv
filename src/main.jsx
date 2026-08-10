@@ -1391,7 +1391,6 @@ function App(){
             <Check size={16}/> Import {review.name}
           </button>
         </div>
-        </div>
       </>}
     </div></div>}
 
