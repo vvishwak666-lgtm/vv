@@ -268,39 +268,7 @@ function plausibleStaffName(s){
   const letters=(t.match(/[A-Za-z]/g)||[]).length;
   return letters>=4 && /[A-Za-z]{2,}/.test(t);
 }
-function keepDenseStaffBand(candidates,canvasHeight){
-  const rows=[...candidates].sort((a,b)=>a.cy-b.cy);
-  if(rows.length<4)return rows;
-
-  // Roster employee rows form a long, evenly-spaced vertical sequence. Headers/titles
-  // are isolated above the table, so select the longest dense sequence instead of
-  // accepting every OCR line from the left side of the image.
-  const gaps=[];
-  for(let i=1;i<rows.length;i++){
-    const g=rows[i].cy-rows[i-1].cy;
-    if(g>canvasHeight*.008 && g<canvasHeight*.08)gaps.push(g);
-  }
-  if(!gaps.length)return rows;
-  gaps.sort((a,b)=>a-b);
-  const median=gaps[Math.floor(gaps.length/2)];
-  const maxGap=Math.max(median*1.85,canvasHeight*.022);
-
-  const groups=[];
-  let current=[rows[0]];
-  for(let i=1;i<rows.length;i++){
-    const gap=rows[i].cy-rows[i-1].cy;
-    if(gap<=maxGap)current.push(rows[i]);
-    else{groups.push(current);current=[rows[i]]}
-  }
-  groups.push(current);
-  groups.sort((a,b)=>b.length-a.length);
-  const best=groups[0]||rows;
-  return best.length>=4?best:rows;
-}
-
 async function detectNamesFromLeftColumn(canvas,worker,onProgress){
-  // Restrict OCR to the name-column side, but use geometry afterwards to reject
-  // roster titles such as "Airport AFLL BAG, 24 08, 2026".
   const crop=cropCanvas(canvas,0,0,canvas.width*.245,canvas.height,1);
   const hi=preprocessCanvas(crop,4);
   await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
@@ -313,14 +281,13 @@ async function detectNamesFromLeftColumn(canvas,worker,onProgress){
     const name=cleanStaffName(g.text);
     if(!plausibleStaffName(name)) continue;
     if(/\d{1,2}\s+(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)/i.test(name)) continue;
-    if(/(?:A.?RPORT|AFLL|BAG|ROSTER|PERIOD|WORKING\s*HOURS)/i.test(name)) continue;
     names.push({id:`staff-${names.length}`,name,cy:g.cy*scaleY,y0:g.y0*scaleY,y1:g.y1*scaleY});
   }
   const dedup=[];
   for(const n of names){
     if(!dedup.some(x=>Math.abs(x.cy-n.cy)<5 || x.name.toLowerCase()===n.name.toLowerCase())) dedup.push(n);
   }
-  return keepDenseStaffBand(dedup,canvas.height);
+  return dedup;
 }
 function attachRowBounds(staff,canvasHeight){
   const rows=[...staff].sort((a,b)=>a.cy-b.cy);
@@ -400,6 +367,55 @@ function detectRosterGridBounds(canvas,staff){
   return {lines,dayBounds,workingBounds,top,bottom};
 }
 
+
+
+function groupStaffIntoTables(staff,canvasHeight){
+  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
+  if(!rows.length)return [];
+  const gaps=[];
+  for(let i=1;i<rows.length;i++)gaps.push(rows[i].cy-rows[i-1].cy);
+  const sorted=[...gaps].sort((a,b)=>a-b);
+  const med=sorted.length?sorted[Math.floor(sorted.length/2)]:18;
+  const splitGap=Math.max(med*2.4,36);
+  const groups=[];
+  let current=[];
+  for(let i=0;i<rows.length;i++){
+    if(current.length && rows[i].cy-current[current.length-1].cy>splitGap){groups.push(current);current=[]}
+    current.push(rows[i]);
+  }
+  if(current.length)groups.push(current);
+  return groups.filter(g=>g.length>=2).map((g,i)=>{
+    const top=Math.max(0,g[0].cy-med*2.2);
+    const bottom=Math.min(canvasHeight,g[g.length-1].cy+med*2.2);
+    return {id:`table-${i}`,index:i+1,top,bottom,staff:g};
+  });
+}
+
+function clipRowBoundsToTable(staff,top,bottom){
+  const bounded=attachRowBounds(staff,bottom);
+  return bounded.map(r=>({...r,y0:Math.max(top,r.y0),y1:Math.min(bottom,r.y1)}));
+}
+
+function detectAllRosterTablesFromOCR(result,canvas){
+  const rows=clusterWordsToRows(result.data.words||[]);
+  const rawStaff=detectStaffRows(rows,canvas.width);
+  const groups=groupStaffIntoTables(rawStaff,canvas.height);
+  return groups.map(g=>{
+    const staff=clipRowBoundsToTable(g.staff,g.top,g.bottom);
+    const grid=detectRosterGridBounds(canvas,staff);
+    return {...g,staff,grid};
+  });
+}
+
+async function inferTableFirstDate(worker,canvas,table){
+  const rowSpacing=table.staff.length>1?table.staff[1].cy-table.staff[0].cy:22;
+  const headerTop=Math.max(0,table.top-rowSpacing*2.8);
+  const headerBottom=Math.max(headerTop+10,table.staff[0].y0-1);
+  const header=cropCanvas(canvas,0,headerTop,canvas.width,headerBottom,3);
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const ocr=await worker.recognize(header);
+  return inferFirstDate(ocr.data.text||"");
+}
 
 function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
@@ -807,7 +823,7 @@ function App(){
   useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
 
   const scanFullTable=useCallback(async(file)=>{
-    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Reading staff name column…");
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);setStatus("Finding every roster table…");
     let worker;
     try{
       const canvas=await imageToCanvas(file);
@@ -815,46 +831,65 @@ function App(){
       setPreview(url);
 
       worker=await createWorker(p=>setProgress(Math.round(p*40)));
-      const staffRaw=await detectNamesFromLeftColumn(canvas,worker,p=>setProgress(p));
-      const staff=attachRowBounds(staffRaw,canvas.height);
+      const page=preprocessCanvas(canvas,2.5);
+      await worker.setParameters({tessedit_pageseg_mode:"11",preserve_interword_spaces:"1"});
+      const fullOCR=await worker.recognize(page);
 
-      if(!staff.length){
-        throw new Error("No staff names were detected in the name column. Use a screenshot with the full left-side name column visible.");
+      // Convert OCR coordinates back to the original uploaded image.
+      const sx=canvas.width/page.width, sy=canvas.height/page.height;
+      const scaledWords=(fullOCR.data.words||[]).map(w=>({
+        ...w,
+        bbox:{
+          x0:(w.bbox?.x0||0)*sx,y0:(w.bbox?.y0||0)*sy,
+          x1:(w.bbox?.x1||0)*sx,y1:(w.bbox?.y1||0)*sy
+        }
+      }));
+      const normalizedResult={data:{words:scaledWords}};
+      let tables=detectAllRosterTablesFromOCR(normalizedResult,canvas);
+
+      if(!tables.length){
+        // Fallback for difficult photos: read the left column, then group the names
+        // into separate physical table blocks.
+        const fallbackRaw=await detectNamesFromLeftColumn(canvas,worker);
+        const groups=groupStaffIntoTables(fallbackRaw,canvas.height);
+        tables=groups.map(g=>{
+          const staff=clipRowBoundsToTable(g.staff,g.top,g.bottom);
+          return {...g,staff,grid:detectRosterGridBounds(canvas,staff)};
+        });
+      }
+      if(!tables.length)throw new Error("No roster tables with employee rows were detected. Make sure the complete left-side employee column and table grid are visible.");
+
+      setStatus(`Reading dates from ${tables.length} roster ${tables.length===1?"table":"tables"}…`);
+      setProgress(48);
+      for(let i=0;i<tables.length;i++){
+        tables[i].firstDate=await inferTableFirstDate(worker,canvas,tables[i]);
+        setProgress(48+Math.round((i+1)/tables.length*15));
       }
 
-      setStatus(`${staff.length} staff names detected`);
-      setProgress(55);
+      // Create one combined employee directory, while retaining the exact table/row.
+      const staff=[];
+      for(const t of tables){
+        for(let r=0;r<t.staff.length;r++){
+          const row=t.staff[r];
+          const name=cleanStaffName(row.name);
+          if(!plausibleStaffName(name))continue;
+          // Reject short OCR fragments/headings. Staff rows must have been detected
+          // from an actual table row containing roster shift values.
+          if(/^EC\s*TT$/i.test(name)||/^(AIRPORT|ROSTER|WORKING|HOURS|DATE|SHIFT)\b/i.test(name))continue;
+          const id=`${t.id}-staff-${r}`;
+          const entry={...row,id,name,tableId:t.id,rowIndex:r};
+          staff.push(entry);
+          t.staff[r]=entry;
+        }
+      }
+      if(!staff.length)throw new Error("Roster tables were found, but no valid employee names were read from the left column.");
 
-      const header=cropCanvas(canvas,0,0,canvas.width,canvas.height*.25,2);
-      await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
-      const headerOCR=await worker.recognize(header);
-      const firstDate=inferFirstDate(headerOCR.data.text||"");
-
-      const cleanStaff=staff.map((r,i)=>({...r,id:`staff-${i}`}));
-      const grid=detectRosterGridBounds(canvas,cleanStaff);
-      const bounds=grid.dayBounds;
-
-      setTable({
-        fileName:file.name,
-        canvas,
-        staff:cleanStaff,
-        bounds,
-        workingBounds:grid.workingBounds,
-        gridLines:grid.lines,
-        firstDate
-      });
-      const preferred=cleanStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||cleanStaff[0];
+      const source={fileName:file.name,canvas,tables,staff};
+      setTable(source);
+      const preferred=staff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||staff[0];
       setSelectedStaff(preferred.id);
-      setProgress(65);
-      await readStaffRow({
-        fileName:file.name,
-        canvas,
-        staff:cleanStaff,
-        bounds,
-        workingBounds:grid.workingBounds,
-        gridLines:grid.lines,
-        firstDate
-      },preferred.id,worker);
+      setProgress(68);
+      await readStaffRow(source,preferred.id,worker);
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -868,53 +903,45 @@ function App(){
     if(!source)return;
     const row=source.staff.find(r=>r.id===staffId);
     if(!row)return;
+    const rosterTable=source.tables.find(t=>t.id===row.tableId);
+    if(!rosterTable)return;
     let worker=existingWorker,ownWorker=false;
     try{
       if(!worker){
-        setProcessing(true);setStatus(`Reading ${row.name}…`);setProgress(0);
+        setProcessing(true);setStatus(`Reading ${row.name} from table ${rosterTable.index}…`);setProgress(0);
         worker=await createWorker();ownWorker=true;
       }
-      const bounds=source.bounds;
+      const bounds=rosterTable.grid.dayBounds;
       const thumbs=[];
-
-      // First OCR the selected employee's complete 14-day row. This gives Tesseract
-      // more context than isolated tiny cells, while the detected grid maps each
-      // recognized word back into the correct day column.
-      let cells=await recognizeWholeSelectedRow(worker,source,row,bounds);
-      if(ownWorker)setProgress(45);
+      const rowSource={canvas:source.canvas};
+      let cells=await recognizeWholeSelectedRow(worker,rowSource,row,bounds);
+      if(ownWorker)setProgress(42);
 
       for(let i=0;i<14;i++){
         const x0=bounds[i],x1=bounds[i+1];
         const thumbCrop=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumbCrop));
-
-        // Only retry cells the row-level OCR did not read confidently.
         if(!validateShift(cells[i]).ok){
           const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-          // Printed-roster-specific OCR gets first retry priority. Only if that fails
-          // do we use the generic exact-cell fallback.
-          const printed=await robustPrintedCellOCR(worker,raw);
-          if(validateShift(printed).ok) cells[i]=printed;
-          else{
-            const fallback=await recognizeExactCellFallback(worker,raw);
-            cells[i]=validateShift(fallback).ok?fallback:"";
-          }
+          let fallback=await robustPrintedCellOCR(worker,raw);
+          if(!validateShift(fallback).ok)fallback=await recognizeExactCellFallback(worker,raw);
+          cells[i]=validateShift(fallback).ok?fallback:"";
         }
-        if(ownWorker)setProgress(45+Math.round((i+1)/14*45));
+        if(ownWorker)setProgress(42+Math.round((i+1)/14*50));
       }
 
-      const wh0=source.workingBounds?.[0] ?? source.canvas.width*.915;
-      const wh1=source.workingBounds?.[1] ?? source.canvas.width*.992;
+      const wh0=rosterTable.grid.workingBounds?.[0] ?? source.canvas.width*.915;
+      const wh1=rosterTable.grid.workingBounds?.[1] ?? source.canvas.width*.992;
       const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,8);
       const whText=await recognize(worker,whCrop,"7","0123456789.");
       const whMatch=whText.match(/\d+(?:\.\d+)?/);
-      const workingHours=whMatch?Number(whMatch[0]):null;
-
+      const printedHours=whMatch?Number(whMatch[0]):null;
       const calculatedHours=cells.reduce((sum,v)=>sum+hoursOf(v),0);
-      const unresolved=cells.filter(v=>!validateShift(v).ok).length;
+
       setReview({
-        fileName:source.fileName,staffId:row.id,name:row.name,
-        firstDate:source.firstDate,cells,thumbs,workingHours,calculatedHours,unresolved
+        fileName:source.fileName,staffId:row.id,name:row.name,tableId:row.tableId,tableIndex:rosterTable.index,
+        firstDate:rosterTable.firstDate,cells,thumbs,printedHours,workingHours:calculatedHours,
+        rowTopPct:row.y0/source.canvas.height*100,rowHeightPct:(row.y1-row.y0)/source.canvas.height*100
       });
     }finally{
       if(ownWorker&&worker)try{await worker.terminate()}catch{}
@@ -952,7 +979,7 @@ function App(){
 
   const updateCell=(i,v)=>setReview(r=>{
     const cells=r.cells.map((x,j)=>j===i?v:x);
-    return {...r,cells,calculatedHours:cells.reduce((sum,x)=>sum+hoursOf(x),0),unresolved:cells.filter(x=>!validateShift(x).ok).length};
+    return {...r,cells,workingHours:cells.reduce((sum,x)=>sum+hoursOf(x),0)};
   });
   const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
   const importReview=()=>{
@@ -1010,7 +1037,7 @@ function App(){
     {tab==="more"&&<main>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads all roster tables, employee names and dates</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
@@ -1022,35 +1049,33 @@ function App(){
 
     {processing&&<div className="modalWrap"><div className="modal compact">
       <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
+      <small>{table?"Reading the selected employee row and Working Hours.":"Finding all roster tables and employee rows first."}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. VV Roster reads the whole selected row first, then retries only uncertain individual cells.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>All roster tables are indexed. Employee names come only from the left column of detected staff rows; select a name to read that exact row.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><div className="previewImageWrap"><img src={preview}/>{(()=>{
-          const active=table.staff.find(s=>s.id===selectedStaff);
-          if(!active)return null;
-          return <div className="lockedRowOverlay" style={{top:`${(active.y0/table.canvas.height)*100}%`,height:`${((active.y1-active.y0)/table.canvas.height)*100}%`}}><span>{active.name}</span></div>;
-        })()}</div><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
+        <div className="autoPreview"><img src={preview}/>{review&&<div className="selectedRosterBand" style={{top:`${review.rowTopPct}%`,height:`${review.rowHeightPct}%`}}><span>{review.name}</span></div>}<div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables.length} {table.tables.length===1?"table":"tables"}</div></div>
         <div className="autoControls">
           <label>Employee
             <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
-              {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              {table.tables.map(t=><optgroup key={t.id} label={`Roster table ${t.index} • ${fmt(t.firstDate,{day:"numeric",month:"short",year:"numeric"})}`}>
+                {table.staff.filter(s=>s.tableId===t.id).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </optgroup>)}
             </select>
           </label>
           {review&&<>
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            <div className="workingHoursCard"><Clock3 size={17}/><span><small>CALCULATED WORKING HOURS</small><b>{review.unresolved===0?review.calculatedHours.toFixed(2):`${review.calculatedHours.toFixed(2)}+`}</b><em>{review.unresolved===0?"From selected row":"Complete highlighted cells for final total"}</em></span></div>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>CALCULATED WORKING HOURS</small><b>{review.workingHours.toFixed(2)}</b></span></div>
           </>}
         </div>
       </div>
 
       {review&&<>
-        <div className="selectedRowTitle"><b>{review.name}</b><span>14-day row</span></div>
+        <div className="selectedRowTitle"><b>{review.name}</b><span>Roster table {review.tableIndex} • 14-day row</span></div>
         <div className="preciseReview">
           {review.cells.map((cell,i)=>{
             const info=validateShift(cell);
