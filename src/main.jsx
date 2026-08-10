@@ -20,40 +20,92 @@ function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
 
 function normalizeShift(value){
-  let t=String(value||"").toUpperCase().trim().replace(/[–—]/g,"-").replace(/\s+/g,"");
-  const aliases={RD0:"RDO",TRN6:"TRNG",ALLV:"ALV",ALIV:"ALV"};
-  if(aliases[t]) t=aliases[t];
-  if(CODES.has(t)) return t;
-  if(/[0-9]/.test(t)) t=t.replace(/O/g,"0").replace(/[IL]/g,"1");
-  if(/^\d{8}$/.test(t)) t=`${t.slice(0,4)}-${t.slice(4)}`;
-  const m=t.match(/^(\d{3,4})-(\d{3,4})$/);
-  if(m) t=`${m[1].padStart(4,"0")}-${m[2].padStart(4,"0")}`;
+  let t=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  // Common OCR aliases.
+  t=t.replace(/\bRD0\b/g,"RDO").replace(/\bTRN6\b/g,"TRNG")
+     .replace(/\bALLV\b/g,"ALV").replace(/\bALIV\b/g,"ALV");
+
+  // RDO is always shown simply as RDO.
+  if(/\bRDO\b/.test(t)) return "RDO";
+
+  // Preserve TRNG when it belongs to a timed shift.
+  const hasTRNG=/\bTRNG\b/.test(t);
+
+  // Other standalone roster codes.
+  const standalone=["ALTH","HACC","ALV","AL","OFF","SICK","SL","LEAVE"];
+  for(const code of standalone){
+    if(new RegExp(`\\b${code}\\b`).test(t) && !/\d/.test(t)) return code;
+  }
+  if(t==="TRNG") return "TRNG";
+
+  // Normalize OCR number confusions and HH:MM formatting.
+  let n=t.replace(/O/g,"0").replace(/[IL|]/g,"1");
+  n=n.replace(/:/g,"").replace(/\s+/g,"");
+
+  // Remove roster code text while keeping whether TRNG existed.
+  n=n.replace(/TRNG/g,"").replace(/[A-Z]/g,"");
+
+  if(/^\d{8}$/.test(n)) n=`${n.slice(0,4)}-${n.slice(4)}`;
+  const m=n.match(/^(\d{3,4})-(\d{3,4})$/);
+  if(m){
+    const time=`${m[1].padStart(4,"0")}-${m[2].padStart(4,"0")}`;
+    return hasTRNG ? `${time} TRNG` : time;
+  }
+
   return t;
 }
+
 function validateShift(value){
   const v=normalizeShift(value);
   if(!v) return {ok:false,value:v,reason:"Missing"};
-  if(CODES.has(v)) return {ok:true,value:v,hours:0};
-  const m=v.match(/^(\d{4})-(\d{4})$/);
-  if(!m) return {ok:false,value:v,reason:"Use HHMM-HHMM"};
+
+  if(v==="RDO") return {ok:true,value:v,hours:0,code:"RDO"};
+  if(v==="TRNG") return {ok:true,value:v,hours:0,code:"TRNG"};
+
+  const standalone=new Set(["AL","ALV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
+  if(standalone.has(v)) return {ok:true,value:v,hours:0,code:v};
+
+  const hasTRNG=/\sTRNG$/.test(v);
+  const timePart=v.replace(/\sTRNG$/,"");
+  const m=timePart.match(/^(\d{4})-(\d{4})$/);
+  if(!m) return {ok:false,value:v,reason:"Use HH:MM–HH:MM, RDO, or HH:MM–HH:MM TRNG"};
+
   const sh=+m[1].slice(0,2), sm=+m[1].slice(2), eh=+m[2].slice(0,2), em=+m[2].slice(2);
   if(sh>23||eh>23) return {ok:false,value:v,reason:"Hour must be 00–23"};
   if(sm>59||em>59) return {ok:false,value:v,reason:"Minutes must be 00–59"};
-  let mins=eh*60+em-(sh*60+sm); if(mins<0) mins+=1440;
+
+  let mins=eh*60+em-(sh*60+sm);
+  if(mins<0) mins+=1440;
   if(mins===0) return {ok:false,value:v,reason:"Same start/end"};
+
   const hours=mins/60;
   if(hours>14) return {ok:false,value:v,reason:"Suspiciously long"};
-  return {ok:true,value:v,hours};
-}
-function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
 
-async function imageToCanvas(file){
-  const bmp=await createImageBitmap(file);
-  const c=document.createElement("canvas");
-  c.width=bmp.width; c.height=bmp.height;
-  c.getContext("2d").drawImage(bmp,0,0);
-  return c;
+  return {
+    ok:true,value:v,hours,
+    time:timePart,
+    code:hasTRNG?"TRNG":""
+  };
 }
+
+function formatRosterCell(value){
+  const info=validateShift(value);
+  const v=info.value||normalizeShift(value);
+  if(v==="RDO") return "RDO";
+  if(v==="TRNG") return "TRNG";
+  if(/^(AL|ALV|ALTH|HACC|OFF|SICK|SL|LEAVE)$/.test(v)) return v;
+
+  const hasTRNG=/\sTRNG$/.test(v);
+  const t=v.replace(/\sTRNG$/,"");
+  const m=t.match(/^(\d{2})(\d{2})-(\d{2})(\d{2})$/);
+  if(!m) return v;
+  return `${m[1]}:${m[2]}–${m[3]}:${m[4]}${hasTRNG?" TRNG":""}`;
+}
+
+function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
 function cropCanvas(src,x0,y0,x1,y1,scale=5){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
   const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
@@ -707,7 +759,8 @@ function candidateWeight(value, sourceWeight=1){
   const info=validateShift(value);
   if(!info.ok)return -999;
   let score=100*sourceWeight;
-  if(CODES.has(info.value)) score+=25;
+  if(/ TRNG$/.test(info.value)) score+=40;
+  else if(CODES.has(info.value)) score+=25;
   else{
     const [a,b]=info.value.split("-");
     const sm=+a.slice(2),em=+b.slice(2);
@@ -963,6 +1016,34 @@ async function numericOnlyFallback(worker,raw){
   return best;
 }
 
+
+function cleanReplicatedCellText(text){
+  return String(text||"")
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+async function replicateCellText(worker,raw){
+  const variants=[
+    printedCellVariant(raw,170),
+    printedCellVariant(raw,188),
+    printedCellVariant(raw,205)
+  ];
+  const texts=[];
+  for(const c of variants){
+    texts.push(await recognize(worker,c,"7",""));
+    texts.push(await recognize(worker,c,"8",""));
+  }
+  // Keep the most information-rich non-empty result, without forcing validation.
+  const cleaned=texts.map(cleanReplicatedCellText).filter(Boolean);
+  cleaned.sort((a,b)=>{
+    const score=s=>(s.match(/[A-Z0-9]/gi)||[]).length + (s.includes("-")?4:0) + (/\bRDO\b/i.test(s)?6:0) + (/\bTRNG\b/i.test(s)?6:0);
+    return score(b)-score(a);
+  });
+  return cleaned[0]||"";
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1085,17 +1166,10 @@ function App(){
         const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumb));
 
-        const info=validateShift(cells[i]);
-        if(!info.ok || (!CODES.has(info.value) && ((info.hours||0)>12 || (info.hours||0)<2))){
-          const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-          const exact=await robustPrintedCellOCR(worker,raw);
-          if(validateShift(exact).ok){
-            cells[i]=exact;
-          }else{
-            const numeric=await numericOnlyFallback(worker,raw);
-            cells[i]=validateShift(numeric).ok?numeric:"";
-          }
-        }
+        // Replicate the visible cell text instead of rejecting it.
+        const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
+        const literal=await replicateCellText(worker,raw);
+        cells[i]=literal;
         if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
 
@@ -1148,16 +1222,22 @@ function App(){
   };
 
   const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
-  const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
+  const allValid=!!review;
   const importReview=()=>{
     if(!review)return;
-    const bad=review.cells.filter(c=>!validateShift(c).ok).length;
-    if(bad){setError(`Correct ${bad} highlighted shift ${bad===1?"cell":"cells"} first.`);return;}
+    // Import exactly what is shown in each selected-employee cell.
     const added=review.cells.map((raw,i)=>{
-      const info=validateShift(raw),v=info.value;
+      const literal=cleanReplicatedCellText(raw);
+      const info=validateShift(literal);
       return {
-        id:`img-${Date.now()}-${i}`,name:review.name,date:addDays(review.firstDate,i),
-        time:CODES.has(v)?"":v,code:CODES.has(v)?v:"",hours:info.hours||0,source:review.fileName
+        id:`img-${Date.now()}-${i}`,
+        name:review.name,
+        date:addDays(review.firstDate,i),
+        time:info.ok&&info.time?info.time:"",
+        code:info.ok&&info.code?info.code:"",
+        display:literal,
+        hours:info.ok?(info.hours||0):0,
+        source:review.fileName
       };
     });
     setEntries(old=>[
@@ -1182,7 +1262,7 @@ function App(){
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
-      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{upcoming.time||upcoming.code}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
     </main>}
@@ -1220,7 +1300,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. Uncertain cells now get a final numeric-only OCR pass before they are left for manual correction.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster replicates the text shown in each roster cell exactly as read, including RDO, times, TRNG, and other codes.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
@@ -1248,15 +1328,18 @@ function App(){
               <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
               <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
               <div className="editCol">
-                <input value={cell} placeholder="Check cell → RDO or 0500-1300" onChange={e=>updateCell(i,e.target.value)} onBlur={e=>updateCell(i,normalizeShift(e.target.value))}/>
-                {!info.ok&&<small>{info.reason}</small>}
+                <input
+                  value={cell}
+                  placeholder="Cell text"
+                  onChange={e=>updateCell(i,e.target.value)}
+                />
               </div>
-              <div className="hoursCol">{info.ok?`${(info.hours||0).toFixed(1)}h`:"—"}</div>
+              <div className="hoursCol rosterStatus">{/RDO/i.test(cell)?"RDO":/TRNG/i.test(cell)?"TRNG":""}</div>
             </div>
           })}
         </div>
         <div className="importFooter">
-          <span className={allValid?"ready":"notReady"}>{allValid?"✓ All 14 days valid":`${review.cells.filter(c=>!validateShift(c).ok).length} cells need correction`}</span>
+          <span className="ready">✓ Replicating selected employee cells as shown</span>
           <button className="primary" disabled={!allValid} onClick={importReview}><Check size={16}/> Import {review.name}</button>
         </div>
       </>}
@@ -1274,7 +1357,16 @@ function App(){
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
-function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{e.time||e.code||"Off"}</b><span>{e.name}</span></div><strong>{(+e.hours||0).toFixed(2)}<small> hrs</small></strong></div>)}</div>}
+function entryRosterText(e){
+  if(e.display)return e.display;
+  if(e.code==="RDO")return "RDO";
+  if(e.time){
+    const combined=e.code==="TRNG"?`${e.time} TRNG`:e.time;
+    return formatRosterCell(combined);
+  }
+  return e.code||"Off";
+}
+function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{entryRosterText(e)}</b><span>{e.name}</span></div><strong>{e.code==="RDO"?"RDO":""}</strong></div>)}</div>}
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
 function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click()}

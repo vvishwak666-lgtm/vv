@@ -27,3 +27,10 @@
 .detectedBadge{max-width:calc(100% - 20px)}
 
 /* Numeric-only fallback added for final unresolved shift cells. */
+
+.rosterStatus{font-size:11px;font-weight:800;color:#dcb458;text-align:right}
+.preciseRow .editCol input{font-variant-numeric:tabular-nums}
+
+.preciseRow.bad{background:transparent!important}
+.preciseRow.bad .editCol input{border-color:#37414c!important;background:#0c1117!important}
+.preciseRow.bad .cellThumb{outline:none!important;box-shadow:none!important}
