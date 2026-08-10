@@ -1270,25 +1270,38 @@ function App(){
   const allValid=!!review;
   const importReview=()=>{
     if(!review)return;
-    // Import exactly what is shown in each selected-employee cell.
+
     const added=review.cells.map((raw,i)=>{
       const literal=cleanReplicatedCellText(raw);
       const info=validateShift(literal);
+      const thumb=review.thumbs?.[i]||"";
+
       return {
         id:`img-${Date.now()}-${i}`,
         name:review.name,
         date:addDays(review.firstDate,i),
+
+        // Background OCR fields are for calculations/calendar logic only.
         time:info.ok&&info.time?info.time:"",
         code:info.ok&&info.code?info.code:"",
-        display:literal,
         hours:info.ok?(info.hours||0):0,
-        source:review.fileName
+
+        // Preserve both the OCR text and, more importantly, the exact source cell.
+        display:info.ok?formatRosterCell(info.value):(literal||""),
+        rawCellText:literal,
+        sourceCell:thumb,
+        source:review.fileName,
+        tableIndex:review.tableIndex
       };
     });
+
     setEntries(old=>[
       ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
       ...added
     ]);
+
+    setSelectedDate(review.firstDate);
+    setCalendarMonth(review.firstDate.slice(0,7)+"-01");
     setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
 
@@ -1300,14 +1313,14 @@ function App(){
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
   const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
-  const upcoming=mine.find(e=>e.date>=todayISO()&&(e.time||e.code!=="RDO"));
+  const upcoming=mine.find(e=>e.date>=todayISO()&&(!!e.time|| (!!e.code && e.code!=="RDO" && e.code!=="OFF")));
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
-      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)||"See roster cell"}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
     </main>}
@@ -1415,9 +1428,30 @@ function entryRosterText(e){
   }
   return e.code||"Off";
 }
-function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{entryRosterText(e)}</b><span>{e.name}</span></div><strong>{e.code==="RDO"?"RDO":""}</strong></div>)}</div>}
+function Roster({rows}){
+  if(!rows.length)return <div className="empty">No shifts found.</div>;
+  return <div className="list">
+    {rows.map(e=><div className="item rosterImported" key={e.id}>
+      <div className="rosterDateBlock">
+        <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
+        <span>{e.name}</span>
+      </div>
+      {e.sourceCell
+        ? <div className="savedSourceCell"><img src={e.sourceCell} alt={entryRosterText(e)||"Roster cell"}/></div>
+        : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
+      <strong>{e.code==="RDO"?"RDO":e.hours?`${(+e.hours).toFixed(1)}h`:""}</strong>
+    </div>)}
+  </div>
+}
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
-function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click()}
+function exportCSV(rows){
+  const clean=rows.map(({sourceCell,...e})=>e);
+  const csv=Papa.unparse(clean);
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="vv-roster.csv";
+  a.click();
+}
 
 createRoot(document.getElementById("root")).render(<App/>);

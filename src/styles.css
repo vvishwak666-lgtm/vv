@@ -81,3 +81,49 @@
   .exactRosterCell{min-height:48px}
   .exactRosterCell img{height:56px}
 }
+
+/* Imported roster rows keep the original source-cell image */
+.rosterImported{
+  display:grid !important;
+  grid-template-columns:minmax(105px,145px) minmax(170px,1fr) 58px;
+  align-items:center;
+  gap:10px;
+}
+.rosterDateBlock{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+.rosterDateBlock span{
+  font-size:10px;
+  opacity:.62;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.savedSourceCell{
+  min-height:40px;
+  border-radius:8px;
+  background:#fff;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+}
+.savedSourceCell img{
+  display:block;
+  width:100%;
+  height:44px;
+  object-fit:contain;
+  object-position:left center;
+}
+.rosterTextFallback{
+  font-size:16px;
+}
+@media(max-width:620px){
+  .rosterImported{
+    grid-template-columns:88px minmax(130px,1fr) 44px;
+    gap:7px;
+  }
+  .savedSourceCell img{height:40px}
+}
