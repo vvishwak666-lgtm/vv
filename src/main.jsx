@@ -268,7 +268,39 @@ function plausibleStaffName(s){
   const letters=(t.match(/[A-Za-z]/g)||[]).length;
   return letters>=4 && /[A-Za-z]{2,}/.test(t);
 }
+function keepDenseStaffBand(candidates,canvasHeight){
+  const rows=[...candidates].sort((a,b)=>a.cy-b.cy);
+  if(rows.length<4)return rows;
+
+  // Roster employee rows form a long, evenly-spaced vertical sequence. Headers/titles
+  // are isolated above the table, so select the longest dense sequence instead of
+  // accepting every OCR line from the left side of the image.
+  const gaps=[];
+  for(let i=1;i<rows.length;i++){
+    const g=rows[i].cy-rows[i-1].cy;
+    if(g>canvasHeight*.008 && g<canvasHeight*.08)gaps.push(g);
+  }
+  if(!gaps.length)return rows;
+  gaps.sort((a,b)=>a-b);
+  const median=gaps[Math.floor(gaps.length/2)];
+  const maxGap=Math.max(median*1.85,canvasHeight*.022);
+
+  const groups=[];
+  let current=[rows[0]];
+  for(let i=1;i<rows.length;i++){
+    const gap=rows[i].cy-rows[i-1].cy;
+    if(gap<=maxGap)current.push(rows[i]);
+    else{groups.push(current);current=[rows[i]]}
+  }
+  groups.push(current);
+  groups.sort((a,b)=>b.length-a.length);
+  const best=groups[0]||rows;
+  return best.length>=4?best:rows;
+}
+
 async function detectNamesFromLeftColumn(canvas,worker,onProgress){
+  // Restrict OCR to the name-column side, but use geometry afterwards to reject
+  // roster titles such as "Airport AFLL BAG, 24 08, 2026".
   const crop=cropCanvas(canvas,0,0,canvas.width*.245,canvas.height,1);
   const hi=preprocessCanvas(crop,4);
   await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
@@ -281,13 +313,14 @@ async function detectNamesFromLeftColumn(canvas,worker,onProgress){
     const name=cleanStaffName(g.text);
     if(!plausibleStaffName(name)) continue;
     if(/\d{1,2}\s+(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)/i.test(name)) continue;
+    if(/(?:A.?RPORT|AFLL|BAG|ROSTER|PERIOD|WORKING\s*HOURS)/i.test(name)) continue;
     names.push({id:`staff-${names.length}`,name,cy:g.cy*scaleY,y0:g.y0*scaleY,y1:g.y1*scaleY});
   }
   const dedup=[];
   for(const n of names){
     if(!dedup.some(x=>Math.abs(x.cy-n.cy)<5 || x.name.toLowerCase()===n.name.toLowerCase())) dedup.push(n);
   }
-  return dedup;
+  return keepDenseStaffBand(dedup,canvas.height);
 }
 function attachRowBounds(staff,canvasHeight){
   const rows=[...staff].sort((a,b)=>a.cy-b.cy);
@@ -858,8 +891,14 @@ function App(){
         // Only retry cells the row-level OCR did not read confidently.
         if(!validateShift(cells[i]).ok){
           const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-          const fallback=await recognizeExactCellFallback(worker,raw);
-          cells[i]=validateShift(fallback).ok?fallback:"";
+          // Printed-roster-specific OCR gets first retry priority. Only if that fails
+          // do we use the generic exact-cell fallback.
+          const printed=await robustPrintedCellOCR(worker,raw);
+          if(validateShift(printed).ok) cells[i]=printed;
+          else{
+            const fallback=await recognizeExactCellFallback(worker,raw);
+            cells[i]=validateShift(fallback).ok?fallback:"";
+          }
         }
         if(ownWorker)setProgress(45+Math.round((i+1)/14*45));
       }
@@ -871,9 +910,11 @@ function App(){
       const whMatch=whText.match(/\d+(?:\.\d+)?/);
       const workingHours=whMatch?Number(whMatch[0]):null;
 
+      const calculatedHours=cells.reduce((sum,v)=>sum+hoursOf(v),0);
+      const unresolved=cells.filter(v=>!validateShift(v).ok).length;
       setReview({
         fileName:source.fileName,staffId:row.id,name:row.name,
-        firstDate:source.firstDate,cells,thumbs,workingHours
+        firstDate:source.firstDate,cells,thumbs,workingHours,calculatedHours,unresolved
       });
     }finally{
       if(ownWorker&&worker)try{await worker.terminate()}catch{}
@@ -909,7 +950,10 @@ function App(){
     setError("Use a roster screenshot, CSV, XLS or XLSX file.");
   };
 
-  const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
+  const updateCell=(i,v)=>setReview(r=>{
+    const cells=r.cells.map((x,j)=>j===i?v:x);
+    return {...r,cells,calculatedHours:cells.reduce((sum,x)=>sum+hoursOf(x),0),unresolved:cells.filter(x=>!validateShift(x).ok).length};
+  });
   const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
   const importReview=()=>{
     if(!review)return;
@@ -985,7 +1029,11 @@ function App(){
       <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. VV Roster reads the whole selected row first, then retries only uncertain individual cells.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
+        <div className="autoPreview"><div className="previewImageWrap"><img src={preview}/>{(()=>{
+          const active=table.staff.find(s=>s.id===selectedStaff);
+          if(!active)return null;
+          return <div className="lockedRowOverlay" style={{top:`${(active.y0/table.canvas.height)*100}%`,height:`${((active.y1-active.y0)/table.canvas.height)*100}%`}}><span>{active.name}</span></div>;
+        })()}</div><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff detected</div></div>
         <div className="autoControls">
           <label>Employee
             <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
@@ -996,7 +1044,7 @@ function App(){
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>CALCULATED WORKING HOURS</small><b>{review.unresolved===0?review.calculatedHours.toFixed(2):`${review.calculatedHours.toFixed(2)}+`}</b><em>{review.unresolved===0?"From selected row":"Complete highlighted cells for final total"}</em></span></div>
           </>}
         </div>
       </div>
