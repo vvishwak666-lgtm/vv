@@ -25,3 +25,5 @@
 .preciseRow.bad .cellThumb{box-shadow:0 0 0 2px rgba(255,82,82,.55) inset}
 
 .detectedBadge{max-width:calc(100% - 20px)}
+
+/* Numeric-only fallback added for final unresolved shift cells. */

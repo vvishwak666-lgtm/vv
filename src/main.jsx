@@ -912,6 +912,57 @@ async function inferFirstDateForRegion(canvas,region,worker){
   return inferFirstDate(result.data.text||"");
 }
 
+
+async function numericOnlyFallback(worker,raw){
+  const thresholds=[165,185,205];
+  const candidates=[];
+
+  for(const th of thresholds){
+    const c=printedCellVariant(raw,th);
+    const passes=[
+      await recognize(worker,c,"7","0123456789-"),
+      await recognize(worker,c,"8","0123456789-"),
+      await recognize(worker,c,"13","0123456789-")
+    ];
+
+    for(const txt of passes){
+      const s=String(txt||"").replace(/[^\d-]/g,"");
+      if(!s)continue;
+
+      const direct=s.match(/^(\d{3,4})-(\d{3,4})$/);
+      if(direct){
+        candidates.push(normalizeShift(`${direct[1]}-${direct[2]}`));
+      }
+
+      const digits=s.replace(/\D/g,"");
+      if(digits.length===8){
+        candidates.push(normalizeShift(`${digits.slice(0,4)}-${digits.slice(4)}`));
+      }
+      if(digits.length===7){
+        candidates.push(normalizeShift(`${digits.slice(0,3)}-${digits.slice(3)}`));
+        candidates.push(normalizeShift(`${digits.slice(0,4)}-${digits.slice(4)}`));
+      }
+    }
+  }
+
+  let best="",bestScore=-Infinity;
+  for(const v of candidates){
+    const info=validateShift(v);
+    if(!info.ok)continue;
+
+    let score=100;
+    const [a,b]=info.value.split("-");
+    const sm=+a.slice(2),em=+b.slice(2);
+    if([0,30].includes(sm))score+=6;
+    if([0,30].includes(em))score+=6;
+    if((info.hours||0)>=3&&(info.hours||0)<=10.5)score+=10;
+    if((info.hours||0)>12)score-=20;
+
+    if(score>bestScore){bestScore=score;best=info.value}
+  }
+  return best;
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1038,7 +1089,12 @@ function App(){
         if(!info.ok || (!CODES.has(info.value) && ((info.hours||0)>12 || (info.hours||0)<2))){
           const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
           const exact=await robustPrintedCellOCR(worker,raw);
-          cells[i]=validateShift(exact).ok?exact:"";
+          if(validateShift(exact).ok){
+            cells[i]=exact;
+          }else{
+            const numeric=await numericOnlyFallback(worker,raw);
+            cells[i]=validateShift(numeric).ok?numeric:"";
+          }
         }
         if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
@@ -1164,7 +1220,7 @@ function App(){
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. VV Roster reads the whole selected row first, then retries only uncertain individual cells.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Names and grid columns are locked. Uncertain cells now get a final numeric-only OCR pass before they are left for manual correction.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
