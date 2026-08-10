@@ -1089,6 +1089,52 @@ async function replicateCellText(worker,raw){
   return agreed ? agreed[0] : "";
 }
 
+
+function parseRosterSourceText(text){
+  const raw=String(text||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {display:"",time:"",code:"",hours:0};
+
+  if(/\bRDO\b/.test(raw)){
+    return {display:"RDO",time:"",code:"RDO",hours:0};
+  }
+
+  const hasTRNG=/\bTRNG\b/.test(raw);
+  const num=raw
+    .replace(/O/g,"0")
+    .replace(/[IL|]/g,"1")
+    .replace(/:/g,"");
+
+  const m=num.match(/(\d{3,4})\s*-\s*(\d{3,4})/);
+  if(m){
+    const a=m[1].padStart(4,"0"), b=m[2].padStart(4,"0");
+    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+    if(sh<=23&&eh<=23&&sm<=59&&em<=59){
+      let mins=eh*60+em-(sh*60+sm);
+      if(mins<0) mins+=1440;
+      if(mins>0&&mins<=14*60){
+        const display=`${a}-${b}${hasTRNG?" TRNG":""}`;
+        return {
+          display,
+          time:`${a}-${b}`,
+          code:hasTRNG?"TRNG":"",
+          hours:mins/60
+        };
+      }
+    }
+  }
+
+  // Preserve non-time roster codes exactly enough for display, but they carry 0 hours.
+  const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
+  if(codeMatch){
+    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
+  }
+
+  return {display:raw,time:"",code:"",hours:0};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1273,7 +1319,7 @@ function App(){
 
     const added=review.cells.map((raw,i)=>{
       const literal=cleanReplicatedCellText(raw);
-      const info=validateShift(literal);
+      const parsed=parseRosterSourceText(literal);
       const thumb=review.thumbs?.[i]||"";
 
       return {
@@ -1281,13 +1327,13 @@ function App(){
         name:review.name,
         date:addDays(review.firstDate,i),
 
-        // Background OCR fields are for calculations/calendar logic only.
-        time:info.ok&&info.time?info.time:"",
-        code:info.ok&&info.code?info.code:"",
-        hours:info.ok?(info.hours||0):0,
+        // Single source of truth for calculations and upcoming shift.
+        time:parsed.time,
+        code:parsed.code,
+        hours:parsed.hours,
+        display:parsed.display,
 
-        // Preserve both the OCR text and, more importantly, the exact source cell.
-        display:info.ok?formatRosterCell(info.value):(literal||""),
+        // Preserve the exact visible source cell for review/My Roster/Calendar.
         rawCellText:literal,
         sourceCell:thumb,
         source:review.fileName,
@@ -1313,7 +1359,7 @@ function App(){
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
   const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
-  const upcoming=mine.find(e=>e.date>=todayISO()&&(!!e.time|| (!!e.code && e.code!=="RDO" && e.code!=="OFF")));
+  const upcoming=mine.find(e=>e.date>=todayISO() && !!e.time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
@@ -1322,7 +1368,7 @@ function App(){
     {tab==="dashboard"&&<main>
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)||"See roster cell"}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
@@ -1422,11 +1468,8 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
 function entryRosterText(e){
   if(e.display)return e.display;
   if(e.code==="RDO")return "RDO";
-  if(e.time){
-    const combined=e.code==="TRNG"?`${e.time} TRNG`:e.time;
-    return formatRosterCell(combined);
-  }
-  return e.code||"Off";
+  if(e.time)return `${e.time}${e.code==="TRNG"?" TRNG":""}`;
+  return e.code||"";
 }
 function Roster({rows}){
   if(!rows.length)return <div className="empty">No shifts found.</div>;
