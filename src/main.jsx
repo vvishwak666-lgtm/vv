@@ -1227,6 +1227,101 @@ async function readCalculationValueFromSourceCell(worker,dataUrl){
 }
 
 
+
+async function readCanonicalRosterCell(worker,raw){
+  const candidates=[];
+
+  const addTimeCandidate=(text,weight=1)=>{
+    let s=String(text||"").toUpperCase()
+      .replace(/[–—_]/g,"-")
+      .replace(/:/g,"")
+      .replace(/\s+/g,"")
+      .replace(/O/g,"0");
+
+    // Do not convert arbitrary letters into digits here.
+    const direct=s.match(/(\d{4})-(\d{4})/);
+    if(direct){
+      candidates.push({value:`${direct[1]}-${direct[2]}`,weight});
+    }
+
+    const digits=s.replace(/\D/g,"");
+    if(digits.length===8){
+      candidates.push({value:`${digits.slice(0,4)}-${digits.slice(4)}`,weight:weight*.92});
+    }
+  };
+
+  // 1) Read roster codes from the exact crop.
+  const codePasses=[];
+  for(const th of [170,188,205]){
+    const c=printedCellVariant(raw,th);
+    codePasses.push(await recognize(worker,c,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
+    codePasses.push(await recognize(worker,c,"8","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
+  }
+  const codeJoined=codePasses.join(" ").toUpperCase();
+
+  const rdoVotes=codePasses.filter(t=>/\bRD[O0]\b/i.test(String(t))).length;
+  const trngVotes=codePasses.filter(t=>/\bTRN[G6]\b/i.test(String(t))).length;
+
+  if(rdoVotes>=2){
+    return "RDO";
+  }
+
+  // 2) Numeric-only OCR from the SAME exact source crop.
+  // Multiple passes only vote on the value; the result is stored once.
+  for(const th of [150,165,180,195,210,225]){
+    const c=printedCellVariant(raw,th);
+    addTimeCandidate(await recognize(worker,c,"7","0123456789-:"),1.25);
+    addTimeCandidate(await recognize(worker,c,"8","0123456789-:"),1.15);
+    addTimeCandidate(await recognize(worker,c,"13","0123456789-:"),1.0);
+  }
+
+  // Also try the un-thresholded enlarged exact crop.
+  addTimeCandidate(await recognize(worker,raw,"7","0123456789-:"),1.35);
+  addTimeCandidate(await recognize(worker,raw,"8","0123456789-:"),1.2);
+
+  const grouped=new Map();
+  for(const c of candidates){
+    const m=c.value.match(/^(\d{4})-(\d{4})$/);
+    if(!m)continue;
+    const a=m[1],b=m[2];
+    const sh=+a.slice(0,2),sm=+a.slice(2),eh=+b.slice(0,2),em=+b.slice(2);
+    if(sh>23||eh>23||sm>59||em>59)continue;
+
+    let mins=(eh*60+em)-(sh*60+sm);
+    if(mins<0)mins+=1440;
+    if(mins<=0||mins>14*60)continue;
+
+    let score=c.weight;
+    if([0,30].includes(sm))score+=.12;
+    if([0,30].includes(em))score+=.12;
+    if(mins>=180&&mins<=600)score+=.12;
+
+    const old=grouped.get(c.value)||{score:0,count:0};
+    grouped.set(c.value,{score:old.score+score,count:old.count+1});
+  }
+
+  const ranked=[...grouped.entries()]
+    .map(([value,x])=>({value,...x,total:x.score+x.count*.5}))
+    .sort((a,b)=>b.total-a.total);
+
+  if(ranked.length){
+    const best=ranked[0].value;
+    return trngVotes>=2 ? `${best} TRNG` : best;
+  }
+
+  // Standalone TRNG or another compact roster code.
+  if(trngVotes>=2)return "TRNG";
+
+  const knownCodes=["ALTH","HACC","ALV","SICK","LEAVE","OFF","SL","AL"];
+  for(const code of knownCodes){
+    const votes=codePasses.filter(t=>new RegExp(`\\b${code}\\b`,"i").test(String(t))).length;
+    if(votes>=2)return code;
+  }
+
+  // No invented substitute. Store empty canonical text when it genuinely cannot be read.
+  return "";
+}
+
 function parseDisplayedRosterValue(value){
   const raw=String(value||"").toUpperCase().trim()
     .replace(/[–—]/g,"-")
@@ -1391,10 +1486,11 @@ function App(){
         const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumb));
 
-        // Replicate the visible cell text instead of rejecting it.
+        // Read this exact source cell ONCE and store one canonical roster value.
+        // Dashboard, Calendar, My Roster and all hour calculations reuse this same value.
         const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-        const literal=await replicateCellText(worker,raw);
-        cells[i]=literal;
+        const canonicalValue=await readCanonicalRosterCell(worker,raw);
+        cells[i]=canonicalValue;
         if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
 
@@ -1461,12 +1557,13 @@ function App(){
         name:review.name,
         date:addDays(review.firstDate,i),
 
-        // ONE source of truth: the displayed roster-cell value.
+        // ONE source of truth: the canonical value stored when this exact cell was first read.
         time:parsed.time,
         code:parsed.code,
         hours:parsed.hours,
         display:parsed.display,
 
+        canonicalValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
         source:review.fileName,
@@ -1599,6 +1696,7 @@ function App(){
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
 function entryRosterText(e){
+  if(e.canonicalValue)return e.canonicalValue;
   if(e.display)return e.display;
   if(e.code==="RDO")return "RDO";
   if(e.time)return `${e.time}${e.code==="TRNG"?" TRNG":""}`;
