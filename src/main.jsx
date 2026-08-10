@@ -1226,6 +1226,49 @@ async function readCalculationValueFromSourceCell(worker,dataUrl){
   return parseRosterSourceText(codeText);
 }
 
+
+function parseDisplayedRosterValue(value){
+  const raw=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {display:"",time:"",code:"",hours:0};
+
+  if(/\bRDO\b/.test(raw)) return {display:"RDO",time:"",code:"RDO",hours:0};
+
+  const hasTRNG=/\bTRNG\b/.test(raw);
+
+  // Use the displayed HHMM-HHMM only. No OCR substitutions here.
+  const m=raw.match(/(^|[^0-9])(\d{4})\s*-\s*(\d{4})(?=$|[^0-9])/);
+  if(m){
+    const a=m[2], b=m[3];
+    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+
+    if(sh<=23&&eh<=23&&sm<=59&&em<=59){
+      let mins=(eh*60+em)-(sh*60+sm);
+      if(mins<0) mins+=1440;
+
+      // Roster shifts may cross midnight; cap only clearly impossible values.
+      if(mins>0 && mins<=14*60){
+        return {
+          display:`${a}-${b}${hasTRNG?" TRNG":""}`,
+          time:`${a}-${b}`,
+          code:hasTRNG?"TRNG":"",
+          hours:mins/60
+        };
+      }
+    }
+  }
+
+  // Standalone status codes remain visible but do not add work hours.
+  const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
+  if(codeMatch){
+    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
+  }
+
+  return {display:raw,time:"",code:"",hours:0};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1405,58 +1448,40 @@ function App(){
 
   const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
   const allValid=!!review;
-  const importReview=async()=>{
+  const importReview=()=>{
     if(!review)return;
 
-    setProcessing(true);
-    setStatus("Reading exact roster cells for calculations…");
-    let worker;
+    const added=review.cells.map((raw,i)=>{
+      const literal=cleanReplicatedCellText(raw);
+      const parsed=parseDisplayedRosterValue(literal);
+      const thumb=review.thumbs?.[i]||"";
 
-    try{
-      worker=await createWorker(p=>setProgress(Math.round(p*100)));
+      return {
+        id:`img-${Date.now()}-${i}`,
+        name:review.name,
+        date:addDays(review.firstDate,i),
 
-      const added=[];
-      for(let i=0;i<review.cells.length;i++){
-        const literal=cleanReplicatedCellText(review.cells[i]);
-        const thumb=review.thumbs?.[i]||"";
+        // ONE source of truth: the displayed roster-cell value.
+        time:parsed.time,
+        code:parsed.code,
+        hours:parsed.hours,
+        display:parsed.display,
 
-        // Prefer the already-read cell value when it contains a valid roster time/code.
-        // This prevents a second OCR pass from turning a correct value such as
-        // 1630-2030 into 0103-0203. Only fall back to source-cell OCR when the
-        // replicated text does not contain a usable roster value.
-        const literalParsed=parseRosterSourceText(literal);
-        const literalIsUsable=!!(literalParsed.time || literalParsed.code);
-        const parsed=literalIsUsable
-          ? literalParsed
-          : await readCalculationValueFromSourceCell(worker,thumb);
+        rawCellText:literal,
+        sourceCell:thumb,
+        source:review.fileName,
+        tableIndex:review.tableIndex
+      };
+    });
 
-        added.push({
-          id:`img-${Date.now()}-${i}`,
-          name:review.name,
-          date:addDays(review.firstDate,i),
-          time:parsed.time,
-          code:parsed.code,
-          hours:parsed.hours,
-          display:parsed.display || literal,
-          rawCellText:literal,
-          sourceCell:thumb,
-          source:review.fileName,
-          tableIndex:review.tableIndex
-        });
-      }
+    setEntries(old=>[
+      ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
+      ...added
+    ]);
 
-      setEntries(old=>[
-        ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
-        ...added
-      ]);
-
-      setSelectedDate(review.firstDate);
-      setCalendarMonth(review.firstDate.slice(0,7)+"-01");
-      setReview(null);setTable(null);setPreview(null);setTab("dashboard");
-    }finally{
-      if(worker)try{await worker.terminate()}catch{}
-      setProcessing(false);setProgress(0);setStatus("");
-    }
+    setSelectedDate(review.firstDate);
+    setCalendarMonth(review.firstDate.slice(0,7)+"-01");
+    setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);

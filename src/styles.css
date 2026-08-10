@@ -148,3 +148,5 @@
   object-position:left center;
   display:block;
 }
+
+/* v3: hour calculations use only displayed HHMM-HHMM roster value. */
