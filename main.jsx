@@ -1,263 +1,1356 @@
+
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {createRoot} from "react-dom/client";
+import Tesseract from "tesseract.js";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import Tesseract from "tesseract.js";
 import {
-  Upload, Search, CalendarDays, Clock3, RotateCcw, Download,
-  Filter, ChevronLeft, ChevronRight, Image as ImageIcon, Save,
-  Settings2, X, Trash2, LayoutDashboard, List, Moon, Sun
+  Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
+  Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
+  Users, Clock3
 } from "lucide-react";
 import "./styles.css";
 
-const STORE = "vv-roster-complete-v1";
-const DAY = 86400000;
+const STORE = "vv-roster-auto-table-v4";
+const CODES = new Set(["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
 
-function clean(s=""){return String(s).toLowerCase().replace(/[_-]/g," ").replace(/\s+/g," ").trim();}
-function col(keys, patterns){return keys.find(k=>patterns.some(p=>clean(k).includes(p)));}
-function dateValue(v){
-  if(!v) return "";
-  if(v instanceof Date && !isNaN(v)) return v.toISOString().slice(0,10);
-  const s=String(v).trim();
-  const m=s.match(/^(\\d{1,2})[/-](\\d{1,2})[/-](\\d{2,4})$/);
-  if(m){let y=+m[3]; if(y<100)y+=2000; return `${y}-${String(+m[2]).padStart(2,"0")}-${String(+m[1]).padStart(2,"0")}`;}
-  const t=Date.parse(s); return isNaN(t)?s:new Date(t).toISOString().slice(0,10);
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+
+function normalizeShift(value){
+  let t=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  // Common OCR aliases.
+  t=t.replace(/\bRD0\b/g,"RDO").replace(/\bTRN6\b/g,"TRNG")
+     .replace(/\bALLV\b/g,"ALV").replace(/\bALIV\b/g,"ALV");
+
+  // RDO is always shown simply as RDO.
+  if(/\bRDO\b/.test(t)) return "RDO";
+
+  // Preserve TRNG when it belongs to a timed shift.
+  const hasTRNG=/\bTRNG\b/.test(t);
+
+  // Other standalone roster codes.
+  const standalone=["ALTH","HACC","ALV","AL","OFF","SICK","SL","LEAVE"];
+  for(const code of standalone){
+    if(new RegExp(`\\b${code}\\b`).test(t) && !/\d/.test(t)) return code;
+  }
+  if(t==="TRNG") return "TRNG";
+
+  // Normalize OCR number confusions and HH:MM formatting.
+  let n=t.replace(/O/g,"0").replace(/[IL|]/g,"1");
+  n=n.replace(/:/g,"").replace(/\s+/g,"");
+
+  // Remove roster code text while keeping whether TRNG existed.
+  n=n.replace(/TRNG/g,"").replace(/[A-Z]/g,"");
+
+  if(/^\d{8}$/.test(n)) n=`${n.slice(0,4)}-${n.slice(4)}`;
+  const m=n.match(/^(\d{3,4})-(\d{3,4})$/);
+  if(m){
+    const time=`${m[1].padStart(4,"0")}-${m[2].padStart(4,"0")}`;
+    return hasTRNG ? `${time} TRNG` : time;
+  }
+
+  return t;
 }
-function detect(row){
-  const k=Object.keys(row);
+
+function validateShift(value){
+  const v=normalizeShift(value);
+  if(!v) return {ok:false,value:v,reason:"Missing"};
+
+  if(v==="RDO") return {ok:true,value:v,hours:0,code:"RDO"};
+  if(v==="TRNG") return {ok:true,value:v,hours:0,code:"TRNG"};
+
+  const standalone=new Set(["AL","ALV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
+  if(standalone.has(v)) return {ok:true,value:v,hours:0,code:v};
+
+  const hasTRNG=/\sTRNG$/.test(v);
+  const timePart=v.replace(/\sTRNG$/,"");
+  const m=timePart.match(/^(\d{4})-(\d{4})$/);
+  if(!m) return {ok:false,value:v,reason:"Use HH:MM–HH:MM, RDO, or HH:MM–HH:MM TRNG"};
+
+  const sh=+m[1].slice(0,2), sm=+m[1].slice(2), eh=+m[2].slice(0,2), em=+m[2].slice(2);
+  if(sh>23||eh>23) return {ok:false,value:v,reason:"Hour must be 00–23"};
+  if(sm>59||em>59) return {ok:false,value:v,reason:"Minutes must be 00–59"};
+
+  let mins=eh*60+em-(sh*60+sm);
+  if(mins<0) mins+=1440;
+  if(mins===0) return {ok:false,value:v,reason:"Same start/end"};
+
+  const hours=mins/60;
+  if(hours>14) return {ok:false,value:v,reason:"Suspiciously long"};
+
   return {
-    name:col(k,["employee name","staff name","full name","employee","staff","name","person"]),
-    date:col(k,["roster date","work date","shift date","date","day"]),
-    start:col(k,["start time","clock in","in time","start","in"]),
-    end:col(k,["finish time","end time","clock out","out time","finish","end","out"]),
-    time:col(k,["shift time","shift","time"]),
-    hours:col(k,["total hours","paid hours","working hours","hours","hrs"]),
-    team:col(k,["team","crew","group","squad"]),
-    role:col(k,["role","position","job","duty"])
+    ok:true,value:v,hours,
+    time:timePart,
+    code:hasTRNG?"TRNG":""
   };
 }
-function hoursFromTime(time){
-  if(!time) return null;
-  const m=String(time).match(/(\\d{1,2})(?::|\\.)(\\d{2})\\s*(AM|PM)?\\s*[–-]\\s*(\\d{1,2})(?::|\\.)(\\d{2})\\s*(AM|PM)?/i);
-  if(!m)return null;
-  let sh=+m[1], sm=+m[2], eh=+m[4], em=+m[5];
-  const ap1=m[3]?.toUpperCase(), ap2=m[6]?.toUpperCase();
-  if(ap1==="PM"&&sh<12)sh+=12; if(ap1==="AM"&&sh===12)sh=0;
-  if(ap2==="PM"&&eh<12)eh+=12; if(ap2==="AM"&&eh===12)eh=0;
-  let mins=eh*60+em-(sh*60+sm); if(mins<0)mins+=1440;
-  return mins/60;
+
+function formatRosterCell(value){
+  const info=validateShift(value);
+  const v=info.value||normalizeShift(value);
+  if(v==="RDO") return "RDO";
+  if(v==="TRNG") return "TRNG";
+  if(/^(AL|ALV|ALTH|HACC|OFF|SICK|SL|LEAVE)$/.test(v)) return v;
+
+  const hasTRNG=/\sTRNG$/.test(v);
+  const t=v.replace(/\sTRNG$/,"");
+  const m=t.match(/^(\d{2})(\d{2})-(\d{2})(\d{2})$/);
+  if(!m) return v;
+  return `${m[1]}:${m[2]}–${m[3]}:${m[4]}${hasTRNG?" TRNG":""}`;
 }
-function parseHours(v){if(v===null||v===undefined||v==="")return null; const n=parseFloat(String(v).replace(",",".")); return isNaN(n)?null:n;}
-function normalize(rows, source){
-  if(!rows?.length)return [];
-  const c=detect(rows[0]);
-  return rows.map((r,i)=>{
-    const name=c.name?String(r[c.name]??"").trim():"";
-    if(!name)return null;
-    let time="";
-    if(c.start||c.end){
-      const a=c.start?String(r[c.start]??"").trim():"", b=c.end?String(r[c.end]??"").trim():"";
-      if(a||b)time=`${a}${a||b?" – ":""}${b}`;
+
+function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
+function cropCanvas(src,x0,y0,x1,y1,scale=5){
+  const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
+  const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(sw*scale)); c.height=Math.max(1,Math.round(sh*scale));
+  const ctx=c.getContext("2d"); ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g>220?255:(g<105?0:Math.max(0,Math.min(255,(g-105)*2.8)));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+function dataURL(c){ try{return c.toDataURL("image/png")}catch{return ""} }
+
+function cleanText(s){ return String(s||"").replace(/\s+/g," ").trim(); }
+function wordBox(w){
+  const b=w.bbox||{};
+  return {x0:b.x0||0,y0:b.y0||0,x1:b.x1||0,y1:b.y1||0,cx:((b.x0||0)+(b.x1||0))/2,cy:((b.y0||0)+(b.y1||0))/2};
+}
+function looksNameText(s){
+  const t=cleanText(s);
+  if(t.length<4) return false;
+  if(/^(NAME|SHIFT|DATE|WORKING|HOURS|MON|TUE|WED|THU|FRI|SAT|SUN)/i.test(t)) return false;
+  const letters=(t.match(/[A-Za-z]/g)||[]).length;
+  return letters>=4 && /[A-Za-z]{2,}/.test(t);
+}
+function isShiftLike(s){
+  const t=normalizeShift(s);
+  return CODES.has(t) || /^\d{3,4}-\d{3,4}$/.test(t);
+}
+function clusterWordsToRows(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && (w.confidence??100)>12);
+  const heights=good.map(w=>Math.max(4,(w.bbox?.y1||0)-(w.bbox?.y0||0))).sort((a,b)=>a-b);
+  const medianH=heights.length?heights[Math.floor(heights.length/2)]:10;
+  const tol=Math.max(6,medianH*.65);
+  const rows=[];
+  for(const w of good){
+    const b=wordBox(w);
+    let r=rows.find(r=>Math.abs(r.cy-b.cy)<=tol);
+    if(!r){r={cy:b.cy,words:[]};rows.push(r)}
+    r.words.push(w);
+    r.cy=(r.cy*(r.words.length-1)+b.cy)/r.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
+    const ws=r.words.sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
+    const y0=Math.min(...ws.map(w=>w.bbox?.y0||0)), y1=Math.max(...ws.map(w=>w.bbox?.y1||0));
+    return {id:`row-${i}`,cy:r.cy,y0,y1,words:ws,text:cleanText(ws.map(w=>w.text).join(" "))};
+  });
+}
+function detectStaffRows(rows,W){
+  const result=[];
+  for(const r of rows){
+    const leftWords=r.words.filter(w=>(w.bbox?.x1||0)<W*.23);
+    if(!leftWords.length) continue;
+    const name=cleanText(leftWords.map(w=>w.text).join(" "))
+      .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    if(!looksNameText(name)) continue;
+
+    const shiftWords=r.words.filter(w=>{
+      const x=wordBox(w).cx;
+      return x>W*.18 && x<W*.92 && isShiftLike(w.text);
+    });
+    if(shiftWords.length<2) continue;
+
+    const rowH=Math.max(5,r.y1-r.y0);
+    result.push({
+      id:r.id,name,cy:r.cy,
+      y0:Math.max(0,r.cy-rowH*.8),
+      y1:r.cy+rowH*.8,
+      words:r.words
+    });
+  }
+
+  // Deduplicate near-identical rows/names.
+  const dedup=[];
+  for(const r of result){
+    if(!dedup.some(x=>Math.abs(x.cy-r.cy)<4 && x.name.toLowerCase()===r.name.toLowerCase())) dedup.push(r);
+  }
+  return dedup;
+}
+function inferColumnCenters(staff,W){
+  const xs=[];
+  for(const r of staff){
+    for(const w of r.words){
+      const x=wordBox(w).cx;
+      if(x>W*.18 && x<W*.92 && isShiftLike(w.text)) xs.push(x);
     }
-    if(!time&&c.time)time=String(r[c.time]??"").trim();
-    const supplied=c.hours?parseHours(r[c.hours]):null;
-    return {
-      id:`${source}-${i}-${Math.random().toString(36).slice(2)}`,
-      name,date:c.date?dateValue(r[c.date]):"",time,
-      hours:supplied??hoursFromTime(time)??"",
-      team:c.team?String(r[c.team]??"").trim():"",
-      role:c.role?String(r[c.role]??"").trim():"",
-      source
-    };
-  }).filter(Boolean);
+  }
+  if(xs.length<10) return Array.from({length:14},(_,i)=>W*(.19+i*(.72/13)));
+
+  xs.sort((a,b)=>a-b);
+  const clusters=[];
+  const tol=W*.018;
+  for(const x of xs){
+    let c=clusters.find(c=>Math.abs(c.mean-x)<=tol);
+    if(!c){c={mean:x,n:0};clusters.push(c)}
+    c.mean=(c.mean*c.n+x)/(c.n+1); c.n++;
+  }
+  let centers=clusters.sort((a,b)=>b.n-a.n).slice(0,14).map(c=>c.mean).sort((a,b)=>a-b);
+  if(centers.length<14){
+    const left=centers[0]||W*.19, right=centers[centers.length-1]||W*.91;
+    centers=Array.from({length:14},(_,i)=>left+i*((right-left)/13));
+  }
+  return centers;
 }
-function isoToday(){return new Date().toISOString().slice(0,10);}
-function addDays(iso,n){const d=new Date(iso+"T12:00:00");d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
-function monthStart(iso){const d=new Date(iso+"T12:00:00");return new Date(d.getFullYear(),d.getMonth(),1);}
-function fmtDate(iso){if(!iso)return "No date"; const d=new Date(iso+"T12:00:00");return d.toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});}
-function fmtShort(iso){if(!iso)return ""; const d=new Date(iso+"T12:00:00");return d.toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"});}
-function keyDate(d){return d.toISOString().slice(0,10);}
-function exportXlsx(rows){
-  const ws=XLSX.utils.json_to_sheet(rows.map(e=>({Name:e.name,Date:e.date,Time:e.time,Hours:e.hours,Team:e.team,Role:e.role,Source:e.source})));
-  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Roster"); XLSX.writeFile(wb,"vv-roster.xlsx");
+function centersToBounds(centers,W){
+  const b=[];
+  for(let i=0;i<=14;i++){
+    if(i===0) b.push(Math.max(W*.16, centers[0]-(centers[1]-centers[0])/2));
+    else if(i===14) b.push(Math.min(W*.93, centers[13]+(centers[13]-centers[12])/2));
+    else b.push((centers[i-1]+centers[i])/2);
+  }
+  return b;
 }
-function exportCsv(rows){
-  const csv=Papa.unparse(rows.map(e=>({Name:e.name,Date:e.date,Time:e.time,Hours:e.hours,Team:e.team,Role:e.role,Source:e.source})));
-  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download="vv-roster.csv"; a.click();
+function inferFirstDate(text){
+  const s=String(text||"");
+  const months="Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
+  const m=s.match(new RegExp(`\\b(\\d{1,2})\\s+(${months})[a-z]*\\s+(\\d{4})\\b`,"i"));
+  if(m){const d=Date.parse(`${m[1]} ${m[2]} ${m[3]}`);if(!isNaN(d))return new Date(d).toISOString().slice(0,10);}
+  const dm=s.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\b/);
+  if(dm){
+    const day=+dm[1],month=+dm[2],year=+dm[3];
+    if(day<=31&&month<=12)return new Date(year,month-1,day,12).toISOString().slice(0,10);
+  }
+  return todayISO();
 }
-function sumHours(rows){return rows.reduce((s,e)=>s+(parseHours(e.hours)??hoursFromTime(e.time)??0),0);}
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
+async function createWorker(onProgress){
+  const worker=await Tesseract.createWorker("eng",1,{
+    logger:m=>{if(m.status==="recognizing text"&&onProgress)onProgress(m.progress||0)}
+  });
+  return worker;
+}
+async function recognize(worker,canvas,psm="7",whitelist=""){
+  await worker.setParameters({
+    tessedit_pageseg_mode:psm,
+    preserve_interword_spaces:"1",
+    ...(whitelist?{tessedit_char_whitelist:whitelist}:{})
+  });
+  const r=await worker.recognize(canvas);
+  return cleanText(r.data.text||"");
+}
+function bestCell(candidates){
+  const values=candidates.map(normalizeShift).filter(Boolean);
+  const valid=values.map(v=>validateShift(v)).find(x=>x.ok);
+  return valid?.value || values[0] || "";
+}
+
+
+function preprocessCanvas(src, scale=3){
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(src.width*scale));
+  c.height=Math.max(1,Math.round(src.height*scale));
+  const ctx=c.getContext("2d");
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,0,0,c.width,c.height);
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g>220?255:(g<105?0:Math.max(0,Math.min(255,(g-105)*3.0)));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+function groupNameWords(words){
+  const good=(words||[]).filter(w=>w.text?.trim() && (w.confidence??100)>8);
+  const heights=good.map(w=>Math.max(4,(w.bbox?.y1||0)-(w.bbox?.y0||0))).sort((a,b)=>a-b);
+  const med=heights.length?heights[Math.floor(heights.length/2)]:10;
+  const tol=Math.max(7,med*.8);
+  const rows=[];
+  for(const w of good){
+    const b=wordBox(w);
+    let row=rows.find(r=>Math.abs(r.cy-b.cy)<=tol);
+    if(!row){row={cy:b.cy,words:[]};rows.push(row)}
+    row.words.push(w);
+    row.cy=(row.cy*(row.words.length-1)+b.cy)/row.words.length;
+  }
+  return rows.sort((a,b)=>a.cy-b.cy).map((r,i)=>{
+    const ws=r.words.sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0));
+    const text=cleanText(ws.map(w=>w.text).join(" "))
+      .replace(/[^\wÀ-ÿ' ,.-]/g," ")
+      .replace(/\s+/g," ")
+      .trim();
+    const y0=Math.min(...ws.map(w=>w.bbox?.y0||0));
+    const y1=Math.max(...ws.map(w=>w.bbox?.y1||0));
+    return {id:`name-${i}`,text,cy:r.cy,y0,y1};
+  });
+}
+function cleanStaffName(s){
+  let t=cleanText(s)
+    .replace(/^(?:B\s*SHIFT.*?|SHIFT.*?|NAME)\s+/i,"")
+    .replace(/\b(?:RDO|TRNG|AL|ALV|ALTH|HACC)\b.*$/i,"")
+    .replace(/\s+/g," ")
+    .trim();
+
+  // Repair common OCR loss of the first letter in "Vimal".
+  if(/PRABHAKAR/i.test(t) && /\bimal\b/i.test(t) && !/\bVimal\b/i.test(t)){
+    t=t.replace(/\bimal\b/i,"Vimal");
+  }
+  return t;
+}
+function plausibleStaffName(s){
+  const t=cleanStaffName(s);
+  if(t.length<4 || t.length>45) return false;
+  if(/^(NAME|SHIFT|DATE|WORKING|HOURS|MON|TUE|WED|THU|FRI|SAT|SUN|AIRPORT)/i.test(t)) return false;
+  const letters=(t.match(/[A-Za-z]/g)||[]).length;
+  return letters>=4 && /[A-Za-z]{2,}/.test(t);
+}
+async function detectNamesFromLeftColumn(canvas,worker,onProgress){
+  const crop=cropCanvas(canvas,0,0,canvas.width*.245,canvas.height,1);
+  const hi=preprocessCanvas(crop,4);
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(hi);
+  onProgress?.(45);
+  const scaleY=canvas.height/hi.height;
+  const grouped=groupNameWords(result.data.words||[]);
+  const names=[];
+  for(const g of grouped){
+    const name=cleanStaffName(g.text);
+    if(!plausibleStaffName(name)) continue;
+    if(/\d{1,2}\s+(?:Aug|Sep|Oct|Nov|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul)/i.test(name)) continue;
+    names.push({id:`staff-${names.length}`,name,cy:g.cy*scaleY,y0:g.y0*scaleY,y1:g.y1*scaleY});
+  }
+  const dedup=[];
+  for(const n of names){
+    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<5 || x.name.toLowerCase()===n.name.toLowerCase())) dedup.push(n);
+  }
+  return dedup;
+}
+function attachRowBounds(staff,canvasHeight){
+  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
+  return rows.map((r,i)=>{
+    const prev=rows[i-1], next=rows[i+1];
+    const upper=prev?(prev.cy+r.cy)/2:r.cy-Math.max(8,(next?next.cy-r.cy:16)/2);
+    const lower=next?(r.cy+next.cy)/2:r.cy+Math.max(8,(prev?r.cy-prev.cy:16)/2);
+    return {...r,y0:Math.max(0,upper+1),y1:Math.min(canvasHeight,lower-1)};
+  });
+}
+
+
+function verticalGridScore(canvas,y0,y1){
+  const ctx=canvas.getContext("2d");
+  const W=canvas.width,H=canvas.height;
+  y0=Math.max(0,Math.floor(y0)); y1=Math.min(H,Math.ceil(y1));
+  const img=ctx.getImageData(0,y0,W,Math.max(1,y1-y0));
+  const d=img.data, h=Math.max(1,y1-y0);
+  const scores=new Array(W).fill(0);
+
+  for(let x=0;x<W;x++){
+    let s=0;
+    for(let y=0;y<h;y+=2){
+      const i=(y*W+x)*4;
+      const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+      if(g<190) s++;
+    }
+    scores[x]=s;
+  }
+
+  // Smooth 3px to strengthen thin grid lines.
+  const sm=new Array(W).fill(0);
+  for(let x=1;x<W-1;x++) sm[x]=(scores[x-1]+scores[x]+scores[x+1])/3;
+  return sm;
+}
+
+function bestLineNear(scores,expected,radius,minX,maxX){
+  const lo=Math.max(minX,Math.floor(expected-radius));
+  const hi=Math.min(maxX,Math.ceil(expected+radius));
+  let best=Math.round(expected),bestScore=-1;
+  for(let x=lo;x<=hi;x++){
+    if((scores[x]||0)>bestScore){bestScore=scores[x]||0;best=x}
+  }
+  return best;
+}
+
+function detectRosterGridBounds(canvas,staff){
+  const W=canvas.width,H=canvas.height;
+  const top=Math.max(0,Math.min(...staff.map(r=>r.y0))-8);
+  const bottom=Math.min(H,Math.max(...staff.map(r=>r.y1))+8);
+  const scores=verticalGridScore(canvas,top,bottom);
+
+  // Use expected layout only as a search seed, then snap each boundary
+  // to the strongest actual vertical grid line nearby.
+  const expected=[];
+  expected.push(W*.03);                 // left edge of name column
+  const dayLeft=W*.175;
+  const dayRight=W*.91;
+  const step=(dayRight-dayLeft)/14;
+  for(let i=0;i<=14;i++) expected.push(dayLeft+i*step);
+  expected.push(W*.985);                // right edge of Working Hours
+
+  const radius=Math.max(5,W*.018);
+  const lines=[];
+  for(let i=0;i<expected.length;i++){
+    const minX=i?lines[i-1]+3:0;
+    const maxX=W-1-(expected.length-1-i)*3;
+    let x=bestLineNear(scores,expected[i],radius,minX,maxX);
+    if(i && x<=lines[i-1]+2) x=Math.max(lines[i-1]+3,Math.round(expected[i]));
+    lines.push(x);
+  }
+
+  // Day columns are boundaries 1..15. Working Hours is 15..16.
+  const dayBounds=lines.slice(1,16);
+  const workingBounds=[lines[15],lines[16]];
+
+  return {lines,dayBounds,workingBounds,top,bottom};
+}
+
+
+function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
+  const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
+  const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(sw*scale));
+  c.height=Math.max(1,Math.round(sh*scale));
+  const ctx=c.getContext("2d");
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
+  return c;
+}
+
+function makeCellVariant(raw, threshold=190, trim=.12, thicken=false){
+  const top=Math.round(raw.height*trim);
+  const bottom=Math.round(raw.height*(1-trim));
+  const side=Math.round(raw.width*.035);
+
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,raw.width-side*2);
+  c.height=Math.max(1,bottom-top);
+  const ctx=c.getContext("2d");
+  ctx.drawImage(raw,side,top,c.width,c.height,0,0,c.width,c.height);
+
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<threshold?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // Remove remnants of table borders.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(c.width*.025));
+  const by=Math.max(2,Math.round(c.height*.06));
+  ctx.fillRect(0,0,c.width,by);
+  ctx.fillRect(0,c.height-by,c.width,by);
+  ctx.fillRect(0,0,bx,c.height);
+  ctx.fillRect(c.width-bx,0,bx,c.height);
+
+  if(thicken){
+    const current=ctx.getImageData(0,0,c.width,c.height);
+    const srcd=current.data;
+    const out=new Uint8ClampedArray(srcd);
+    for(let y=1;y<c.height-1;y++){
+      for(let x=1;x<c.width-1;x++){
+        const i=(y*c.width+x)*4;
+        if(srcd[i]<80){
+          for(let yy=-1;yy<=1;yy++){
+            for(let xx=-1;xx<=1;xx++){
+              const j=((y+yy)*c.width+(x+xx))*4;
+              out[j]=out[j+1]=out[j+2]=0; out[j+3]=255;
+            }
+          }
+        }
+      }
+    }
+    current.data.set(out);
+    ctx.putImageData(current,0,0);
+  }
+  return c;
+}
+
+function candidateShiftStrings(text){
+  const raw=String(text||"").toUpperCase()
+    .replace(/[–—_]/g,"-")
+    .replace(/\s+/g,"")
+    .replace(/[^0-9A-Z:-]/g,"");
+
+  const candidates=new Set();
+  if(raw)candidates.add(raw);
+
+  // Codes first.
+  for(const code of CODES){
+    if(raw===code || raw.includes(code)) candidates.add(code);
+  }
+
+  // OCR confusions only when text contains digits.
+  const numeric=raw.replace(/O/g,"0").replace(/[IL|]/g,"1").replace(/S(?=\d)/g,"5");
+  if(numeric)candidates.add(numeric);
+
+  // Pull two time-like groups even if OCR missed the dash.
+  const groups=numeric.match(/\d{3,4}/g)||[];
+  if(groups.length>=2){
+    candidates.add(`${groups[0]}-${groups[1]}`);
+  }
+
+  // 7/8 consecutive digits can be a missing dash.
+  const digits=numeric.replace(/\D/g,"");
+  if(digits.length===8)candidates.add(`${digits.slice(0,4)}-${digits.slice(4)}`);
+  if(digits.length===7){
+    // Try zero-padding either side, but validation chooses only plausible results.
+    candidates.add(`${digits.slice(0,3)}-${digits.slice(3)}`);
+    candidates.add(`${digits.slice(0,4)}-${digits.slice(4)}`);
+  }
+
+  return [...candidates].map(normalizeShift);
+}
+
+function scoreShiftCandidate(v){
+  const info=validateShift(v);
+  if(!info.ok)return -1000;
+
+  let score=100;
+  if(CODES.has(info.value)) return 115;
+
+  const [a,b]=info.value.split("-");
+  // Normal roster times usually use 00/30 minute boundaries; don't require it,
+  // just prefer them when OCR candidates compete.
+  const sm=+a.slice(2), em=+b.slice(2);
+  if([0,30].includes(sm))score+=5;
+  if([0,30].includes(em))score+=5;
+  if((info.hours||0)>=4 && (info.hours||0)<=10.5)score+=8;
+  if((info.hours||0)<2)score-=10;
+  return score;
+}
+
+function chooseBestShift(texts){
+  let best="",bestScore=-Infinity;
+  for(const text of texts){
+    for(const c of candidateShiftStrings(text)){
+      const s=scoreShiftCandidate(c);
+      if(s>bestScore){bestScore=s;best=c}
+    }
+  }
+  return bestScore>=100?best:"";
+}
+
+async function recognizeShiftCell(worker,raw){
+  const variants=[
+    makeCellVariant(raw,170,.15,false),
+    makeCellVariant(raw,190,.13,false),
+    makeCellVariant(raw,210,.11,false),
+    makeCellVariant(raw,190,.13,true)
+  ];
+  const texts=[];
+
+  for(let i=0;i<variants.length;i++){
+    const psm=i===3?"13":(i===2?"8":"7");
+    texts.push(await recognize(
+      worker,
+      variants[i],
+      psm,
+      "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+    ));
+    const chosen=chooseBestShift(texts);
+    if(chosen && validateShift(chosen).ok && texts.length>=2) return chosen;
+  }
+
+  // One final pass without a whitelist can recover RDO/TRNG when letters are weak.
+  texts.push(await recognize(worker,variants[1],"8",""));
+  return chooseBestShift(texts);
+}
+
+
+function buildRowOCRCanvas(source,row,bounds,scale=9){
+  const x0=bounds[0], x1=bounds[14];
+  const y0=row.y0, y1=row.y1;
+  const raw=rawCropCanvas(source,x0,y0,x1,y1,scale);
+  const ctx=raw.getContext("2d");
+  const img=ctx.getImageData(0,0,raw.width,raw.height),d=img.data;
+
+  // High-contrast grayscale without crushing thin digits.
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    let v=(g-95)*2.15;
+    v=Math.max(0,Math.min(255,v));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // Remove horizontal borders and the known internal vertical grid lines.
+  ctx.fillStyle="#fff";
+  const by=Math.max(2,Math.round(raw.height*.08));
+  ctx.fillRect(0,0,raw.width,by);
+  ctx.fillRect(0,raw.height-by,raw.width,by);
+  for(let i=1;i<14;i++){
+    const local=((bounds[i]-x0)/(x1-x0))*raw.width;
+    const bw=Math.max(2,Math.round(raw.width*.0025));
+    ctx.fillRect(Math.round(local-bw),0,bw*2+1,raw.height);
+  }
+  return raw;
+}
+
+function wordsByDay(words,rowCanvas,bounds){
+  const out=Array.from({length:14},()=>[]);
+  const x0=bounds[0],x1=bounds[14];
+  for(const w of words||[]){
+    const text=cleanText(w.text||"");
+    if(!text)continue;
+    const b=w.bbox||{};
+    const cx=((b.x0||0)+(b.x1||0))/2;
+    const frac=cx/rowCanvas.width;
+    const sourceX=x0+frac*(x1-x0);
+    let idx=-1;
+    for(let i=0;i<14;i++){
+      if(sourceX>=bounds[i]&&sourceX<bounds[i+1]){idx=i;break}
+    }
+    if(idx>=0)out[idx].push(w);
+  }
+  return out;
+}
+
+function textFromWords(words){
+  return cleanText((words||[])
+    .slice()
+    .sort((a,b)=>(a.bbox?.x0||0)-(b.bbox?.x0||0))
+    .map(w=>w.text||"")
+    .join(" "));
+}
+
+async function recognizeWholeSelectedRow(worker,source,row,bounds){
+  const canvas=buildRowOCRCanvas(source.canvas,row,bounds,10);
+  await worker.setParameters({
+    tessedit_pageseg_mode:"6",
+    preserve_interword_spaces:"1",
+    tessedit_char_whitelist:"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+  });
+  const result=await worker.recognize(canvas);
+  const grouped=wordsByDay(result.data.words||[],canvas,bounds);
+  const cells=grouped.map(ws=>chooseBestShift([textFromWords(ws)]));
+
+  // Second row-level pass with sparse text. It often recovers RDO/TRNG or faint times.
+  await worker.setParameters({
+    tessedit_pageseg_mode:"11",
+    preserve_interword_spaces:"1",
+    tessedit_char_whitelist:"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"
+  });
+  const sparse=await worker.recognize(canvas);
+  const grouped2=wordsByDay(sparse.data.words||[],canvas,bounds);
+  for(let i=0;i<14;i++){
+    if(validateShift(cells[i]).ok)continue;
+    const best=chooseBestShift([textFromWords(grouped[i]),textFromWords(grouped2[i])]);
+    if(validateShift(best).ok)cells[i]=best;
+  }
+  return cells;
+}
+
+function makeGentleCellVariant(raw,mode=0){
+  const trimY=[.08,.13,.17][mode]??.1;
+  const trimX=.045;
+  const sx=Math.round(raw.width*trimX),sy=Math.round(raw.height*trimY);
+  const w=Math.max(1,raw.width-sx*2),h=Math.max(1,raw.height-sy*2);
+  const c=document.createElement("canvas");c.width=w;c.height=h;
+  const ctx=c.getContext("2d");ctx.drawImage(raw,sx,sy,w,h,0,0,w,h);
+  const img=ctx.getImageData(0,0,w,h),d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    let v;
+    if(mode===0) v=Math.max(0,Math.min(255,(g-85)*2.0));
+    else if(mode===1) v=g<195?0:255;
+    else v=g<215?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  // Clear only the outer edge; do not erase thin digits near the center.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(w*.018)),by=Math.max(2,Math.round(h*.04));
+  ctx.fillRect(0,0,w,by);ctx.fillRect(0,h-by,w,by);
+  ctx.fillRect(0,0,bx,h);ctx.fillRect(w-bx,0,bx,h);
+  return c;
+}
+
+async function recognizeExactCellFallback(worker,raw){
+  const texts=[];
+  const variants=[makeGentleCellVariant(raw,0),makeGentleCellVariant(raw,1),makeGentleCellVariant(raw,2)];
+  const configs=[
+    ["7","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"],
+    ["8","0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:"],
+    ["13",""]
+  ];
+  for(let i=0;i<variants.length;i++){
+    texts.push(await recognize(worker,variants[i],configs[i][0],configs[i][1]));
+    const chosen=chooseBestShift(texts);
+    if(validateShift(chosen).ok)return chosen;
+  }
+  return "";
+}
+
+
+function printedCellVariant(raw, threshold=188){
+  const c=document.createElement("canvas");
+  c.width=raw.width; c.height=raw.height;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(raw,0,0);
+
+  const img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<threshold?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+
+  // White-out outer borders and top/bottom bands where grid lines/handwriting
+  // most often interfere with the printed roster text.
+  ctx.fillStyle="#fff";
+  const bx=Math.max(2,Math.round(c.width*.035));
+  const by=Math.max(2,Math.round(c.height*.13));
+  ctx.fillRect(0,0,c.width,by);
+  ctx.fillRect(0,c.height-by,c.width,by);
+  ctx.fillRect(0,0,bx,c.height);
+  ctx.fillRect(c.width-bx,0,bx,c.height);
+  return c;
+}
+
+function extractPrintedCandidates(text){
+  const raw=String(text||"").toUpperCase()
+    .replace(/[–—_]/g,"-")
+    .replace(/\s+/g," ")
+    .replace(/[^0-9A-Z:\- ]/g," ")
+    .trim();
+
+  const found=[];
+  const codeOrder=["RDO","TRNG","ALTH","HACC","ALV","ALLV","SICK","LEAVE","OFF","SL","AL"];
+  for(const code of codeOrder){
+    if(new RegExp(`\\b${code}\\b`).test(raw)) found.push(code);
+  }
+
+  const normalized=raw.replace(/O/g,"0").replace(/[IL|]/g,"1");
+  const timeMatches=normalized.match(/\b\d{3,4}\s*-\s*\d{3,4}\b/g)||[];
+  for(const t of timeMatches) found.push(normalizeShift(t.replace(/\s+/g,"")));
+
+  // Missing dash fallback.
+  const digitGroups=normalized.match(/\b\d{7,8}\b/g)||[];
+  for(const g of digitGroups){
+    if(g.length===8) found.push(normalizeShift(`${g.slice(0,4)}-${g.slice(4)}`));
+    if(g.length===7){
+      found.push(normalizeShift(`${g.slice(0,3)}-${g.slice(3)}`));
+      found.push(normalizeShift(`${g.slice(0,4)}-${g.slice(4)}`));
+    }
+  }
+  return found.filter(Boolean);
+}
+
+function candidateWeight(value, sourceWeight=1){
+  const info=validateShift(value);
+  if(!info.ok)return -999;
+  let score=100*sourceWeight;
+  if(/ TRNG$/.test(info.value)) score+=40;
+  else if(CODES.has(info.value)) score+=25;
+  else{
+    const [a,b]=info.value.split("-");
+    const sm=+a.slice(2),em=+b.slice(2);
+    if([0,30].includes(sm))score+=8;
+    if([0,30].includes(em))score+=8;
+    if((info.hours||0)>=4&&(info.hours||0)<=10.5)score+=12;
+  }
+  return score;
+}
+
+function choosePrintedPreferred(candidates){
+  let best="",score=-Infinity;
+  for(const c of candidates){
+    const s=candidateWeight(c.value,c.weight||1);
+    if(s>score){score=s;best=c.value}
+  }
+  return score>=100?best:"";
+}
+
+async function robustPrintedCellOCR(worker,raw){
+  const passes=[
+    {canvas:printedCellVariant(raw,170),psm:"7",weight:1.4},
+    {canvas:printedCellVariant(raw,188),psm:"7",weight:1.5},
+    {canvas:printedCellVariant(raw,205),psm:"8",weight:1.25},
+    {canvas:printedCellVariant(raw,188),psm:"13",weight:1.15}
+  ];
+  const candidates=[];
+
+  for(const p of passes){
+    const txt=await recognize(worker,p.canvas,p.psm,"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-:");
+    for(const v of extractPrintedCandidates(txt)){
+      candidates.push({value:v,weight:p.weight});
+    }
+  }
+
+  // Last pass with no whitelist helps letter codes like RDO/TRNG/SL.
+  const free=await recognize(worker,passes[1].canvas,"8","");
+  for(const v of extractPrintedCandidates(free)){
+    candidates.push({value:v,weight:1.35});
+  }
+
+  return choosePrintedPreferred(candidates);
+}
+
+
+function detectRosterTableRegions(canvas){
+  const W=canvas.width,H=canvas.height,ctx=canvas.getContext("2d");
+  const img=ctx.getImageData(0,0,W,H),d=img.data;
+  const x0=Math.floor(W*.03),x1=Math.ceil(W*.97);
+  const xStep=Math.max(1,Math.floor(W/700));
+  const active=new Array(H).fill(false);
+
+  for(let y=0;y<H;y++){
+    let dark=0,total=0;
+    for(let x=x0;x<x1;x+=xStep){
+      const i=(y*W+x)*4;
+      const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+      if(g<205)dark++;
+      total++;
+    }
+    active[y]=dark>Math.max(4,total*.012);
+  }
+
+  const runs=[];
+  let start=null,last=null;
+  const maxGap=Math.max(8,Math.round(H*.018));
+  for(let y=0;y<H;y++){
+    if(active[y]){
+      if(start===null)start=y;
+      last=y;
+    }else if(start!==null && y-last>maxGap){
+      runs.push([start,last]);
+      start=null;last=null;
+    }
+  }
+  if(start!==null)runs.push([start,last]);
+
+  const regions=[];
+  for(const [ry0,ry1] of runs){
+    const h=ry1-ry0;
+    if(h<H*.055)continue;
+
+    // Estimate horizontal table extent from dark pixels inside the band.
+    const colScore=new Array(W).fill(0);
+    const yStep=Math.max(1,Math.floor(h/160));
+    for(let y=ry0;y<=ry1;y+=yStep){
+      for(let x=0;x<W;x+=2){
+        const i=(y*W+x)*4;
+        const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+        if(g<195){colScore[x]++;if(x+1<W)colScore[x+1]++}
+      }
+    }
+    const maxScore=Math.max(...colScore,1);
+    const threshold=Math.max(2,maxScore*.08);
+    let left=0,right=W-1;
+    for(let x=0;x<W;x++){if(colScore[x]>=threshold){left=x;break}}
+    for(let x=W-1;x>=0;x--){if(colScore[x]>=threshold){right=x;break}}
+
+    const width=right-left;
+    if(width<W*.35)continue;
+    const px=Math.max(3,Math.round(width*.01));
+    const py=Math.max(3,Math.round(h*.035));
+    regions.push({
+      id:`table-${regions.length}`,
+      x0:Math.max(0,left-px),x1:Math.min(W,right+px),
+      y0:Math.max(0,ry0-py),y1:Math.min(H,ry1+py)
+    });
+  }
+
+  // Prefer substantial table-sized bands and keep vertical order.
+  return regions
+    .filter(r=>(r.y1-r.y0)>H*.07)
+    .sort((a,b)=>a.y0-b.y0);
+}
+
+async function detectNamesInTableRegion(canvas,region,worker){
+  const tw=region.x1-region.x0, th=region.y1-region.y0;
+  // Name column is the first wide column of the table; exclude the row-number/title margin.
+  const nx0=region.x0;
+  const nx1=region.x0+tw*.19;
+  const crop=rawCropCanvas(canvas,nx0,region.y0,nx1,region.y1,4);
+  const hi=preprocessCanvas(crop,1.5);
+
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(hi);
+  const scaleY=th/hi.height;
+  const grouped=groupNameWords(result.data.words||[]);
+  const candidates=[];
+
+  for(const g of grouped){
+    const localY=g.cy*scaleY;
+    // Skip the table title/header band.
+    if(localY<th*.10)continue;
+    const name=cleanStaffName(g.text);
+    if(!plausibleStaffName(name))continue;
+    if(/\b(?:WORKING|HOURS|SHIFT|MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)\b/i.test(name))continue;
+    candidates.push({
+      name,
+      cy:region.y0+localY,
+      rawY0:region.y0+g.y0*scaleY,
+      rawY1:region.y0+g.y1*scaleY
+    });
+  }
+
+  const dedup=[];
+  for(const n of candidates){
+    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<4 || x.name.toLowerCase()===n.name.toLowerCase())){
+      dedup.push(n);
+    }
+  }
+  return dedup.sort((a,b)=>a.cy-b.cy);
+}
+
+function attachBoundsWithinTable(staff,region){
+  const rows=[...staff].sort((a,b)=>a.cy-b.cy);
+  if(!rows.length)return [];
+  const typicalGap=rows.length>1
+    ? [...rows.slice(1).map((r,i)=>r.cy-rows[i].cy)].sort((a,b)=>a-b)[Math.floor((rows.length-1)/2)]
+    : Math.max(10,(region.y1-region.y0)*.045);
+
+  return rows.map((r,i)=>{
+    const prev=rows[i-1],next=rows[i+1];
+    const upper=prev?(prev.cy+r.cy)/2:r.cy-typicalGap/2;
+    const lower=next?(r.cy+next.cy)/2:r.cy+typicalGap/2;
+    return {...r,y0:Math.max(region.y0,upper+1),y1:Math.min(region.y1,lower-1)};
+  });
+}
+
+function detectGridInTableRegion(canvas,region,staff){
+  const W=canvas.width;
+  const tw=region.x1-region.x0;
+  const top=Math.max(region.y0,Math.min(...staff.map(r=>r.y0))-4);
+  const bottom=Math.min(region.y1,Math.max(...staff.map(r=>r.y1))+4);
+  const scores=verticalGridScore(canvas,top,bottom);
+
+  // Expected geometry is relative to THIS table, not the whole screenshot.
+  const expected=[];
+  expected.push(region.x0+tw*.005);
+  const dayLeft=region.x0+tw*.145;
+  const dayRight=region.x0+tw*.925;
+  const step=(dayRight-dayLeft)/14;
+  for(let i=0;i<=14;i++)expected.push(dayLeft+i*step);
+  expected.push(region.x0+tw*.995);
+
+  const radius=Math.max(4,tw*.018);
+  const lines=[];
+  for(let i=0;i<expected.length;i++){
+    const minX=i?lines[i-1]+2:region.x0;
+    const maxX=Math.min(region.x1,W-1);
+    let x=bestLineNear(scores,expected[i],radius,minX,maxX);
+    if(i&&x<=lines[i-1]+1)x=Math.max(lines[i-1]+2,Math.round(expected[i]));
+    lines.push(x);
+  }
+  return {dayBounds:lines.slice(1,16),workingBounds:[lines[15],lines[16]],lines};
+}
+
+async function inferFirstDateForRegion(canvas,region,worker){
+  const h=region.y1-region.y0;
+  const header=rawCropCanvas(canvas,region.x0,region.y0,region.x1,Math.min(region.y1,region.y0+h*.22),3);
+  await worker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1"});
+  const result=await worker.recognize(header);
+  return inferFirstDate(result.data.text||"");
+}
+
+
+async function numericOnlyFallback(worker,raw){
+  const thresholds=[165,185,205];
+  const candidates=[];
+
+  for(const th of thresholds){
+    const c=printedCellVariant(raw,th);
+    const passes=[
+      await recognize(worker,c,"7","0123456789-"),
+      await recognize(worker,c,"8","0123456789-"),
+      await recognize(worker,c,"13","0123456789-")
+    ];
+
+    for(const txt of passes){
+      const s=String(txt||"").replace(/[^\d-]/g,"");
+      if(!s)continue;
+
+      const direct=s.match(/^(\d{3,4})-(\d{3,4})$/);
+      if(direct){
+        candidates.push(normalizeShift(`${direct[1]}-${direct[2]}`));
+      }
+
+      const digits=s.replace(/\D/g,"");
+      if(digits.length===8){
+        candidates.push(normalizeShift(`${digits.slice(0,4)}-${digits.slice(4)}`));
+      }
+      if(digits.length===7){
+        candidates.push(normalizeShift(`${digits.slice(0,3)}-${digits.slice(3)}`));
+        candidates.push(normalizeShift(`${digits.slice(0,4)}-${digits.slice(4)}`));
+      }
+    }
+  }
+
+  let best="",bestScore=-Infinity;
+  for(const v of candidates){
+    const info=validateShift(v);
+    if(!info.ok)continue;
+
+    let score=100;
+    const [a,b]=info.value.split("-");
+    const sm=+a.slice(2),em=+b.slice(2);
+    if([0,30].includes(sm))score+=6;
+    if([0,30].includes(em))score+=6;
+    if((info.hours||0)>=3&&(info.hours||0)<=10.5)score+=10;
+    if((info.hours||0)>12)score-=20;
+
+    if(score>bestScore){bestScore=score;best=info.value}
+  }
+  return best;
+}
 
 function App(){
   const [entries,setEntries]=useState([]);
-  const [files,setFiles]=useState([]);
+  const [tab,setTab]=useState("dashboard");
   const [query,setQuery]=useState("");
-  const [dateFilter,setDateFilter]=useState("");
-  const [teamFilter,setTeamFilter]=useState("");
-  const [view,setView]=useState("dashboard");
-  const [calendarMonth,setCalendarMonth]=useState(isoToday().slice(0,7)+"-01");
-  const [weekStart,setWeekStart]=useState(addDays(isoToday(),-(new Date().getDay()+6)%7));
-  const [selectedDay,setSelectedDay]=useState(isoToday());
-  const [settings,setSettings]=useState(false);
-  const [overtime,setOvertime]=useState(40);
-  const [isOCR,setIsOCR]=useState(false);
+  const [threshold,setThreshold]=useState(38);
+  const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
+  const [selectedDate,setSelectedDate]=useState(todayISO());
+
+  const [table,setTable]=useState(null);
+  const [preview,setPreview]=useState(null);
+  const [selectedStaff,setSelectedStaff]=useState("");
+  const [review,setReview]=useState(null);
+  const [processing,setProcessing]=useState(false);
   const [progress,setProgress]=useState(0);
+  const [status,setStatus]=useState("");
   const [error,setError]=useState("");
-  const [drag,setDrag]=useState(false);
-  const input=useRef();
+  const fileRef=useRef(null);
 
-  useEffect(()=>{
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
+
+  const scanFullTable=useCallback(async(file)=>{
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
+    setStatus("Detecting roster tables…");
+    let worker;
     try{
-      const x=JSON.parse(localStorage.getItem(STORE)||"{}");
-      setEntries(x.entries||[]); setFiles(x.files||[]); setOvertime(x.overtime||40);
-    }catch{}
-  },[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,files,overtime}))}catch{}},[entries,files,overtime]);
+      const canvas=await imageToCanvas(file);
+      const url=URL.createObjectURL(file);
+      setPreview(url);
+      worker=await createWorker(p=>setProgress(Math.round(p*25)));
 
-  const addRows=useCallback(rows=>{
-    setEntries(old=>{
-      const seen=new Set(old.map(e=>[e.name,e.date,e.time,e.hours,e.team,e.role].join("|")));
-      return [...old,...rows.filter(e=>{const k=[e.name,e.date,e.time,e.hours,e.team,e.role].join("|");if(seen.has(k))return false;seen.add(k);return true;})];
-    });
+      let regions=detectRosterTableRegions(canvas);
+      if(!regions.length){
+        // Safe fallback: treat the visible content as one table.
+        regions=[{id:"table-0",x0:0,x1:canvas.width,y0:0,y1:canvas.height}];
+      }
+
+      const allStaff=[];
+      const tables=[];
+      for(let ti=0;ti<regions.length;ti++){
+        const region=regions[ti];
+        setStatus(`Reading employee names — table ${ti+1} of ${regions.length}`);
+        setProgress(25+Math.round((ti/regions.length)*45));
+
+        const names=await detectNamesInTableRegion(canvas,region,worker);
+        if(!names.length)continue;
+        const staff=attachBoundsWithinTable(names,region);
+        const firstDate=await inferFirstDateForRegion(canvas,region,worker);
+        const grid=detectGridInTableRegion(canvas,region,staff);
+
+        const tableInfo={
+          id:region.id,index:tables.length,region,firstDate,
+          bounds:grid.dayBounds,workingBounds:grid.workingBounds,gridLines:grid.lines
+        };
+        tables.push(tableInfo);
+
+        for(const r of staff){
+          allStaff.push({
+            ...r,
+            id:`staff-${allStaff.length}`,
+            tableId:tableInfo.id,
+            tableIndex:tableInfo.index,
+            firstDate,
+            bounds:tableInfo.bounds,
+            workingBounds:tableInfo.workingBounds
+          });
+        }
+      }
+
+      if(!allStaff.length){
+        throw new Error("No employee rows were detected. Make sure the full roster tables and their left-side name columns are visible.");
+      }
+
+      // Sort dropdown by employee name while preserving table/row identity.
+      allStaff.sort((a,b)=>a.name.localeCompare(b.name)||a.cy-b.cy);
+      setStatus(`${allStaff.length} staff across ${tables.length} roster ${tables.length===1?"table":"tables"}`);
+      setProgress(75);
+
+      const source={fileName:file.name,canvas,staff:allStaff,tables};
+      setTable(source);
+
+      const preferred=allStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||allStaff[0];
+      setSelectedStaff(preferred.id);
+      await readStaffRow(source,preferred.id,worker);
+    }catch(e){
+      setError(e?.message||"Could not read this roster image.");
+    }finally{
+      if(worker)try{await worker.terminate()}catch{}
+      setProcessing(false);setProgress(0);setStatus("");
+    }
   },[]);
 
-  const ocr=useCallback(async file=>{
-    setIsOCR(true);setProgress(0);setError("");
+  const readStaffRow=async(tableData,staffId,existingWorker=null)=>{
+    const source=tableData||table;
+    if(!source)return;
+    const row=source.staff.find(r=>r.id===staffId);
+    if(!row)return;
+
+    let worker=existingWorker,ownWorker=false;
     try{
-      const r=await Tesseract.recognize(file,"eng",{logger:m=>m.status==="recognizing text"&&setProgress(Math.round(m.progress*100))});
-      const rows=[];
-      r.data.text.split(/\n/).map(x=>x.trim()).filter(Boolean).forEach((line,i)=>{
-        const dm=line.match(/\\b(\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}|\\d{4}[/-]\\d{1,2}[/-]\\d{1,2})\\b/);
-        const tm=line.match(/\\b\\d{1,2}[:.]\\d{2}\\s*(?:AM|PM)?\\s*[–-]\\s*\\d{1,2}[:.]\\d{2}\\s*(?:AM|PM)?\\b/i);
-        let name=line.replace(dm?.[0]||"","").replace(tm?.[0]||"","").replace(/\\s{2,}/g," ").replace(/^[|,:;\\-\\s]+|[|,:;\\-\\s]+$/g,"").trim();
-        if(name.length>=2&&!/^(name|employee|staff|date|time|hours|shift)$/i.test(name))
-          rows.push({id:`ocr-${i}-${Date.now()}`,name,date:dm?dateValue(dm[0]):"",time:tm?tm[0]:"",hours:tm?hoursFromTime(tm[0])??"":"",team:"",role:"",source:file.name});
+      if(!worker){
+        setProcessing(true);setStatus(`Reading ${row.name}…`);setProgress(0);
+        worker=await createWorker();ownWorker=true;
+      }
+
+      const bounds=row.bounds;
+      const rowSource={
+        canvas:source.canvas,
+        fileName:source.fileName,
+        bounds,
+        workingBounds:row.workingBounds,
+        firstDate:row.firstDate
+      };
+
+      let cells=await recognizeWholeSelectedRow(worker,rowSource,row,bounds);
+      const thumbs=[];
+
+      for(let i=0;i<14;i++){
+        const x0=bounds[i],x1=bounds[i+1];
+        const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
+        thumbs.push(dataURL(thumb));
+
+        const info=validateShift(cells[i]);
+        if(!info.ok || (!CODES.has(info.value) && ((info.hours||0)>12 || (info.hours||0)<2))){
+          const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
+          const exact=await robustPrintedCellOCR(worker,raw);
+          if(validateShift(exact).ok){
+            cells[i]=exact;
+          }else{
+            const numeric=await numericOnlyFallback(worker,raw);
+            cells[i]=validateShift(numeric).ok?numeric:"";
+          }
+        }
+        if(ownWorker)setProgress(Math.round((i+1)/14*90));
+      }
+
+      const wh0=row.workingBounds?.[0],wh1=row.workingBounds?.[1];
+      let workingHours=null;
+      if(Number.isFinite(wh0)&&Number.isFinite(wh1)&&wh1>wh0){
+        const whCrop=cropCanvas(source.canvas,wh0+1,row.y0+1,wh1-1,row.y1-1,8);
+        const whText=await recognize(worker,whCrop,"7","0123456789.");
+        const whMatch=whText.match(/\d+(?:\.\d+)?/);
+        workingHours=whMatch?Number(whMatch[0]):null;
+      }
+
+      setReview({
+        fileName:source.fileName,staffId:row.id,name:row.name,
+        firstDate:row.firstDate,cells,thumbs,workingHours,
+        tableIndex:row.tableIndex
       });
-      if(!rows.length)setError("OCR could not identify roster rows. Try a clearer screenshot.");
-      else addRows(rows);
-      setFiles(f=>f.includes(file.name)?f:[...f,file.name]);
-    }catch{setError("Could not read the image.")}finally{setIsOCR(false);setProgress(0)}
-  },[addRows]);
+    }finally{
+      if(ownWorker&&worker)try{await worker.terminate()}catch{}
+      if(ownWorker){setProcessing(false);setProgress(0);setStatus("")}
+    }
+  };
 
-  const handleFiles=useCallback(list=>{
-    setError("");
-    [...(list||[])].forEach(file=>{
-      const ext=file.name.split(".").pop().toLowerCase();
-      if(["png","jpg","jpeg","gif","webp"].includes(ext)){ocr(file);return;}
-      if(ext==="csv"){
-        const r=new FileReader(); r.onload=e=>Papa.parse(e.target.result,{header:true,skipEmptyLines:true,complete:x=>{const rows=normalize(x.data,file.name); if(!rows.length)setError(`No employee/name column found in ${file.name}.`); else addRows(rows);}}); r.readAsText(file); setFiles(f=>f.includes(file.name)?f:[...f,file.name]); return;
-      }
-      if(["xlsx","xls"].includes(ext)){
-        const r=new FileReader(); r.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:"array"}), sh=wb.Sheets[wb.SheetNames[0]], rows=normalize(XLSX.utils.sheet_to_json(sh,{defval:""}),file.name); if(!rows.length)setError(`No employee/name column found in ${file.name}.`); else addRows(rows);}catch{setError(`Could not read ${file.name}.`)}}; r.readAsArrayBuffer(file); setFiles(f=>f.includes(file.name)?f:[...f,file.name]); return;
-      }
-      setError("Unsupported file. Use CSV, XLSX, XLS or an image.");
+  const selectStaff=async(id)=>{
+    setSelectedStaff(id);
+    setReview(null);
+    await readStaffRow(table,id);
+  };
+
+  const upload=(files)=>{
+    const file=files?.[0];if(!file)return;
+    const ext=file.name.split(".").pop().toLowerCase();
+    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTable(file);return;}
+    if(ext==="csv"){
+      Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
+        const rows=r.data.map((x,i)=>({id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
+        setEntries(old=>[...old,...rows]);
+      }});return;
+    }
+    if(["xlsx","xls"].includes(ext)){
+      const fr=new FileReader();
+      fr.onload=e=>{
+        const wb=XLSX.read(e.target.result,{type:"array"}),sh=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(sh,{defval:""}).map((x,i)=>({id:`xls-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
+        setEntries(old=>[...old,...rows]);
+      };
+      fr.readAsArrayBuffer(file);return;
+    }
+    setError("Use a roster screenshot, CSV, XLS or XLSX file.");
+  };
+
+  const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
+  const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
+  const importReview=()=>{
+    if(!review)return;
+    const bad=review.cells.filter(c=>!validateShift(c).ok).length;
+    if(bad){setError(`Correct ${bad} highlighted shift ${bad===1?"cell":"cells"} first.`);return;}
+    const added=review.cells.map((raw,i)=>{
+      const info=validateShift(raw),v=info.value;
+      const isTimed=!!info.time;
+      return {
+        id:`img-${Date.now()}-${i}`,
+        name:review.name,
+        date:addDays(review.firstDate,i),
+        time:isTimed?info.time:"",
+        code:info.code||(!isTimed?v:""),
+        display:formatRosterCell(v),
+        hours:info.hours||0,
+        source:review.fileName
+      };
     });
-  },[addRows,ocr]);
+    setEntries(old=>[
+      ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
+      ...added
+    ]);
+    setReview(null);setTable(null);setPreview(null);setTab("dashboard");
+  };
 
-  const teams=useMemo(()=>[...new Set(entries.map(e=>e.team).filter(Boolean))].sort(),[entries]);
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
-  const filtered=useMemo(()=>entries.filter(e=>(!query||e.name.toLowerCase().includes(query.toLowerCase()))&&(!dateFilter||e.date===dateFilter)&&(!teamFilter||e.team===teamFilter)).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,query,dateFilter,teamFilter]);
+  const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
+  const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
+  const weekStart=mondayOf(todayISO());
+  const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
+  const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
+  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
+  const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
+  const upcoming=mine.find(e=>e.date>=todayISO()&&(e.time||e.code!=="RDO"));
+  const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
-  const thisWeek=useMemo(()=>entries.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7)),[entries,weekStart]);
-  const thisMonth=useMemo(()=>{const m=calendarMonth.slice(0,7);return entries.filter(e=>e.date.startsWith(m))},[entries,calendarMonth]);
-  const upcoming=useMemo(()=>entries.filter(e=>e.date>=isoToday()).sort((a,b)=>a.date.localeCompare(b.date))[0],[entries]);
-  const totalWeek=sumHours(thisWeek), totalMonth=sumHours(thisMonth);
-  const overtimeWeek=Math.max(0,totalWeek-overtime);
+  return <div className="shell">
+    <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
-  const calendarDays=useMemo(()=>{
-    const start=monthStart(calendarMonth);
-    const first=(start.getDay()+6)%7;
-    const count=new Date(start.getFullYear(),start.getMonth()+1,0).getDate();
-    const cells=[];
-    for(let i=0;i<first;i++)cells.push(null);
-    for(let d=1;d<=count;d++)cells.push(new Date(start.getFullYear(),start.getMonth(),d));
-    while(cells.length%7)cells.push(null);
-    return cells;
-  },[calendarMonth]);
+    {tab==="dashboard"&&<main>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
+    </main>}
 
-  const reset=()=>{if(confirm("Delete the saved roster from this device?")){setEntries([]);setFiles([]);localStorage.removeItem(STORE)}};
+    {tab==="calendar"&&<main>
+      <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
+      <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
+      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)}/></section>
+      <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-threshold*4).toFixed(2)}/><Stat label="TARGET" value={(threshold*4).toFixed(2)}/></div>
+    </main>}
 
-  return <div className="app">
-    <header className="header">
-      <div><div className="logo">VV</div><div className="eyebrow">DUTY ROSTER</div></div>
-      <button className="iconBtn" onClick={()=>setSettings(!settings)}><Settings2 size={18}/></button>
-    </header>
+    {tab==="roster"&&<main><Roster rows={mine}/></main>}
 
-    {settings&&<section className="panel settings">
-      <div><b>Roster settings</b><span className="muted">Local device storage</span></div>
-      <label>Weekly overtime threshold
-        <input type="number" value={overtime} min="1" onChange={e=>setOvertime(+e.target.value||40)}/>
-      </label>
-      <button className="dangerBtn" onClick={reset}><Trash2 size={14}/> Delete all saved roster data</button>
-    </section>}
+    {tab==="search"&&<main>
+      <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
+      <section className="panel"><Roster rows={filtered.slice(0,50)}/></section>
+    </main>}
 
-    <section className="upload" onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFiles(e.dataTransfer.files)}} onClick={()=>!isOCR&&input.current?.click()}>
-      {isOCR?<><LoaderIcon/><b>Reading roster image…</b><small>{progress}%</small></>:<><Upload size={23}/><b>Upload roster</b><small>CSV · Excel · Screenshot · Photo</small></>}
-      <input ref={input} hidden type="file" multiple accept=".csv,.xlsx,.xls,image/*" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
-    </section>
+    {tab==="more"&&<main>
+      <section className="panel menu"><h3>IMPORT</h3>
+        <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
+      </section>
+      <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
+      <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
+    </main>}
 
-    {error&&<div className="error">{error}</div>}
+    <input ref={fileRef} hidden type="file" accept=".csv,.xlsx,.xls,image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
 
-    {files.length>0&&<div className="fileRow">{files.map(f=><span key={f}>{f}<button onClick={()=>{setFiles(x=>x.filter(y=>y!==f));setEntries(x=>x.filter(e=>e.source!==f))}}><X size={10}/></button></span>)}</div>}
+    {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
-    <nav className="tabs">
-      <button className={view==="dashboard"?"active":""} onClick={()=>setView("dashboard")}><LayoutDashboard size={15}/>Dashboard</button>
-      <button className={view==="calendar"?"active":""} onClick={()=>setView("calendar")}><CalendarDays size={15}/>Calendar</button>
-      <button className={view==="list"?"active":""} onClick={()=>setView("list")}><List size={15}/>Roster</button>
+    {processing&&<div className="modalWrap"><div className="modal compact">
+      <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
+      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
+    </div></div>}
+
+    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee to see the roster exactly by day: RDO stays RDO, shifts display as HH:MM–HH:MM, and training shifts display as HH:MM–HH:MM TRNG.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+
+      <div className="autoLayout">
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
+        <div className="autoControls">
+          <label>Employee
+            <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
+              {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
+            </select>
+          </label>
+          {review&&<>
+            <label>First date
+              <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
+            </label>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
+          </>}
+        </div>
+      </div>
+
+      {review&&<>
+        <div className="selectedRowTitle"><b>{review.name}</b><span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span></div>
+        <div className="preciseReview">
+          {review.cells.map((cell,i)=>{
+            const info=validateShift(cell);
+            return <div className={`preciseRow ${info.ok?"":"bad"}`} key={i}>
+              <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
+              <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
+              <div className="editCol">
+                <input
+                  value={info.ok?formatRosterCell(cell):cell}
+                  placeholder="RDO or 05:00–13:00 or 05:00–13:00 TRNG"
+                  onChange={e=>updateCell(i,e.target.value)}
+                  onBlur={e=>updateCell(i,normalizeShift(e.target.value))}
+                />
+                {!info.ok&&<small>{info.reason}</small>}
+              </div>
+              <div className="hoursCol rosterStatus">{info.ok?(info.code==="RDO"?"RDO":info.code==="TRNG"?"TRNG":""):"—"}</div>
+            </div>
+          })}
+        </div>
+        <div className="importFooter">
+          <span className={allValid?"ready":"notReady"}>{allValid?"✓ All 14 days valid":`${review.cells.filter(c=>!validateShift(c).ok).length} cells need correction`}</span>
+          <button className="primary" disabled={!allValid} onClick={importReview}><Check size={16}/> Import {review.name}</button>
+        </div>
+      </>}
+    </div></div>}
+
+    <nav className="bottom">
+      <Nav id="dashboard" tab={tab} setTab={setTab} icon={<Home/>} label="Dashboard"/>
+      <Nav id="calendar" tab={tab} setTab={setTab} icon={<CalendarDays/>} label="Calendar"/>
+      <Nav id="roster" tab={tab} setTab={setTab} icon={<ClipboardList/>} label="My Roster"/>
+      <Nav id="search" tab={tab} setTab={setTab} icon={<Search/>} label="Search"/>
+      <Nav id="more" tab={tab} setTab={setTab} icon={<Menu/>} label="More"/>
     </nav>
-
-    {view==="dashboard"&&<main>
-      <section className="hero">
-        <div><small>NEXT SHIFT</small>{upcoming?<><h2>{fmtShort(upcoming.date)}</h2><p>{upcoming.name} · {upcoming.time||"Time not listed"}</p></>:<h2>No upcoming shift</h2>}</div>
-        {upcoming&&<div className="badge">{upcoming.team||"Roster"}</div>}
-      </section>
-
-      <div className="stats">
-        <Stat label="This week" value={`${totalWeek.toFixed(1)}h`} icon={<Clock3 size={15}/>}/>
-        <Stat label="This month" value={`${totalMonth.toFixed(1)}h`} icon={<CalendarDays size={15}/>}/>
-        <Stat label="Overtime" value={`${overtimeWeek.toFixed(1)}h`} icon={<Clock3 size={15}/>}/>
-      </div>
-
-      <section className="panel">
-        <div className="sectionTitle"><b>This week</b><button onClick={()=>setView("calendar")}>Open calendar →</button></div>
-        <div className="weekStrip">{Array.from({length:7},(_,i)=>addDays(weekStart,i)).map(d=>{
-          const rows=entries.filter(e=>e.date===d);
-          return <button key={d} className={d===selectedDay?"day activeDay":"day"} onClick={()=>{setSelectedDay(d);setView("calendar")}}><small>{new Date(d+"T12:00:00").toLocaleDateString(undefined,{weekday:"short"})}</small><b>{new Date(d+"T12:00:00").getDate()}</b><span>{rows.length}</span></button>
-        })}</div>
-      </section>
-
-      <section className="panel">
-        <div className="sectionTitle"><b>Upcoming roster</b><span className="muted">{entries.length} records</span></div>
-        <RosterList rows={entries.filter(e=>e.date>=isoToday()).sort((a,b)=>a.date.localeCompare(b.date)).slice(0,8)}/>
-      </section>
-    </main>}
-
-    {view==="calendar"&&<main>
-      <div className="calendarHeader"><button className="iconBtn" onClick={()=>setCalendarMonth(addDays(calendarMonth,-1).slice(0,7)+"-01")}><ChevronLeft/></button><h2>{new Date(calendarMonth+"T12:00:00").toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="iconBtn" onClick={()=>setCalendarMonth(addDays(calendarMonth,32).slice(0,7)+"-01")}><ChevronRight/></button></div>
-      <div className="calendar">
-        {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(x=><div className="dow" key={x}>{x}</div>)}
-        {calendarDays.map((d,i)=>{const iso=d&&keyDate(d), rows=iso?entries.filter(e=>e.date===iso):[]; return <button key={i} disabled={!d} className={"cell "+(iso===isoToday()?"today":"")} onClick={()=>{if(iso){setSelectedDay(iso);setDateFilter(iso)}}}>{d&&<><b>{d.getDate()}</b>{rows.slice(0,3).map((e,j)=><span key={j} className="shiftDot">{e.team||e.name.split(" ")[0]}</span>)}{rows.length>3&&<small>+{rows.length-3}</small>}</>}</button>})}
-      </div>
-      <section className="panel">
-        <div className="sectionTitle"><b>{fmtShort(selectedDay)}</b><button onClick={()=>setDateFilter(dateFilter?"":selectedDay)}>{dateFilter?"Clear":"Filter"}</button></div>
-        <RosterList rows={entries.filter(e=>e.date===selectedDay)}/>
-      </section>
-    </main>}
-
-    {view==="list"&&<main>
-      <div className="search"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search employee…"/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
-      <div className="filters"><select value={teamFilter} onChange={e=>setTeamFilter(e.target.value)}><option value="">All teams</option>{teams.map(t=><option key={t}>{t}</option>)}</select><select value={dateFilter} onChange={e=>setDateFilter(e.target.value)}><option value="">All dates</option>{[...new Set(entries.map(e=>e.date).filter(Boolean))].sort().map(d=><option key={d}>{d}</option>)}</select></div>
-      <div className="quick">{names.slice(0,12).map(n=><button key={n} onClick={()=>setQuery(n)}>{n}</button>)}</div>
-      <div className="sectionTitle"><b>{filtered.length} entries</b><div className="export"><button onClick={()=>exportCsv(filtered)}><Download size={13}/>CSV</button><button onClick={()=>exportXlsx(filtered)}>Excel</button></div></div>
-      <RosterList rows={filtered}/>
-    </main>}
-
-    <footer><Save size={12}/> Saved locally on this device</footer>
-  </div>
+  </div>;
 }
 
-function LoaderIcon(){return <div className="spinner"/>}
-function Stat({label,value,icon}){return <div className="stat"><div>{icon}</div><small>{label}</small><b>{value}</b></div>}
-function RosterList({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="rosterList">{rows.map(e=><article className="shift" key={e.id}><div className="shiftBar"/><div className="shiftMain"><b>{e.name}</b><small>{fmtDate(e.date)} {e.time&&"· "+e.time}</small>{(e.team||e.role)&&<span>{e.team}{e.team&&e.role?" · ":""}{e.role}</span>}</div><strong>{e.hours!==""&&e.hours!=null?`${Number(e.hours).toFixed(1)}h`:"—"}</strong></article>)}</div>}
+function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
+function entryRosterText(e){
+  if(e.display)return e.display;
+  if(e.code==="RDO")return "RDO";
+  if(e.time){
+    const combined=e.code==="TRNG"?`${e.time} TRNG`:e.time;
+    return formatRosterCell(combined);
+  }
+  return e.code||"Off";
+}
+function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{entryRosterText(e)}</b><span>{e.name}</span></div><strong>{e.code==="RDO"?"RDO":""}</strong></div>)}</div>}
+function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
+function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click()}
 
 createRoot(document.getElementById("root")).render(<App/>);
