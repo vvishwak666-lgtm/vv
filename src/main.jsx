@@ -1054,6 +1054,15 @@ function cleanReplicatedCellText(text){
 }
 
 async function replicateCellText(worker,raw){
+  // Roster cells have a small, predictable vocabulary. Prefer a verified
+  // HHMM-HHMM / RDO / TRNG result instead of returning OCR garbage letters.
+  const printed=await robustPrintedCellOCR(worker,raw);
+  if(printed) return printed;
+
+  const exact=await recognizeExactCellFallback(worker,raw);
+  if(exact) return exact;
+
+  // Preserve a readable roster code only when several OCR passes agree.
   const variants=[
     printedCellVariant(raw,170),
     printedCellVariant(raw,188),
@@ -1061,16 +1070,23 @@ async function replicateCellText(worker,raw){
   ];
   const texts=[];
   for(const c of variants){
-    texts.push(await recognize(worker,c,"7",""));
-    texts.push(await recognize(worker,c,"8",""));
+    texts.push(cleanReplicatedCellText(await recognize(worker,c,"7","")));
+    texts.push(cleanReplicatedCellText(await recognize(worker,c,"8","")));
   }
-  // Keep the most information-rich non-empty result, without forcing validation.
-  const cleaned=texts.map(cleanReplicatedCellText).filter(Boolean);
-  cleaned.sort((a,b)=>{
-    const score=s=>(s.match(/[A-Z0-9]/gi)||[]).length + (s.includes("-")?4:0) + (/\bRDO\b/i.test(s)?6:0) + (/\bTRNG\b/i.test(s)?6:0);
-    return score(b)-score(a);
-  });
-  return cleaned[0]||"";
+
+  const normalized=texts
+    .map(t=>t.toUpperCase().replace(/[^A-Z0-9:-]/g,""))
+    .filter(Boolean);
+
+  // Never display random OCR strings such as IELENHFIN / TLNF / LLL.
+  // Only pass through a compact code if it is repeated by multiple OCR passes.
+  const counts={};
+  for(const t of normalized) counts[t]=(counts[t]||0)+1;
+  const agreed=Object.entries(counts)
+    .filter(([t,n])=>n>=2 && t.length>=2 && t.length<=8 && /^[A-Z]+$/.test(t))
+    .sort((a,b)=>b[1]-a[1])[0];
+
+  return agreed ? agreed[0] : "";
 }
 
 function App(){
