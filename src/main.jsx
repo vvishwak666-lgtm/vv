@@ -420,6 +420,35 @@ function detectRosterGridBounds(canvas,staff){
 }
 
 
+
+async function imageToCanvas(file){
+  if(typeof createImageBitmap==="function"){
+    const bmp=await createImageBitmap(file);
+    const c=document.createElement("canvas");
+    c.width=bmp.width;
+    c.height=bmp.height;
+    c.getContext("2d").drawImage(bmp,0,0);
+    return c;
+  }
+
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((resolve,reject)=>{
+      const el=new Image();
+      el.onload=()=>resolve(el);
+      el.onerror=reject;
+      el.src=url;
+    });
+    const c=document.createElement("canvas");
+    c.width=img.naturalWidth||img.width;
+    c.height=img.naturalHeight||img.height;
+    c.getContext("2d").drawImage(img,0,0);
+    return c;
+  }finally{
+    URL.revokeObjectURL(url);
+  }
+}
+
 function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
   const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
