@@ -244,13 +244,21 @@ async function createWorker(onProgress){
   });
   return worker;
 }
+function withTimeout(promise,ms=12000,label="OCR"){
+  let timer;
+  const timeout=new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error(`${label} timed out`)),ms);
+  });
+  return Promise.race([promise,timeout]).finally(()=>clearTimeout(timer));
+}
+
 async function recognize(worker,canvas,psm="7",whitelist=""){
   await worker.setParameters({
     tessedit_pageseg_mode:psm,
     preserve_interword_spaces:"1",
     ...(whitelist?{tessedit_char_whitelist:whitelist}:{})
   });
-  const r=await worker.recognize(canvas);
+  const r=await withTimeout(worker.recognize(canvas),12000,"Cell OCR");
   return cleanText(r.data.text||"");
 }
 function bestCell(candidates){
@@ -419,6 +427,35 @@ function detectRosterGridBounds(canvas,staff){
   return {lines,dayBounds,workingBounds,top,bottom};
 }
 
+
+
+async function imageToCanvas(file){
+  if(typeof createImageBitmap==="function"){
+    const bmp=await createImageBitmap(file);
+    const c=document.createElement("canvas");
+    c.width=bmp.width;
+    c.height=bmp.height;
+    c.getContext("2d").drawImage(bmp,0,0);
+    return c;
+  }
+
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((resolve,reject)=>{
+      const el=new Image();
+      el.onload=()=>resolve(el);
+      el.onerror=reject;
+      el.src=url;
+    });
+    const c=document.createElement("canvas");
+    c.width=img.naturalWidth||img.width;
+    c.height=img.naturalHeight||img.height;
+    c.getContext("2d").drawImage(img,0,0);
+    return c;
+  }finally{
+    URL.revokeObjectURL(url);
+  }
+}
 
 function rawCropCanvas(src,x0,y0,x1,y1,scale=10){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
@@ -1016,6 +1053,404 @@ async function numericOnlyFallback(worker,raw){
   return best;
 }
 
+
+function cleanReplicatedCellText(text){
+  return String(text||"")
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+async function replicateCellText(worker,raw){
+  // Roster cells have a small, predictable vocabulary. Prefer a verified
+  // HHMM-HHMM / RDO / TRNG result instead of returning OCR garbage letters.
+  const printed=await robustPrintedCellOCR(worker,raw);
+  if(printed) return printed;
+
+  const exact=await recognizeExactCellFallback(worker,raw);
+  if(exact) return exact;
+
+  // Preserve a readable roster code only when several OCR passes agree.
+  const variants=[
+    printedCellVariant(raw,170),
+    printedCellVariant(raw,188),
+    printedCellVariant(raw,205)
+  ];
+  const texts=[];
+  for(const c of variants){
+    texts.push(cleanReplicatedCellText(await recognize(worker,c,"7","")));
+    texts.push(cleanReplicatedCellText(await recognize(worker,c,"8","")));
+  }
+
+  const normalized=texts
+    .map(t=>t.toUpperCase().replace(/[^A-Z0-9:-]/g,""))
+    .filter(Boolean);
+
+  // Never display random OCR strings such as IELENHFIN / TLNF / LLL.
+  // Only pass through a compact code if it is repeated by multiple OCR passes.
+  const counts={};
+  for(const t of normalized) counts[t]=(counts[t]||0)+1;
+  const agreed=Object.entries(counts)
+    .filter(([t,n])=>n>=2 && t.length>=2 && t.length<=8 && /^[A-Z]+$/.test(t))
+    .sort((a,b)=>b[1]-a[1])[0];
+
+  return agreed ? agreed[0] : "";
+}
+
+
+function parseRosterSourceText(text){
+  const raw=String(text||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {display:"",time:"",code:"",hours:0};
+
+  if(/\bRDO\b/.test(raw)){
+    return {display:"RDO",time:"",code:"RDO",hours:0};
+  }
+
+  const hasTRNG=/\bTRNG\b/.test(raw);
+  const num=raw
+    .replace(/O/g,"0")
+    .replace(/[IL|]/g,"1")
+    .replace(/:/g,"");
+
+  const m=num.match(/(\d{3,4})\s*-\s*(\d{3,4})/);
+  if(m){
+    const a=m[1].padStart(4,"0"), b=m[2].padStart(4,"0");
+    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+    if(sh<=23&&eh<=23&&sm<=59&&em<=59){
+      let mins=eh*60+em-(sh*60+sm);
+      if(mins<0) mins+=1440;
+      if(mins>0&&mins<=14*60){
+        const display=`${a}-${b}${hasTRNG?" TRNG":""}`;
+        return {
+          display,
+          time:`${a}-${b}`,
+          code:hasTRNG?"TRNG":"",
+          hours:mins/60
+        };
+      }
+    }
+  }
+
+  // Preserve non-time roster codes exactly enough for display, but they carry 0 hours.
+  const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
+  if(codeMatch){
+    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
+  }
+
+  return {display:raw,time:"",code:"",hours:0};
+}
+
+
+async function canvasFromDataURL(url){
+  const img=await new Promise((resolve,reject)=>{
+    const el=new Image();
+    el.onload=()=>resolve(el);
+    el.onerror=reject;
+    el.src=url;
+  });
+  const c=document.createElement("canvas");
+  c.width=img.naturalWidth||img.width;
+  c.height=img.naturalHeight||img.height;
+  c.getContext("2d").drawImage(img,0,0);
+  return c;
+}
+
+async function readCalculationValueFromSourceCell(worker,dataUrl){
+  if(!dataUrl) return {display:"",time:"",code:"",hours:0};
+
+  const raw=await canvasFromDataURL(dataUrl);
+
+  // First detect roster codes from the exact cropped source cell.
+  const codeCanvas=printedCellVariant(raw,188);
+  const codeText=String(await recognize(worker,codeCanvas,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:")||"")
+    .toUpperCase()
+    .replace(/\s+/g," ")
+    .trim();
+
+  if(/\bRD[O0]\b/.test(codeText)){
+    return {display:"RDO",time:"",code:"RDO",hours:0};
+  }
+
+  const hasTRNG=/\bTRN[G6]\b/.test(codeText);
+
+  // Numeric-only passes on the exact source cell.
+  const candidates=[];
+  for(const th of [160,175,190,205,220]){
+    const c=printedCellVariant(raw,th);
+    for(const psm of ["7","8","13"]){
+      const txt=String(await recognize(worker,c,psm,"0123456789-:")||"");
+      const normalized=txt.replace(/[^0-9:-]/g,"").replace(/:/g,"");
+
+      const direct=normalized.match(/(\d{3,4})-(\d{3,4})/);
+      if(direct){
+        candidates.push([direct[1].padStart(4,"0"),direct[2].padStart(4,"0")]);
+      }
+
+      const digits=normalized.replace(/\D/g,"");
+      if(digits.length===8){
+        candidates.push([digits.slice(0,4),digits.slice(4)]);
+      }
+    }
+  }
+
+  // Validate and vote. Exact roster times normally use sensible clock values
+  // and shift lengths up to 14h, including overnight.
+  const scored=[];
+  for(const [a,b] of candidates){
+    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+    if(sh>23||eh>23||sm>59||em>59) continue;
+
+    let mins=eh*60+em-(sh*60+sm);
+    if(mins<0) mins+=1440;
+    if(mins<=0||mins>14*60) continue;
+
+    let score=100;
+    if([0,30].includes(sm)) score+=8;
+    if([0,30].includes(em)) score+=8;
+    if(mins>=180&&mins<=600) score+=12;
+
+    const key=`${a}-${b}`;
+    const repeats=candidates.filter(x=>`${x[0]}-${x[1]}`===key).length;
+    score+=repeats*20;
+
+    scored.push({a,b,mins,score});
+  }
+
+  scored.sort((x,y)=>y.score-x.score);
+  if(scored.length){
+    const best=scored[0];
+    return {
+      display:`${best.a}-${best.b}${hasTRNG?" TRNG":""}`,
+      time:`${best.a}-${best.b}`,
+      code:hasTRNG?"TRNG":"",
+      hours:best.mins/60
+    };
+  }
+
+  // Fall back only if source-cell OCR genuinely cannot recover a time/code.
+  return parseRosterSourceText(codeText);
+}
+
+
+
+function tightRosterTextCanvas(raw){
+  const src=raw;
+  const ctx=src.getContext("2d");
+  const w=src.width,h=src.height;
+  const img=ctx.getImageData(0,0,w,h).data;
+
+  // Ignore borders and the mostly-empty right side of a roster cell.
+  const xStart=Math.max(1,Math.floor(w*.02));
+  const xEnd=Math.min(w-1,Math.floor(w*.58));
+  const yStart=Math.max(1,Math.floor(h*.08));
+  const yEnd=Math.min(h-1,Math.floor(h*.92));
+
+  let minX=xEnd,minY=yEnd,maxX=xStart,maxY=yStart,found=false;
+
+  for(let y=yStart;y<yEnd;y++){
+    for(let x=xStart;x<xEnd;x++){
+      const i=(y*w+x)*4;
+      const r=img[i],g=img[i+1],b=img[i+2];
+      const lum=(r+g+b)/3;
+
+      // Printed roster text is substantially darker than the white cell.
+      if(lum<175){
+        found=true;
+        if(x<minX)minX=x;
+        if(x>maxX)maxX=x;
+        if(y<minY)minY=y;
+        if(y>maxY)maxY=y;
+      }
+    }
+  }
+
+  if(!found){
+    return rawCropCanvas(src,xStart,yStart,xEnd,yEnd,4);
+  }
+
+  const padX=Math.max(3,Math.round((maxX-minX+1)*.18));
+  const padY=Math.max(3,Math.round((maxY-minY+1)*.45));
+
+  minX=Math.max(xStart,minX-padX);
+  maxX=Math.min(xEnd,maxX+padX);
+  minY=Math.max(yStart,minY-padY);
+  maxY=Math.min(yEnd,maxY+padY);
+
+  return rawCropCanvas(src,minX,minY,maxX,maxY,8);
+}
+
+function readCanonicalRosterCell(worker,raw){
+  return (async()=>{
+    const tight=tightRosterTextCanvas(raw);
+
+    const normalize=s=>String(s||"")
+      .toUpperCase()
+      .replace(/[–—_:]/g,"-")
+      .replace(/\s+/g,"")
+      .replace(/O/g,"0");
+
+    const values=[];
+
+    const add=(text,weight)=>{
+      const s=normalize(text);
+
+      const direct=s.match(/(\d{4})-(\d{4})/);
+      if(direct){
+        values.push({value:`${direct[1]}-${direct[2]}`,weight});
+      }
+
+      const digits=s.replace(/\D/g,"");
+      if(digits.length===8){
+        values.push({
+          value:`${digits.slice(0,4)}-${digits.slice(4)}`,
+          weight:weight*.9
+        });
+      }
+    };
+
+    // Detect RDO/TRNG from the tightly-cropped printed text.
+    const codePasses=[];
+    for(const th of [150,170,190,210]){
+      const c=printedCellVariant(tight,th);
+      codePasses.push(await recognize(worker,c,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
+      codePasses.push(await recognize(worker,c,"8","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
+    }
+
+    const rdoVotes=codePasses.filter(t=>/\bRD[O0]\b/i.test(String(t))).length;
+    const trngVotes=codePasses.filter(t=>/\bTRN[G6]\b/i.test(String(t))).length;
+
+    if(rdoVotes>=2) return "RDO";
+
+    // Read the actual printed HHMM-HHMM from a tightly cropped text region.
+    // PSM 7 is strongest for one line; PSM 8/13 are supporting votes.
+    for(const th of [135,150,165,180,195,210,225]){
+      const c=printedCellVariant(tight,th);
+      add(await recognize(worker,c,"7","0123456789-:"),1.6);
+      add(await recognize(worker,c,"8","0123456789-:"),1.15);
+      add(await recognize(worker,c,"13","0123456789-:"),1.0);
+    }
+
+    add(await recognize(worker,tight,"7","0123456789-:"),1.8);
+    add(await recognize(worker,tight,"8","0123456789-:"),1.25);
+
+    const grouped=new Map();
+
+    for(const item of values){
+      const parsed=airport24HourDuration(item.value);
+      if(!parsed.valid || !parsed.time) continue;
+
+      const current=grouped.get(parsed.time)||{score:0,count:0};
+      current.score+=item.weight;
+      current.count+=1;
+      grouped.set(parsed.time,current);
+    }
+
+    const ranked=[...grouped.entries()]
+      .map(([value,x])=>({
+        value,
+        score:x.score + x.count*.8
+      }))
+      .sort((a,b)=>b.score-a.score);
+
+    if(ranked.length){
+      const best=ranked[0].value;
+      return trngVotes>=2 ? `${best} TRNG` : best;
+    }
+
+    if(trngVotes>=2) return "TRNG";
+
+    const knownCodes=["ALTH","HACC","ALV","SICK","LEAVE","OFF","SL","AL"];
+    for(const code of knownCodes){
+      const votes=codePasses.filter(t=>new RegExp(`\\b${code}\\b`,"i").test(String(t))).length;
+      if(votes>=2) return code;
+    }
+
+    return "";
+  })();
+}
+
+
+function airport24HourDuration(value){
+  const raw=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {valid:false,hours:0,time:"",code:"",display:""};
+
+  if(/\bRDO\b/.test(raw)){
+    return {valid:true,hours:0,time:"",code:"RDO",display:"RDO"};
+  }
+
+  const hasTRNG=/\bTRNG\b/.test(raw);
+  const m=raw.match(/(\d{4})\s*-\s*(\d{4})/);
+  if(!m) return {valid:false,hours:0,time:"",code:"",display:raw};
+
+  const start=m[1], end=m[2];
+  const sh=Number(start.slice(0,2));
+  const sm=Number(start.slice(2,4));
+  const eh=Number(end.slice(0,2));
+  const em=Number(end.slice(2,4));
+
+  if(
+    sh<0 || sh>23 || eh<0 || eh>23 ||
+    sm<0 || sm>59 || em<0 || em>59
+  ){
+    return {valid:false,hours:0,time:"",code:"",display:raw};
+  }
+
+  const startMinutes=sh*60+sm;
+  let endMinutes=eh*60+em;
+
+  // Airport roster rule: if finish is earlier than or equal to start,
+  // the finish is on the next calendar day.
+  if(endMinutes===startMinutes) return {valid:true,hours:0,time:`${start}-${end}`,display:`${start}-${end}`};
+  if(endMinutes<startMinutes) endMinutes += 24*60;
+
+  const durationMinutes=endMinutes-startMinutes;
+
+  // Airport shifts can cross midnight. Only reject impossible >24h results.
+  if(durationMinutes<=0 || durationMinutes>24*60){
+    return {valid:false,hours:0,time:"",code:"",display:raw};
+  }
+
+  const time=`${start}-${end}`;
+  return {
+    valid:true,
+    hours:durationMinutes/60,
+    time,
+    code:hasTRNG?"TRNG":"",
+    display:`${time}${hasTRNG?" TRNG":""}`
+  };
+}
+
+function parseDisplayedRosterValue(value){
+  const raw=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {display:"",time:"",code:"",hours:0};
+
+  const airport=airport24HourDuration(raw);
+  if(airport.valid){
+    return {
+      display:airport.display,
+      time:airport.time,
+      code:airport.code,
+      hours:airport.hours
+    };
+  }
+
+  const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
+  if(codeMatch){
+    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
+  }
+
+  return {display:raw,time:"",code:"",hours:0};
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -1097,9 +1532,9 @@ function App(){
       const source={fileName:file.name,canvas,staff:allStaff,tables};
       setTable(source);
 
-      const preferred=allStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||allStaff[0];
-      setSelectedStaff(preferred.id);
-      await readStaffRow(source,preferred.id,worker);
+      // Stop after name detection. Show the employee dropdown immediately.
+      // Detailed OCR runs only after the user explicitly selects an employee.
+      setSelectedStaff("");
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -1131,6 +1566,7 @@ function App(){
       };
 
       let cells=await recognizeWholeSelectedRow(worker,rowSource,row,bounds);
+      const wholeRowCells=[...cells];
       const thumbs=[];
 
       for(let i=0;i<14;i++){
@@ -1138,17 +1574,39 @@ function App(){
         const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumb));
 
-        const info=validateShift(cells[i]);
-        if(!info.ok || (!CODES.has(info.value) && ((info.hours||0)>12 || (info.hours||0)<2))){
-          const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-          const exact=await robustPrintedCellOCR(worker,raw);
-          if(validateShift(exact).ok){
-            cells[i]=exact;
-          }else{
-            const numeric=await numericOnlyFallback(worker,raw);
-            cells[i]=validateShift(numeric).ok?numeric:"";
+        const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
+
+        // Read the exact cell, but NEVER destroy a useful value already obtained
+        // from the whole selected row. This was the cause of missing hours.
+        const exactValue=await readCanonicalRosterCell(worker,raw);
+        const rowValue=cleanReplicatedCellText(wholeRowCells[i]||"");
+
+        // Extra exact-cell fallback for a readable time/code if the canonical pass
+        // is empty. It uses the same source cell and does not affect the displayed crop.
+        let fallbackValue="";
+        if(!exactValue){
+          const printed=await robustPrintedCellOCR(worker,raw);
+          fallbackValue=cleanReplicatedCellText(printed||"");
+        }
+
+        const candidates=[exactValue,rowValue,fallbackValue]
+          .map(v=>String(v||"").trim())
+          .filter(Boolean);
+
+        // Prefer a valid roster time or RDO. Otherwise keep the first meaningful code.
+        let chosen="";
+        for(const v of candidates){
+          const parsed=parseDisplayedRosterValue(v);
+          if(parsed.time || parsed.code==="RDO"){
+            chosen=parsed.display;
+            break;
           }
         }
+        if(!chosen){
+          chosen=candidates[0]||"";
+        }
+
+        cells[i]=chosen;
         if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
 
@@ -1201,60 +1659,143 @@ function App(){
   };
 
   const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
-  const allValid=review?review.cells.every(c=>validateShift(c).ok):false;
+  const allValid=!!review;
   const importReview=()=>{
     if(!review)return;
-    const bad=review.cells.filter(c=>!validateShift(c).ok).length;
-    if(bad){setError(`Correct ${bad} highlighted shift ${bad===1?"cell":"cells"} first.`);return;}
+
     const added=review.cells.map((raw,i)=>{
-      const info=validateShift(raw),v=info.value;
-      const isTimed=!!info.time;
+      const literal=cleanReplicatedCellText(raw);
+      const parsed=parseDisplayedRosterValue(literal);
+      const thumb=review.thumbs?.[i]||"";
+
       return {
         id:`img-${Date.now()}-${i}`,
         name:review.name,
         date:addDays(review.firstDate,i),
-        time:isTimed?info.time:"",
-        code:info.code||(!isTimed?v:""),
-        display:formatRosterCell(v),
-        hours:info.hours||0,
-        source:review.fileName
+
+        // ONE source of truth: the canonical value stored when this exact cell was first read.
+        time:parsed.time,
+        code:parsed.code,
+        hours:parsed.hours,
+        display:parsed.display,
+
+        canonicalValue:parsed.display,
+        editableValue:"0000-0000",
+        amShift:"0000-0000",
+        pmShift:"0000-0000",
+        amType:"RT",
+        pmType:"RT",
+        originalValue:parsed.display,
+        rawCellText:literal,
+        sourceCell:thumb,
+        source:review.fileName,
+        tableIndex:review.tableIndex
       };
     });
+
     setEntries(old=>[
       ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
       ...added
     ]);
+
+    setSelectedDate(review.firstDate);
+    setCalendarMonth(review.firstDate.slice(0,7)+"-01");
     setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
+
+  const updateEntryValue=(id,period,nextValue,field="time")=>{
+    setEntries(old=>old.map(e=>{
+      if(e.id!==id)return e;
+
+      const side=period==="pm" ? "pm" : "am";
+
+      if(field==="type"){
+        return {
+          ...e,
+          [`${side}Type`]:nextValue==="OT" ? "OT" : "RT"
+        };
+      }
+
+      const raw=String(nextValue||"").toUpperCase()
+        .replace(/[–—]/g,"-")
+        .replace(/\s+/g," ")
+        .trim();
+
+      return {
+        ...e,
+        [`${side}Shift`]:raw || "0000-0000"
+      };
+    }));
+  };
+
+  useEffect(()=>{
+    setEntries(old=>{
+      let changed=false;
+      const next=old.map(e=>{
+        if(
+          e.amShift===undefined || e.pmShift===undefined ||
+          e.amType===undefined || e.pmType===undefined
+        ){
+          changed=true;
+          return {
+            ...e,
+            amShift:e.amShift ?? "0000-0000",
+            pmShift:e.pmShift ?? "0000-0000",
+            amType:e.amType ?? "RT",
+            pmType:e.pmType ?? "RT"
+          };
+        }
+        return e;
+      });
+      return changed?next:old;
+    });
+  },[]);
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
   const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
-  const weekStart=mondayOf(todayISO());
+  const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
-  const weekHours=week.reduce((s,e)=>s+(+e.hours||0),0);
-  const monthHours=month.reduce((s,e)=>s+(+e.hours||0),0);
-  const upcoming=mine.find(e=>e.date>=todayISO()&&(e.time||e.code!=="RDO"));
+  const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const rosterOvertimeHours=mine.reduce((s,e)=>s+entryOvertimeHours(e),0);
+  const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
-      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2><h1>{entryRosterText(upcoming)}</h1><p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
-      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>{const d=addDays(weekStart,i);return mine.find(e=>e.date===d)||{id:d,date:d,name:myName,code:"OFF",hours:0}})}/></section>
+      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
       <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
       <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
       <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)}/></section>
-      <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-threshold*4).toFixed(2)}/><Stat label="TARGET" value={(threshold*4).toFixed(2)}/></div>
+      <div className="stats calendarTotals"><Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
     </main>}
 
-    {tab==="roster"&&<main><Roster rows={mine}/></main>}
+    {tab==="roster"&&<main>
+      <div className="stats rosterSummary">
+        <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
+        <Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/>
+      </div>
+      <section className="panel">
+        <div className="sectionTitle">
+          <div>
+            <b>MY ROSTER</b>
+            <small className="editorHint">Edit any shift below. Hours and totals update automatically.</small>
+          </div>
+          <span>{mine.length} days imported</span>
+        </div>
+        <Roster rows={mine} onEdit={updateEntryValue}/>
+      </section>
+    </main>}
 
     {tab==="search"&&<main>
       <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
@@ -1263,30 +1804,32 @@ function App(){
 
     {tab==="more"&&<main>
       <section className="panel menu"><h3>IMPORT</h3>
-        <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
-      <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
+      <section className="panel menu"><h3>EXPORT</h3>
+        <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export as Photo</b><small>Save 14-day roster: Name, Date, RT, OT & Hours</small></span></button>
+      </section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
 
-    <input ref={fileRef} hidden type="file" accept=".csv,.xlsx,.xls,image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
+    <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
     {processing&&<div className="modalWrap"><div className="modal compact">
       <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
+      <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee to see the roster exactly by day: RDO stays RDO, shifts display as HH:MM–HH:MM, and training shifts display as HH:MM–HH:MM TRNG.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
         <div className="autoControls">
           <label>Employee
-            <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
+            <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
+              <option value="">Select employee…</option>
               {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
           </label>
@@ -1300,29 +1843,31 @@ function App(){
       </div>
 
       {review&&<>
-        <div className="selectedRowTitle"><b>{review.name}</b><span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span></div>
-        <div className="preciseReview">
-          {review.cells.map((cell,i)=>{
-            const info=validateShift(cell);
-            return <div className={`preciseRow ${info.ok?"":"bad"}`} key={i}>
-              <div className="dateCol">{fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}</div>
-              <div className="cellThumb">{review.thumbs[i]?<img src={review.thumbs[i]}/>:"—"}</div>
-              <div className="editCol">
-                <input
-                  value={info.ok?formatRosterCell(cell):cell}
-                  placeholder="RDO or 05:00–13:00 or 05:00–13:00 TRNG"
-                  onChange={e=>updateCell(i,e.target.value)}
-                  onBlur={e=>updateCell(i,normalizeShift(e.target.value))}
-                />
-                {!info.ok&&<small>{info.reason}</small>}
-              </div>
-              <div className="hoursCol rosterStatus">{info.ok?(info.code==="RDO"?"RDO":info.code==="TRNG"?"TRNG":""):"—"}</div>
-            </div>
-          })}
+        <div className="selectedRowTitle">
+          <b>{review.name}</b>
+          <span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span>
         </div>
-        <div className="importFooter">
-          <span className={allValid?"ready":"notReady"}>{allValid?"✓ All 14 days valid":`${review.cells.filter(c=>!validateShift(c).ok).length} cells need correction`}</span>
-          <button className="primary" disabled={!allValid} onClick={importReview}><Check size={16}/> Import {review.name}</button>
+
+        <div className="exactSourceReview">
+          {review.cells.map((cell,i)=>(
+            <div className="exactSourceRow" key={i}>
+              <div className="exactDate">
+                {fmt(addDays(review.firstDate,i),{weekday:"short",day:"numeric",month:"short"})}
+              </div>
+              <div className="exactRosterCell" title={cell||""}>
+                {review.thumbs[i]
+                  ? <img src={review.thumbs[i]} alt={`Roster cell ${i+1}`}/>
+                  : <span>—</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="importFooter exactModeFooter">
+          <span className="ready">✓ Showing the original selected employee cells exactly as uploaded</span>
+          <button className="primary" disabled={!allValid} onClick={importReview}>
+            <Check size={16}/> Import {review.name}
+          </button>
         </div>
       </>}
     </div></div>}
@@ -1339,18 +1884,427 @@ function App(){
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
+
+// Deterministic duration examples:
+  // 0430-0930 = 5.0h
+  // 1630-0000 = 7.5h
+  // 1700-0200 = 9.0h
+  // 1630-2030 = 4.0h
+function effectiveEntryHours(e){
+  if(e?.amShift!==undefined || e?.pmShift!==undefined){
+    const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+    const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+    return (am.valid?am.hours:0) + (pm.valid?pm.hours:0);
+  }
+
+  if(e?.editableValue!==undefined && e?.editableValue!==null){
+    const edited=airport24HourDuration(e.editableValue);
+    return edited.valid ? edited.hours : 0;
+  }
+
+  const candidates=[
+    e?.canonicalValue,
+    e?.display,
+    e?.rawCellText,
+    e?.time
+  ].filter(Boolean);
+
+  for(const value of candidates){
+    const airport=airport24HourDuration(value);
+    if(airport.valid) return airport.hours;
+  }
+
+  if(e?.code==="RDO") return 0;
+  const stored=Number(e?.hours);
+  return Number.isFinite(stored) ? stored : 0;
+}
+
+
+function originalRosterHours(e){
+  const originalCandidates=[
+    e?.originalValue,
+    e?.rawCellText,
+    e?.canonicalValue,
+    e?.display,
+    e?.time
+  ].filter(Boolean);
+
+  for(const value of originalCandidates){
+    const airport=airport24HourDuration(value);
+    if(airport.valid) return airport.hours;
+  }
+
+  return 0;
+}
+
+function entryOvertimeHours(e){
+  let total=0;
+
+  const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+  const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+
+  if((e?.amType ?? "RT")==="OT" && am.valid) total+=am.hours;
+  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=pm.hours;
+
+  return total;
+}
+
 function entryRosterText(e){
+  if(e?.amShift!==undefined || e?.pmShift!==undefined){
+    const am=e?.amShift ?? "0000-0000";
+    const pm=e?.pmShift ?? "0000-0000";
+    return `AM ${am} • PM ${pm}`;
+  }
+  if(e.editableValue!==undefined && e.editableValue!==null)return e.editableValue;
+  if(e.canonicalValue)return e.canonicalValue;
   if(e.display)return e.display;
   if(e.code==="RDO")return "RDO";
-  if(e.time){
-    const combined=e.code==="TRNG"?`${e.time} TRNG`:e.time;
-    return formatRosterCell(combined);
-  }
-  return e.code||"Off";
+  if(e.time)return `${e.time}${e.code==="TRNG"?" TRNG":""}`;
+  return e.code||"";
 }
-function Roster({rows}){if(!rows.length)return <div className="empty">No shifts found.</div>;return <div className="list">{rows.map(e=><div className="item" key={e.id}><div><small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small><b>{entryRosterText(e)}</b><span>{e.name}</span></div><strong>{e.code==="RDO"?"RDO":""}</strong></div>)}</div>}
+function Roster({rows,onEdit}){
+  if(!rows.length)return <div className="empty">No shifts found.</div>;
+
+  return <div className="list">
+    {rows.map(e=>{
+      const hours=effectiveEntryHours(e);
+      const am=e.amShift ?? "0000-0000";
+      const pm=e.pmShift ?? "0000-0000";
+
+      return <div className={`item rosterImported ${onEdit?"rosterEditable rosterDualShift":""}`} key={e.id}>
+        <div className="rosterDateBlock">
+          <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
+          <span>{e.name}</span>
+        </div>
+
+        {!onEdit && (e.amShift!==undefined || e.pmShift!==undefined)
+          ? <div className="readonlyDualShift">
+              {(() => {
+                const am=e.amShift ?? "0000-0000";
+                const pm=e.pmShift ?? "0000-0000";
+                const amParsed=airport24HourDuration(am);
+                const pmParsed=airport24HourDuration(pm);
+                const amHas=amParsed.valid && amParsed.hours>0;
+                const pmHas=pmParsed.valid && pmParsed.hours>0;
+
+                if(!amHas && !pmHas){
+                  return e.sourceCell
+                    ? <div className="savedSourceCell readonlySource"><img src={e.sourceCell} alt="Original roster cell"/></div>
+                    : <b className="rosterTextFallback">{entryRosterText(e)}</b>;
+                }
+
+                return <>
+                  {amHas && <div className="readonlyShiftLine">
+                    <span>AM</span>
+                    <strong>{am}</strong>
+                    <em>{e.amType ?? "RT"}</em>
+                  </div>}
+                  {pmHas && <div className="readonlyShiftLine">
+                    <span>PM</span>
+                    <strong>{pm}</strong>
+                    <em>{e.pmType ?? "RT"}</em>
+                  </div>}
+                </>;
+              })()}
+            </div>
+          : e.sourceCell
+            ? <div className="savedSourceCell"><img src={e.sourceCell} alt="Original roster cell"/></div>
+            : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
+
+        {onEdit
+          ? <div className="dualShiftEditor">
+              <div className="editableShiftWrap">
+                <div className="shiftLabelRow">
+                  <label>AM SHIFT</label>
+                  <select
+                    className={`shiftTypeSelect ${(e.amType ?? "RT")==="OT" ? "isOT" : ""}`}
+                    value={e.amType ?? "RT"}
+                    onChange={ev=>onEdit(e.id,"am",ev.target.value,"type")}
+                    aria-label="AM shift type"
+                  >
+                    <option value="RT">RT</option>
+                    <option value="OT">OT</option>
+                  </select>
+                </div>
+                <input
+                  className="editableShift"
+                  value={am}
+                  placeholder="0000-0000"
+                  onFocus={ev=>ev.currentTarget.select()}
+                  onChange={ev=>onEdit(e.id,"am",ev.target.value)}
+                  inputMode="text"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                />
+                <small>24-hour airport time</small>
+              </div>
+
+              <div className="editableShiftWrap">
+                <div className="shiftLabelRow">
+                  <label>PM SHIFT</label>
+                  <select
+                    className={`shiftTypeSelect ${(e.pmType ?? "RT")==="OT" ? "isOT" : ""}`}
+                    value={e.pmType ?? "RT"}
+                    onChange={ev=>onEdit(e.id,"pm",ev.target.value,"type")}
+                    aria-label="PM shift type"
+                  >
+                    <option value="RT">RT</option>
+                    <option value="OT">OT</option>
+                  </select>
+                </div>
+                <input
+                  className="editableShift"
+                  value={pm}
+                  placeholder="0000-0000"
+                  onFocus={ev=>ev.currentTarget.select()}
+                  onChange={ev=>onEdit(e.id,"pm",ev.target.value)}
+                  inputMode="text"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                />
+                <small>24-hour airport time</small>
+              </div>
+            </div>
+          : null}
+
+        <div className="dailyHours">
+          <span>TOTAL HOURS</span>
+          <strong>{hours.toFixed(1)}h</strong>
+          {onEdit && entryOvertimeHours(e)>0
+            ? <small className="dailyOvertime">{entryOvertimeHours(e).toFixed(1)}h OT</small>
+            : <small className="dailyRT">RT</small>}
+        </div>
+      </div>
+    })}
+  </div>
+}
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
-function exportCSV(rows){const csv=Papa.unparse(rows);const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="vv-roster.csv";a.click()}
+
+async function exportRosterPhoto(rows=[]){
+  try{
+    const roster=[...rows]
+      .sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")))
+      .slice(0,14);
+
+    if(!roster.length){
+      alert("No roster data to export.");
+      return;
+    }
+
+    if(document.fonts?.ready) await document.fonts.ready;
+
+    const W=1400;
+    const margin=70;
+    const titleH=150;
+    const headH=72;
+    const rowH=92;
+    const summaryH=130;
+    const H=margin*2+titleH+headH+(rowH*roster.length)+summaryH;
+
+    const canvas=document.createElement("canvas");
+    const scale=2;
+    canvas.width=W*scale;
+    canvas.height=H*scale;
+    const ctx=canvas.getContext("2d");
+    ctx.scale(scale,scale);
+
+    const bg="#f2eee4";
+    const ink="#171717";
+    const muted="#625f58";
+    const grid="#69645b";
+    const gold="#a97818";
+    const rtFill="#eef4ec";
+    const otFill="#fbede3";
+
+    ctx.fillStyle=bg;
+    ctx.fillRect(0,0,W,H);
+
+    const roundedRect=(x,y,w,h,r,fill,stroke)=>{
+      ctx.beginPath();
+      ctx.roundRect(x,y,w,h,r);
+      if(fill){ctx.fillStyle=fill;ctx.fill();}
+      if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}
+    };
+
+    const drawText=(text,x,y,size=28,weight=500,align="left",color=ink)=>{
+      ctx.fillStyle=color;
+      ctx.font=`${weight} ${size}px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif`;
+      ctx.textAlign=align;
+      ctx.textBaseline="middle";
+      ctx.fillText(String(text??""),x,y);
+    };
+
+    const dateText=(iso)=>{
+      if(!iso)return "";
+      const d=new Date(`${iso}T12:00:00`);
+      return new Intl.DateTimeFormat("en-NZ",{day:"2-digit",month:"2-digit",year:"numeric"}).format(d);
+    };
+
+    const shortDate=(iso)=>{
+      if(!iso)return "";
+      const d=new Date(`${iso}T12:00:00`);
+      return new Intl.DateTimeFormat("en-NZ",{day:"2-digit",month:"short"}).format(d).toUpperCase();
+    };
+
+    const shiftForType=(e,type)=>{
+      const parts=[];
+      const am=e?.amShift ?? "0000-0000";
+      const pm=e?.pmShift ?? "0000-0000";
+      const amP=airport24HourDuration(am);
+      const pmP=airport24HourDuration(pm);
+
+      if(amP.valid && amP.hours>0 && (e?.amType ?? "RT")===type) parts.push(`AM ${am}`);
+      if(pmP.valid && pmP.hours>0 && (e?.pmType ?? "RT")===type) parts.push(`PM ${pm}`);
+
+      if(!parts.length && type==="RT"){
+        const raw=String(e?.originalValue||e?.canonicalValue||e?.rawCellText||e?.display||e?.code||"").toUpperCase();
+        if(raw.includes("RDO")) return "RDO";
+      }
+      return parts.length ? parts.join(" / ") : "—";
+    };
+
+    const first=roster[0]?.date;
+    const last=roster[roster.length-1]?.date;
+    const employee=roster[0]?.name || "Employee";
+
+    // Outer page
+    roundedRect(35,35,W-70,H-70,22,"#f6f2e9","#c8c0b2");
+
+    // Title
+    drawText("VV DUTY ROSTER",W/2,85,42,700,"center",ink);
+    drawText(`${shortDate(first)} – ${shortDate(last)}  •  14-DAY ROSTER`,W/2,130,20,600,"center",gold);
+
+    // Table geometry
+    const x0=margin;
+    const y0=margin+titleH;
+    const tableW=W-(margin*2);
+    // NAME | DATE | RT | OT | HOURS
+    const cols=[
+      {label:"NAME",w:290},
+      {label:"DATE",w:190},
+      {label:"RT",w:350},
+      {label:"OT",w:350},
+      {label:"HOURS",w:140},
+    ];
+    // normalize final width exactly
+    const rawSum=cols.reduce((s,c)=>s+c.w,0);
+    const factor=tableW/rawSum;
+    cols.forEach(c=>c.w*=factor);
+
+    roundedRect(x0,y0,tableW,headH+(rowH*roster.length),10,"#faf7ef",grid);
+
+    // Header background
+    ctx.fillStyle="#e7e0d3";
+    ctx.fillRect(x0,y0,tableW,headH);
+
+    let cx=x0;
+    cols.forEach((c,i)=>{
+      if(i>0){
+        ctx.strokeStyle=grid;
+        ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.moveTo(cx,y0);ctx.lineTo(cx,y0+headH+(rowH*roster.length));ctx.stroke();
+      }
+      drawText(c.label,cx+c.w/2,y0+headH/2,22,800,"center",ink);
+      cx+=c.w;
+    });
+
+    let totalHours=0;
+    let totalOT=0;
+
+    roster.forEach((e,idx)=>{
+      const y=y0+headH+(idx*rowH);
+      if(idx%2===1){
+        ctx.fillStyle="#f3eee5";
+        ctx.fillRect(x0,y,tableW,rowH);
+      }
+
+      ctx.strokeStyle="#9a9388";
+      ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(x0,y);ctx.lineTo(x0+tableW,y);ctx.stroke();
+
+      const hours=effectiveEntryHours(e);
+      const ot=entryOvertimeHours(e);
+      totalHours+=hours;
+      totalOT+=ot;
+
+      const values=[
+        e.name||employee,
+        dateText(e.date),
+        shiftForType(e,"RT"),
+        shiftForType(e,"OT"),
+        hours.toFixed(2),
+      ];
+
+      let x=x0;
+      values.forEach((val,i)=>{
+        const c=cols[i];
+        const center=x+c.w/2;
+
+        if(i===2 && val!=="—" && val!=="RDO"){
+          roundedRect(x+10,y+14,c.w-20,rowH-28,8,rtFill,null);
+        }
+        if(i===3 && val!=="—"){
+          roundedRect(x+10,y+14,c.w-20,rowH-28,8,otFill,null);
+        }
+
+        if((i===2 || i===3) && String(val).includes(" / ")){
+          const pieces=String(val).split(" / ");
+          drawText(pieces[0],center,y+32,18,700,"center",i===3?"#9b4a1d":ink);
+          drawText(pieces[1],center,y+61,18,700,"center",i===3?"#9b4a1d":ink);
+        }else{
+          drawText(val,center,y+rowH/2,i===4?22:19,i===4?800:600,"center",i===3 && val!=="—"?"#9b4a1d":ink);
+        }
+        x+=c.w;
+      });
+    });
+
+    // Summary strip
+    const sy=y0+headH+(rowH*roster.length)+34;
+    const boxGap=18;
+    const boxW=(tableW-boxGap*2)/3;
+
+    [
+      ["EMPLOYEE",employee],
+      ["TOTAL HOURS",totalHours.toFixed(2)],
+      ["OVERTIME",totalOT.toFixed(2)]
+    ].forEach(([label,value],i)=>{
+      const bx=x0+i*(boxW+boxGap);
+      roundedRect(bx,sy,boxW,82,10,i===2?"#fbede3":"#e9e4d9","#bdb5a8");
+      drawText(label,bx+18,sy+24,14,800,"left",muted);
+      drawText(value,bx+18,sy+56,i===0?21:28,800,"left",i===2?"#9b4a1d":ink);
+    });
+
+    drawText("Generated by VV Duty Roster",W/2,H-55,14,500,"center",muted);
+
+    canvas.toBlob(png=>{
+      if(!png){
+        alert("Unable to create roster PNG.");
+        return;
+      }
+      const url=URL.createObjectURL(png);
+      const a=document.createElement("a");
+      const safeName=employee.replace(/[^a-z0-9]+/gi,"-").replace(/^-|-$/g,"").toLowerCase() || "employee";
+      a.href=url;
+      a.download=`vv-roster-${safeName}-${first||"14-days"}-${last||""}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1500);
+    },"image/png");
+  }catch(err){
+    console.error("Roster PNG export failed",err);
+    alert("Unable to export roster photo on this browser.");
+  }
+}
+
+function exportCSV(rows){
+  const clean=rows.map(({sourceCell,...e})=>e);
+  const csv=Papa.unparse(clean);
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="vv-roster.csv";
+  a.click();
+}
 
 createRoot(document.getElementById("root")).render(<App/>);
