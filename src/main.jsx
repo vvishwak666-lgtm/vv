@@ -1704,6 +1704,7 @@ function App(){
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const upcoming=mine.find(e=>!!e.time && e.date>=todayISO()) || mine.find(e=>!!e.time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
@@ -1723,7 +1724,19 @@ function App(){
       <div className="stats three"><Stat label="TOTAL HOURS" value={monthHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,monthHours-threshold*4).toFixed(2)}/><Stat label="TARGET" value={(threshold*4).toFixed(2)}/></div>
     </main>}
 
-    {tab==="roster"&&<main><Roster rows={mine}/></main>}
+    {tab==="roster"&&<main>
+      <div className="stats rosterSummary">
+        <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
+        <Stat label="OVERTIME" value={Math.max(0,rosterTotalHours-threshold*2).toFixed(2)}/>
+      </div>
+      <section className="panel">
+        <div className="sectionTitle">
+          <b>MY ROSTER</b>
+          <span>{mine.length} days imported</span>
+        </div>
+        <Roster rows={mine}/>
+      </section>
+    </main>}
 
     {tab==="search"&&<main>
       <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>

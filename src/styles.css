@@ -162,3 +162,8 @@
 /* Airport 24-hour shift calculation enforced globally. */
 
 /* Tight source-cell OCR: blank cell area and borders are excluded before text recognition. */
+
+/* My Roster total-hours summary */
+.rosterSummary{
+  margin-bottom:14px;
+}
