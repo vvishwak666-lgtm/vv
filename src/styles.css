@@ -158,3 +158,5 @@
 /* Duration parser fix: supports early starts and midnight endings. */
 
 /* Preserve whole-row OCR values when exact-cell OCR misses. */
+
+/* Airport 24-hour shift calculation enforced globally. */

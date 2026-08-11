@@ -1322,6 +1322,59 @@ async function readCanonicalRosterCell(worker,raw){
   return "";
 }
 
+
+function airport24HourDuration(value){
+  const raw=String(value||"").toUpperCase().trim()
+    .replace(/[–—]/g,"-")
+    .replace(/\s+/g," ");
+
+  if(!raw) return {valid:false,hours:0,time:"",code:"",display:""};
+
+  if(/\bRDO\b/.test(raw)){
+    return {valid:true,hours:0,time:"",code:"RDO",display:"RDO"};
+  }
+
+  const hasTRNG=/\bTRNG\b/.test(raw);
+  const m=raw.match(/(\d{4})\s*-\s*(\d{4})/);
+  if(!m) return {valid:false,hours:0,time:"",code:"",display:raw};
+
+  const start=m[1], end=m[2];
+  const sh=Number(start.slice(0,2));
+  const sm=Number(start.slice(2,4));
+  const eh=Number(end.slice(0,2));
+  const em=Number(end.slice(2,4));
+
+  if(
+    sh<0 || sh>23 || eh<0 || eh>23 ||
+    sm<0 || sm>59 || em<0 || em>59
+  ){
+    return {valid:false,hours:0,time:"",code:"",display:raw};
+  }
+
+  const startMinutes=sh*60+sm;
+  let endMinutes=eh*60+em;
+
+  // Airport roster rule: if finish is earlier than or equal to start,
+  // the finish is on the next calendar day.
+  if(endMinutes<=startMinutes) endMinutes += 24*60;
+
+  const durationMinutes=endMinutes-startMinutes;
+
+  // Airport shifts can cross midnight. Only reject impossible >24h results.
+  if(durationMinutes<=0 || durationMinutes>24*60){
+    return {valid:false,hours:0,time:"",code:"",display:raw};
+  }
+
+  const time=`${start}-${end}`;
+  return {
+    valid:true,
+    hours:durationMinutes/60,
+    time,
+    code:hasTRNG?"TRNG":"",
+    display:`${time}${hasTRNG?" TRNG":""}`
+  };
+}
+
 function parseDisplayedRosterValue(value){
   const raw=String(value||"").toUpperCase().trim()
     .replace(/[–—]/g,"-")
@@ -1329,32 +1382,14 @@ function parseDisplayedRosterValue(value){
 
   if(!raw) return {display:"",time:"",code:"",hours:0};
 
-  if(/\bRDO\b/.test(raw)){
-    return {display:"RDO",time:"",code:"RDO",hours:0};
-  }
-
-  const hasTRNG=/\bTRNG\b/.test(raw);
-  const match=raw.match(/(\d{4})\s*-\s*(\d{4})/);
-
-  if(match){
-    const a=match[1], b=match[2];
-    const sh=Number(a.slice(0,2)), sm=Number(a.slice(2,4));
-    const eh=Number(b.slice(0,2)), em=Number(b.slice(2,4));
-
-    if(sh<=23 && eh<=23 && sm<=59 && em<=59){
-      let minutes=(eh*60+em)-(sh*60+sm);
-      if(minutes<=0) minutes+=1440;
-
-      if(minutes>0 && minutes<=16*60){
-        const time=`${a}-${b}`;
-        return {
-          display:`${time}${hasTRNG?" TRNG":""}`,
-          time,
-          code:hasTRNG?"TRNG":"",
-          hours:minutes/60
-        };
-      }
-    }
+  const airport=airport24HourDuration(raw);
+  if(airport.valid){
+    return {
+      display:airport.display,
+      time:airport.time,
+      code:airport.code,
+      hours:airport.hours
+    };
   }
 
   const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
@@ -1732,10 +1767,20 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
   // 1700-0200 = 9.0h
   // 1630-2030 = 4.0h
 function effectiveEntryHours(e){
-  const parsed=parseDisplayedRosterValue(
-    e?.canonicalValue || e?.display || e?.rawCellText || e?.time || e?.code || ""
-  );
-  if(parsed.hours>0) return parsed.hours;
+  const candidates=[
+    e?.canonicalValue,
+    e?.display,
+    e?.rawCellText,
+    e?.time
+  ].filter(Boolean);
+
+  for(const value of candidates){
+    const airport=airport24HourDuration(value);
+    if(airport.valid) return airport.hours;
+  }
+
+  if(e?.code==="RDO") return 0;
+
   const stored=Number(e?.hours);
   return Number.isFinite(stored) ? stored : 0;
 }
