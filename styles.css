@@ -30,3 +30,402 @@
 
 .rosterStatus{font-size:11px;font-weight:800;color:#dcb458;text-align:right}
 .preciseRow .editCol input{font-variant-numeric:tabular-nums}
+
+.preciseRow.bad{background:transparent!important}
+.preciseRow.bad .editCol input{border-color:#37414c!important;background:#0c1117!important}
+.preciseRow.bad .cellThumb{outline:none!important;box-shadow:none!important}
+
+/* Exact source-cell mode: selected employee view shows original roster cells */
+.exactSourceReview{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  margin-top:10px;
+}
+.exactSourceRow{
+  display:grid;
+  grid-template-columns:130px minmax(190px,1fr);
+  align-items:center;
+  gap:12px;
+  padding:9px 10px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+}
+.exactDate{
+  font-size:13px;
+  font-weight:800;
+  white-space:nowrap;
+}
+.exactRosterCell{
+  min-height:54px;
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:9px;
+  background:#fff;
+}
+.exactRosterCell img{
+  width:100%;
+  height:64px;
+  display:block;
+  object-fit:contain;
+  object-position:left center;
+}
+.exactModeFooter .ready{color:#e8bf63}
+@media(max-width:620px){
+  .exactSourceRow{grid-template-columns:92px 1fr;gap:8px;padding:7px}
+  .exactDate{font-size:11px}
+  .exactRosterCell{min-height:48px}
+  .exactRosterCell img{height:56px}
+}
+
+/* Imported roster rows keep the original source-cell image */
+.rosterImported{
+  display:grid !important;
+  grid-template-columns:minmax(105px,145px) minmax(170px,1fr) 58px;
+  align-items:center;
+  gap:10px;
+}
+.rosterDateBlock{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+.rosterDateBlock span{
+  font-size:10px;
+  opacity:.62;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.savedSourceCell{
+  min-height:40px;
+  border-radius:8px;
+  background:#fff;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+}
+.savedSourceCell img{
+  display:block;
+  width:100%;
+  height:44px;
+  object-fit:contain;
+  object-position:left center;
+}
+.rosterTextFallback{
+  font-size:16px;
+}
+@media(max-width:620px){
+  .rosterImported{
+    grid-template-columns:88px minmax(130px,1fr) 44px;
+    gap:7px;
+  }
+  .savedSourceCell img{height:40px}
+}
+
+/* Source-of-truth data layer update: visual cells unchanged. */
+
+/* Dashboard upcoming shift uses the same exact source-cell image */
+.heroSourceCell{
+  margin:10px 0 8px;
+  max-width:360px;
+  min-height:56px;
+  border-radius:10px;
+  overflow:hidden;
+  background:#fff;
+  display:flex;
+  align-items:center;
+}
+.heroSourceCell img{
+  width:100%;
+  height:64px;
+  object-fit:contain;
+  object-position:left center;
+  display:block;
+}
+
+/* v3: hour calculations use only displayed HHMM-HHMM roster value. */
+
+/* Canonical cell-value pipeline: exact source image display remains unchanged. */
+
+/* Missing-hours display fallback uses canonical roster value only. */
+
+/* Duration parser fix: supports early starts and midnight endings. */
+
+/* Preserve whole-row OCR values when exact-cell OCR misses. */
+
+/* Airport 24-hour shift calculation enforced globally. */
+
+/* Tight source-cell OCR: blank cell area and borders are excluded before text recognition. */
+
+/* My Roster total-hours summary */
+.rosterSummary{
+  margin-bottom:14px;
+}
+
+/* Editable daily airport shift values */
+.rosterEditable{
+  grid-template-columns:minmax(100px,135px) minmax(150px,220px) minmax(180px,1fr) 72px !important;
+}
+.editableShiftWrap{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.editableShiftWrap label,
+.dailyHours span{
+  font-size:9px;
+  letter-spacing:.08em;
+  opacity:.6;
+  font-weight:800;
+}
+.editableShift{
+  width:100%;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 11px;
+  font:inherit;
+  font-weight:800;
+  text-transform:uppercase;
+}
+.editableShift:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.editableShiftWrap small{
+  font-size:9px;
+  opacity:.52;
+}
+.dailyHours{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:4px;
+}
+.dailyHours strong{
+  color:#f5c33d;
+  white-space:nowrap;
+}
+.editorHint{
+  display:block;
+  margin-top:4px;
+  opacity:.62;
+  font-size:10px;
+  font-weight:500;
+}
+@media(max-width:760px){
+  .rosterEditable{
+    grid-template-columns:95px minmax(120px,1fr) 64px !important;
+  }
+  .rosterEditable .savedSourceCell{
+    grid-column:2/3;
+  }
+  .rosterEditable .editableShiftWrap{
+    grid-column:2/3;
+  }
+  .rosterEditable .dailyHours{
+    grid-column:3/4;
+    grid-row:1/3;
+    align-self:center;
+  }
+}
+
+/* Grand total + edit-generated overtime */
+.calendarTotals{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+.dailyOvertime{
+  color:#f5c33d;
+  font-size:9px;
+  font-weight:800;
+  white-space:nowrap;
+}
+
+/* Calendar summary now mirrors My Roster exactly */
+.calendarTotals{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+
+
+/* AM + PM shifts for every date — contained responsive layout */
+.rosterEditable.rosterDualShift{
+  width:100%;
+  max-width:100%;
+  box-sizing:border-box;
+  display:grid !important;
+  grid-template-columns:minmax(92px,120px) minmax(130px,175px) minmax(0,1fr) minmax(68px,82px) !important;
+  gap:10px;
+  align-items:center;
+  overflow:hidden;
+}
+
+.rosterEditable.rosterDualShift > *{
+  min-width:0;
+  max-width:100%;
+  box-sizing:border-box;
+}
+
+.rosterEditable.rosterDualShift .rosterDateBlock{
+  width:100%;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell{
+  width:100%;
+  max-width:175px;
+  overflow:hidden;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell img{
+  display:block;
+  width:100%;
+  max-width:100%;
+  height:auto;
+  object-fit:contain;
+}
+
+.dualShiftEditor{
+  width:100%;
+  min-width:0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+}
+
+.dualShiftEditor .editableShiftWrap{
+  min-width:0;
+  width:100%;
+}
+
+.dualShiftEditor .editableShift{
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  font-size:15px;
+}
+
+.rosterEditable.rosterDualShift .dailyHours{
+  width:100%;
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  justify-content:center;
+  text-align:right;
+}
+
+.rosterEditable.rosterDualShift .dailyHours span,
+.rosterEditable.rosterDualShift .dailyHours strong,
+.rosterEditable.rosterDualShift .dailyHours small{
+  max-width:100%;
+  white-space:normal;
+  overflow-wrap:anywhere;
+}
+
+/* The whole My Roster panel must never overflow the app column */
+.panel,
+.list,
+.item,
+main{
+  max-width:100%;
+  box-sizing:border-box;
+}
+
+.list{
+  overflow-x:hidden;
+}
+
+@media(max-width:900px){
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:minmax(84px,105px) minmax(115px,145px) minmax(0,1fr) minmax(60px,72px) !important;
+    gap:8px;
+  }
+
+  .dualShiftEditor{
+    grid-template-columns:1fr;
+    gap:6px;
+  }
+
+  .dualShiftEditor .editableShift{
+    font-size:14px;
+  }
+}
+
+@media(max-width:700px){
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:minmax(82px,95px) minmax(0,1fr) minmax(58px,68px) !important;
+    gap:7px;
+    align-items:start;
+  }
+
+  .rosterEditable.rosterDualShift .rosterDateBlock{
+    grid-column:1/2;
+    grid-row:1/3;
+  }
+
+  .rosterEditable.rosterDualShift .savedSourceCell,
+  .rosterEditable.rosterDualShift .rosterTextFallback{
+    grid-column:2/3;
+    grid-row:1/2;
+    max-width:100%;
+  }
+
+  .rosterEditable.rosterDualShift .dualShiftEditor{
+    grid-column:2/3;
+    grid-row:2/3;
+    grid-template-columns:1fr;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    grid-column:3/4;
+    grid-row:1/3;
+    align-self:center;
+  }
+}
+
+@media(max-width:520px){
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:1fr minmax(62px,72px) !important;
+    padding:10px;
+  }
+
+  .rosterEditable.rosterDualShift .rosterDateBlock{
+    grid-column:1/2;
+    grid-row:auto;
+    margin-bottom:4px;
+  }
+
+  .rosterEditable.rosterDualShift .savedSourceCell,
+  .rosterEditable.rosterDualShift .rosterTextFallback{
+    grid-column:1/2;
+    grid-row:auto;
+  }
+
+  .rosterEditable.rosterDualShift .dualShiftEditor{
+    grid-column:1/2;
+    grid-row:auto;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    grid-column:2/3;
+    grid-row:1/4;
+    align-self:center;
+  }
+}
+
+.shell{
+  width:min(100%, 780px);
+  max-width:100%;
+  box-sizing:border-box;
+}
