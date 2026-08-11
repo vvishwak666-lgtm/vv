@@ -1680,6 +1680,7 @@ function App(){
 
         canonicalValue:parsed.display,
         editableValue:parsed.display,
+        originalValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
         source:review.fileName,
@@ -1729,6 +1730,7 @@ function App(){
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
+  const rosterOvertimeHours=mine.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
@@ -1737,7 +1739,7 @@ function App(){
 
     {tab==="dashboard"&&<main>
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
-      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={Math.max(0,weekHours-threshold).toFixed(2)}/></div>
+      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)}/></section>
     </main>}
 
@@ -1751,7 +1753,7 @@ function App(){
     {tab==="roster"&&<main>
       <div className="stats rosterSummary">
         <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
-        <Stat label="ROSTER DAYS" value={String(mine.length)}/>
+        <Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/>
       </div>
       <section className="panel">
         <div className="sectionTitle">
@@ -1879,6 +1881,30 @@ function effectiveEntryHours(e){
   return Number.isFinite(stored) ? stored : 0;
 }
 
+
+function originalRosterHours(e){
+  const originalCandidates=[
+    e?.originalValue,
+    e?.rawCellText,
+    e?.canonicalValue,
+    e?.display,
+    e?.time
+  ].filter(Boolean);
+
+  for(const value of originalCandidates){
+    const airport=airport24HourDuration(value);
+    if(airport.valid) return airport.hours;
+  }
+
+  return 0;
+}
+
+function entryOvertimeHours(e){
+  const edited=effectiveEntryHours(e);
+  const rostered=originalRosterHours(e);
+  return Math.max(0,edited-rostered);
+}
+
 function entryRosterText(e){
   if(e.editableValue!==undefined && e.editableValue!==null)return e.editableValue;
   if(e.canonicalValue)return e.canonicalValue;
@@ -1925,6 +1951,9 @@ function Roster({rows,onEdit}){
         <div className="dailyHours">
           <span>HOURS</span>
           <strong>{isRDO?"0.0h":hours>0?`${hours.toFixed(1)}h`:"—"}</strong>
+          {onEdit && entryOvertimeHours(e)>0
+            ? <small className="dailyOvertime">+{entryOvertimeHours(e).toFixed(1)} OT</small>
+            : null}
         </div>
       </div>
     })}
