@@ -244,13 +244,21 @@ async function createWorker(onProgress){
   });
   return worker;
 }
+function withTimeout(promise,ms=12000,label="OCR"){
+  let timer;
+  const timeout=new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error(`${label} timed out`)),ms);
+  });
+  return Promise.race([promise,timeout]).finally(()=>clearTimeout(timer));
+}
+
 async function recognize(worker,canvas,psm="7",whitelist=""){
   await worker.setParameters({
     tessedit_pageseg_mode:psm,
     preserve_interword_spaces:"1",
     ...(whitelist?{tessedit_char_whitelist:whitelist}:{})
   });
-  const r=await worker.recognize(canvas);
+  const r=await withTimeout(worker.recognize(canvas),12000,"Cell OCR");
   return cleanText(r.data.text||"");
 }
 function bestCell(candidates){
@@ -1523,9 +1531,9 @@ function App(){
       const source={fileName:file.name,canvas,staff:allStaff,tables};
       setTable(source);
 
-      const preferred=allStaff.find(r=>/PRABHAKAR|VIMAL/i.test(r.name))||allStaff[0];
-      setSelectedStaff(preferred.id);
-      await readStaffRow(source,preferred.id,worker);
+      // Stop after name detection. Show the employee dropdown immediately.
+      // Detailed OCR runs only after the user explicitly selects an employee.
+      setSelectedStaff("");
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -1737,7 +1745,7 @@ function App(){
 
     {processing&&<div className="modalWrap"><div className="modal compact">
       <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading the selected employee row and Working Hours.":"Reading the left-side staff name column first."}</small>
+      <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
@@ -1747,7 +1755,8 @@ function App(){
         <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
         <div className="autoControls">
           <label>Employee
-            <select value={selectedStaff} onChange={e=>selectStaff(e.target.value)}>
+            <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
+              <option value="">Select employee…</option>
               {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
           </label>
