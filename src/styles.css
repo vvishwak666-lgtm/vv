@@ -675,3 +675,489 @@ main,
     flex-basis: 108px !important;
   }
 }
+
+/* =========================================================
+   VV DUTY ROSTER — MOBILE-FIRST REFERENCE DESIGN
+   Keeps existing logic; updates visual hierarchy/layout only.
+   ========================================================= */
+
+:root{
+  --vv-bg:#050607;
+  --vv-panel:#0d1115;
+  --vv-panel-2:#11171c;
+  --vv-line:rgba(255,255,255,.08);
+  --vv-text:#f7f3e8;
+  --vv-muted:#8c959d;
+  --vv-gold:#f1bd4b;
+  --vv-green:#55d889;
+  --vv-orange:#f08a42;
+  --vv-red:#ef5b5b;
+}
+
+html,body,#root{
+  background:var(--vv-bg) !important;
+  color:var(--vv-text) !important;
+}
+
+body{
+  margin:0;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif;
+}
+
+.shell{
+  width:min(100%, 430px) !important;
+  max-width:430px !important;
+  min-height:100vh;
+  margin:0 auto !important;
+  padding:14px 14px 92px !important;
+  box-sizing:border-box !important;
+  background:
+    radial-gradient(circle at top,rgba(241,189,75,.05),transparent 22%),
+    var(--vv-bg) !important;
+}
+
+main{
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+
+/* Logo / top area */
+.brand,
+.logo,
+header{
+  max-width:100% !important;
+}
+
+.brand{
+  margin:2px 0 16px !important;
+}
+
+.brandSub{
+  display:block;
+  margin-top:3px;
+  font-size:8px;
+  letter-spacing:.18em;
+  color:var(--vv-muted);
+  text-transform:uppercase;
+}
+
+/* Generic panels */
+.panel{
+  background:linear-gradient(180deg,var(--vv-panel),#0a0e12) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:14px !important;
+  box-shadow:none !important;
+  overflow:hidden !important;
+  margin-bottom:12px !important;
+}
+
+.sectionTitle{
+  padding:12px 12px 8px !important;
+  display:flex !important;
+  align-items:flex-start !important;
+  justify-content:space-between !important;
+  gap:10px !important;
+}
+
+.sectionTitle b{
+  font-size:13px !important;
+  letter-spacing:.01em;
+}
+
+.sectionTitle span,
+.sectionTitle small,
+.editorHint{
+  color:var(--vv-muted) !important;
+  font-size:9px !important;
+}
+
+/* Summary cards */
+.stats{
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:8px !important;
+  margin:10px 0 12px !important;
+}
+
+.stats.three{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+
+.stat,
+.stats > div{
+  background:var(--vv-panel-2) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:12px !important;
+  padding:12px !important;
+  min-height:64px;
+  box-sizing:border-box;
+}
+
+.stat label,
+.stats label{
+  color:var(--vv-muted) !important;
+  font-size:8px !important;
+  letter-spacing:.06em !important;
+  text-transform:uppercase;
+}
+
+.stat strong,
+.stats strong{
+  font-size:22px !important;
+  line-height:1 !important;
+}
+
+/* Upcoming shift card */
+.hero,
+.upcoming,
+.upcomingCard{
+  background:
+    linear-gradient(135deg,rgba(241,189,75,.16),rgba(241,189,75,.05)),
+    var(--vv-panel) !important;
+  border:1px solid rgba(241,189,75,.18) !important;
+  border-radius:14px !important;
+  padding:14px !important;
+  box-shadow:none !important;
+}
+
+/* Lists / rows */
+.list{
+  display:flex !important;
+  flex-direction:column !important;
+  gap:0 !important;
+  overflow:visible !important;
+}
+
+.item{
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  border-bottom:1px solid var(--vv-line) !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  padding:10px 12px !important;
+  margin:0 !important;
+  box-shadow:none !important;
+}
+
+.item:last-child{
+  border-bottom:0 !important;
+}
+
+.rosterDateBlock small{
+  display:block !important;
+  color:var(--vv-text) !important;
+  font-size:10px !important;
+  font-weight:800 !important;
+}
+
+.rosterDateBlock span{
+  display:block !important;
+  color:var(--vv-muted) !important;
+  font-size:9px !important;
+  margin-top:2px !important;
+}
+
+/* Compact read-only shift view */
+.readonlyDualShift{
+  gap:5px !important;
+}
+
+.readonlyShiftLine{
+  border:0 !important;
+  background:transparent !important;
+  border-radius:0 !important;
+  padding:2px 0 !important;
+  grid-template-columns:26px minmax(0,1fr) 30px !important;
+  gap:6px !important;
+}
+
+.readonlyShiftLine span{
+  font-size:8px !important;
+  color:var(--vv-gold) !important;
+}
+
+.readonlyShiftLine strong{
+  font-size:12px !important;
+}
+
+.readonlyShiftLine em{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+}
+
+/* Original OCR crop compact like attachment thumbnail */
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.readonlySource{
+  width:112px !important;
+  max-width:112px !important;
+  min-width:112px !important;
+  height:48px !important;
+  min-height:48px !important;
+  max-height:48px !important;
+  border-radius:8px !important;
+  background:#f2f0e8 !important;
+  overflow:hidden !important;
+}
+
+.rosterImported:not(.rosterEditable) .savedSourceCell img,
+.readonlySource img{
+  width:112px !important;
+  max-width:112px !important;
+  height:48px !important;
+  max-height:48px !important;
+  object-fit:contain !important;
+}
+
+/* My Roster editor becomes stacked, phone-native */
+.rosterEditable.rosterDualShift{
+  display:grid !important;
+  grid-template-columns:76px minmax(0,1fr) 54px !important;
+  grid-template-areas:
+    "date source hours"
+    "date editor hours" !important;
+  gap:8px !important;
+  align-items:start !important;
+  padding:10px 12px !important;
+  overflow:hidden !important;
+}
+
+.rosterEditable.rosterDualShift .rosterDateBlock{
+  grid-area:date !important;
+  width:auto !important;
+  min-width:0 !important;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell,
+.rosterEditable.rosterDualShift .rosterTextFallback{
+  grid-area:source !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  height:44px !important;
+  overflow:hidden !important;
+  border-radius:8px !important;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell img{
+  width:100% !important;
+  height:44px !important;
+  object-fit:contain !important;
+}
+
+.rosterEditable.rosterDualShift .dualShiftEditor{
+  grid-area:editor !important;
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:7px !important;
+  width:100% !important;
+  min-width:0 !important;
+}
+
+.editableShiftWrap{
+  gap:3px !important;
+}
+
+.shiftLabelRow{
+  min-height:22px !important;
+}
+
+.shiftLabelRow label{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+  letter-spacing:.07em !important;
+}
+
+.shiftTypeSelect{
+  width:48px !important;
+  min-width:48px !important;
+  height:24px !important;
+  border-radius:6px !important;
+  background:#0b0f13 !important;
+  color:var(--vv-text) !important;
+  font-size:10px !important;
+  border:1px solid var(--vv-line) !important;
+}
+
+.shiftTypeSelect.isOT{
+  color:var(--vv-orange) !important;
+  border-color:rgba(240,138,66,.35) !important;
+}
+
+.editableShift{
+  min-height:40px !important;
+  height:40px !important;
+  padding:8px 10px !important;
+  border-radius:8px !important;
+  background:#090d11 !important;
+  border:1px solid var(--vv-line) !important;
+  color:var(--vv-text) !important;
+  font-size:15px !important;
+  font-weight:800 !important;
+}
+
+.editableShift:focus{
+  border-color:rgba(241,189,75,.5) !important;
+  box-shadow:0 0 0 2px rgba(241,189,75,.08) !important;
+}
+
+.editableShiftWrap small{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+}
+
+.rosterEditable.rosterDualShift .dailyHours{
+  grid-area:hours !important;
+  width:54px !important;
+  min-width:54px !important;
+  max-width:54px !important;
+  align-self:center !important;
+}
+
+.dailyHours span{
+  font-size:7px !important;
+  color:var(--vv-muted) !important;
+  letter-spacing:.04em !important;
+}
+
+.dailyHours strong{
+  font-size:13px !important;
+  color:var(--vv-gold) !important;
+}
+
+.dailyOvertime{
+  color:var(--vv-orange) !important;
+  font-size:8px !important;
+}
+
+.dailyRT{
+  color:var(--vv-muted) !important;
+  font-size:8px !important;
+}
+
+/* Calendar */
+.calendarHeader,
+.monthHead{
+  margin-bottom:8px !important;
+}
+
+.calendarGrid{
+  gap:6px !important;
+}
+
+.calendarGrid button,
+.dayButton,
+.calendarDay{
+  border-radius:50% !important;
+  aspect-ratio:1 !important;
+  background:#12171c !important;
+  border:0 !important;
+  color:var(--vv-text) !important;
+  font-size:12px !important;
+  box-shadow:none !important;
+}
+
+.calendarGrid button.selected,
+.dayButton.selected,
+.calendarDay.selected{
+  background:var(--vv-gold) !important;
+  color:#1a1307 !important;
+}
+
+.calendarGrid button.hasShift::after,
+.dayButton.hasShift::after,
+.calendarDay.hasShift::after{
+  background:var(--vv-green) !important;
+}
+
+/* Search / More */
+input,
+select,
+button{
+  font-family:inherit;
+}
+
+input[type="search"],
+.searchInput,
+select{
+  background:#0b0f13 !important;
+  border:1px solid var(--vv-line) !important;
+  color:var(--vv-text) !important;
+  border-radius:9px !important;
+}
+
+.moreCard,
+.settingsCard,
+.importCard,
+.exportCard{
+  background:var(--vv-panel) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:12px !important;
+}
+
+/* Bottom navigation */
+nav,
+.bottomNav,
+.tabbar{
+  position:fixed !important;
+  left:50% !important;
+  bottom:0 !important;
+  transform:translateX(-50%) !important;
+  width:min(100%,430px) !important;
+  height:72px !important;
+  box-sizing:border-box !important;
+  padding:8px 14px 12px !important;
+  background:rgba(6,8,10,.96) !important;
+  backdrop-filter:blur(16px) !important;
+  -webkit-backdrop-filter:blur(16px) !important;
+  border-top:1px solid var(--vv-line) !important;
+  z-index:100 !important;
+}
+
+nav button,
+.bottomNav button,
+.tabbar button{
+  color:var(--vv-muted) !important;
+  background:transparent !important;
+  border:0 !important;
+  font-size:9px !important;
+}
+
+nav button.active,
+.bottomNav button.active,
+.tabbar button.active{
+  color:var(--vv-gold) !important;
+}
+
+/* Desktop preview should still look like a phone app, centered */
+@media(min-width:700px){
+  body{
+    background:#07090b !important;
+  }
+
+  .shell{
+    border-left:1px solid rgba(255,255,255,.03);
+    border-right:1px solid rgba(255,255,255,.03);
+  }
+}
+
+/* Small phone */
+@media(max-width:380px){
+  .shell{
+    padding-left:10px !important;
+    padding-right:10px !important;
+  }
+
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:68px minmax(0,1fr) 48px !important;
+    padding-left:8px !important;
+    padding-right:8px !important;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    width:48px !important;
+    min-width:48px !important;
+    max-width:48px !important;
+  }
+}
