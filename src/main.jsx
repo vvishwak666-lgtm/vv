@@ -1228,7 +1228,6 @@ async function readCalculationValueFromSourceCell(worker,dataUrl){
 
 
 
-async 
 function tightRosterTextCanvas(raw){
   const src=raw;
   const ctx=src.getContext("2d");
