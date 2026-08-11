@@ -156,3 +156,5 @@
 /* Missing-hours display fallback uses canonical roster value only. */
 
 /* Duration parser fix: supports early starts and midnight endings. */
+
+/* Preserve whole-row OCR values when exact-cell OCR misses. */

@@ -1334,36 +1334,24 @@ function parseDisplayedRosterValue(value){
   }
 
   const hasTRNG=/\bTRNG\b/.test(raw);
-
   const match=raw.match(/(\d{4})\s*-\s*(\d{4})/);
+
   if(match){
-    const a=match[1];
-    const b=match[2];
+    const a=match[1], b=match[2];
+    const sh=Number(a.slice(0,2)), sm=Number(a.slice(2,4));
+    const eh=Number(b.slice(0,2)), em=Number(b.slice(2,4));
 
-    const sh=Number(a.slice(0,2));
-    const sm=Number(a.slice(2,4));
-    const eh=Number(b.slice(0,2));
-    const em=Number(b.slice(2,4));
+    if(sh<=23 && eh<=23 && sm<=59 && em<=59){
+      let minutes=(eh*60+em)-(sh*60+sm);
+      if(minutes<=0) minutes+=1440;
 
-    if(
-      sh>=0 && sh<=23 &&
-      eh>=0 && eh<=23 &&
-      sm>=0 && sm<=59 &&
-      em>=0 && em<=59
-    ){
-      const startMinutes=sh*60+sm;
-      const endMinutes=eh*60+em;
-
-      let durationMinutes=endMinutes-startMinutes;
-      if(durationMinutes<=0) durationMinutes+=24*60;
-
-      if(durationMinutes>0 && durationMinutes<=16*60){
+      if(minutes>0 && minutes<=16*60){
         const time=`${a}-${b}`;
         return {
           display:`${time}${hasTRNG?" TRNG":""}`,
           time,
           code:hasTRNG?"TRNG":"",
-          hours:durationMinutes/60
+          hours:minutes/60
         };
       }
     }
@@ -1371,12 +1359,7 @@ function parseDisplayedRosterValue(value){
 
   const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
   if(codeMatch){
-    return {
-      display:codeMatch[1],
-      time:"",
-      code:codeMatch[1],
-      hours:0
-    };
+    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
   }
 
   return {display:raw,time:"",code:"",hours:0};
@@ -1497,6 +1480,7 @@ function App(){
       };
 
       let cells=await recognizeWholeSelectedRow(worker,rowSource,row,bounds);
+      const wholeRowCells=[...cells];
       const thumbs=[];
 
       for(let i=0;i<14;i++){
@@ -1504,11 +1488,39 @@ function App(){
         const thumb=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,6);
         thumbs.push(dataURL(thumb));
 
-        // Read this exact source cell ONCE and store one canonical roster value.
-        // Dashboard, Calendar, My Roster and all hour calculations reuse this same value.
         const raw=rawCropCanvas(source.canvas,x0+1,row.y0+1,x1-1,row.y1-1,12);
-        const canonicalValue=await readCanonicalRosterCell(worker,raw);
-        cells[i]=canonicalValue;
+
+        // Read the exact cell, but NEVER destroy a useful value already obtained
+        // from the whole selected row. This was the cause of missing hours.
+        const exactValue=await readCanonicalRosterCell(worker,raw);
+        const rowValue=cleanReplicatedCellText(wholeRowCells[i]||"");
+
+        // Extra exact-cell fallback for a readable time/code if the canonical pass
+        // is empty. It uses the same source cell and does not affect the displayed crop.
+        let fallbackValue="";
+        if(!exactValue){
+          const printed=await robustPrintedCellOCR(worker,raw);
+          fallbackValue=cleanReplicatedCellText(printed||"");
+        }
+
+        const candidates=[exactValue,rowValue,fallbackValue]
+          .map(v=>String(v||"").trim())
+          .filter(Boolean);
+
+        // Prefer a valid roster time or RDO. Otherwise keep the first meaningful code.
+        let chosen="";
+        for(const v of candidates){
+          const parsed=parseDisplayedRosterValue(v);
+          if(parsed.time || parsed.code==="RDO"){
+            chosen=parsed.display;
+            break;
+          }
+        }
+        if(!chosen){
+          chosen=candidates[0]||"";
+        }
+
+        cells[i]=chosen;
         if(ownWorker)setProgress(Math.round((i+1)/14*90));
       }
 
@@ -1720,13 +1732,12 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
   // 1700-0200 = 9.0h
   // 1630-2030 = 4.0h
 function effectiveEntryHours(e){
-  const stored=Number(e?.hours);
-  if(Number.isFinite(stored) && stored>0) return stored;
-
   const parsed=parseDisplayedRosterValue(
     e?.canonicalValue || e?.display || e?.rawCellText || e?.time || e?.code || ""
   );
-  return Number(parsed.hours)||0;
+  if(parsed.hours>0) return parsed.hours;
+  const stored=Number(e?.hours);
+  return Number.isFinite(stored) ? stored : 0;
 }
 
 function entryRosterText(e){
