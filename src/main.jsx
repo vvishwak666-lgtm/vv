@@ -1683,6 +1683,8 @@ function App(){
         editableValue:"0000-0000",
         amShift:"0000-0000",
         pmShift:"0000-0000",
+        amType:"RT",
+        pmType:"RT",
         originalValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
@@ -1701,9 +1703,18 @@ function App(){
     setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
 
-  const updateEntryValue=(id,period,nextValue)=>{
+  const updateEntryValue=(id,period,nextValue,field="time")=>{
     setEntries(old=>old.map(e=>{
       if(e.id!==id)return e;
+
+      const side=period==="pm" ? "pm" : "am";
+
+      if(field==="type"){
+        return {
+          ...e,
+          [`${side}Type`]:nextValue==="OT" ? "OT" : "RT"
+        };
+      }
 
       const raw=String(nextValue||"").toUpperCase()
         .replace(/[–—]/g,"-")
@@ -1712,7 +1723,7 @@ function App(){
 
       return {
         ...e,
-        [period==="pm"?"pmShift":"amShift"]:raw || "0000-0000"
+        [`${side}Shift`]:raw || "0000-0000"
       };
     }));
   };
@@ -1721,12 +1732,17 @@ function App(){
     setEntries(old=>{
       let changed=false;
       const next=old.map(e=>{
-        if(e.amShift===undefined || e.pmShift===undefined){
+        if(
+          e.amShift===undefined || e.pmShift===undefined ||
+          e.amType===undefined || e.pmType===undefined
+        ){
           changed=true;
           return {
             ...e,
             amShift:e.amShift ?? "0000-0000",
-            pmShift:e.pmShift ?? "0000-0000"
+            pmShift:e.pmShift ?? "0000-0000",
+            amType:e.amType ?? "RT",
+            pmType:e.pmType ?? "RT"
           };
         }
         return e;
@@ -1921,9 +1937,15 @@ function originalRosterHours(e){
 }
 
 function entryOvertimeHours(e){
-  const edited=effectiveEntryHours(e);
-  const rostered=originalRosterHours(e);
-  return Math.max(0,edited-rostered);
+  let total=0;
+
+  const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+  const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+
+  if((e?.amType ?? "RT")==="OT" && am.valid) total+=am.hours;
+  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=pm.hours;
+
+  return total;
 }
 
 function entryRosterText(e){
@@ -1961,7 +1983,18 @@ function Roster({rows,onEdit}){
         {onEdit
           ? <div className="dualShiftEditor">
               <div className="editableShiftWrap">
-                <label>AM SHIFT</label>
+                <div className="shiftLabelRow">
+                  <label>AM SHIFT</label>
+                  <select
+                    className={`shiftTypeSelect ${(e.amType ?? "RT")==="OT" ? "isOT" : ""}`}
+                    value={e.amType ?? "RT"}
+                    onChange={ev=>onEdit(e.id,"am",ev.target.value,"type")}
+                    aria-label="AM shift type"
+                  >
+                    <option value="RT">RT</option>
+                    <option value="OT">OT</option>
+                  </select>
+                </div>
                 <input
                   className="editableShift"
                   value={am}
@@ -1976,7 +2009,18 @@ function Roster({rows,onEdit}){
               </div>
 
               <div className="editableShiftWrap">
-                <label>PM SHIFT</label>
+                <div className="shiftLabelRow">
+                  <label>PM SHIFT</label>
+                  <select
+                    className={`shiftTypeSelect ${(e.pmType ?? "RT")==="OT" ? "isOT" : ""}`}
+                    value={e.pmType ?? "RT"}
+                    onChange={ev=>onEdit(e.id,"pm",ev.target.value,"type")}
+                    aria-label="PM shift type"
+                  >
+                    <option value="RT">RT</option>
+                    <option value="OT">OT</option>
+                  </select>
+                </div>
                 <input
                   className="editableShift"
                   value={pm}
@@ -1996,8 +2040,8 @@ function Roster({rows,onEdit}){
           <span>TOTAL HOURS</span>
           <strong>{hours.toFixed(1)}h</strong>
           {onEdit && entryOvertimeHours(e)>0
-            ? <small className="dailyOvertime">+{entryOvertimeHours(e).toFixed(1)} OT</small>
-            : null}
+            ? <small className="dailyOvertime">{entryOvertimeHours(e).toFixed(1)}h OT</small>
+            : <small className="dailyRT">RT</small>}
         </div>
       </div>
     })}
