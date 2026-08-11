@@ -1804,14 +1804,15 @@ function App(){
 
     {tab==="more"&&<main>
       <section className="panel menu"><h3>IMPORT</h3>
-        <button onClick={()=>fileRef.current?.click()}><FileSpreadsheet/><span><b>Upload CSV / Excel</b><small>Import roster files</small></span></button>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
-      <section className="panel menu"><h3>EXPORT</h3><button onClick={()=>exportCSV(entries)}><Download/><span><b>Export to CSV</b><small>Download roster data</small></span></button></section>
+      <section className="panel menu"><h3>EXPORT</h3>
+        <button onClick={exportRosterPhoto}><Camera/><span><b>Export as Photo</b><small>Save your roster as a PNG image</small></span></button>
+      </section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
 
-    <input ref={fileRef} hidden type="file" accept=".csv,.xlsx,.xls,image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
+    <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
@@ -2079,6 +2080,48 @@ function Roster({rows,onEdit}){
 }
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+
+async function exportRosterPhoto(){
+  const node=document.querySelector(".shell");
+  if(!node) return;
+  try{
+    const rect=node.getBoundingClientRect();
+    const clone=node.cloneNode(true);
+    clone.style.width=rect.width+"px";
+    clone.style.minHeight=rect.height+"px";
+    clone.style.margin="0";
+    const serialized=new XMLSerializer().serializeToString(clone);
+    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(rect.width)}" height="${Math.ceil(rect.height)}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${serialized}</div></foreignObject></svg>`;
+    const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      const canvas=document.createElement("canvas");
+      const scale=2;
+      canvas.width=Math.ceil(rect.width*scale);
+      canvas.height=Math.ceil(rect.height*scale);
+      const ctx=canvas.getContext("2d");
+      ctx.scale(scale,scale);
+      ctx.fillStyle="#050607";
+      ctx.fillRect(0,0,rect.width,rect.height);
+      ctx.drawImage(img,0,0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(png=>{
+        if(!png) return;
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(png);
+        a.download=`vv-duty-roster-${new Date().toISOString().slice(0,10)}.png`;
+        a.click();
+        setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+      },"image/png");
+    };
+    img.src=url;
+  }catch(err){
+    console.error("Photo export failed",err);
+    alert("Unable to export photo on this browser.");
+  }
+}
+
 function exportCSV(rows){
   const clean=rows.map(({sourceCell,...e})=>e);
   const csv=Papa.unparse(clean);
