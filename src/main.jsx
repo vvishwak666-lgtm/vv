@@ -1679,6 +1679,7 @@ function App(){
         display:parsed.display,
 
         canonicalValue:parsed.display,
+        editableValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
         source:review.fileName,
@@ -1696,6 +1697,29 @@ function App(){
     setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
 
+  const updateEntryValue=(id,nextValue)=>{
+    setEntries(old=>old.map(e=>{
+      if(e.id!==id)return e;
+
+      const raw=String(nextValue||"").toUpperCase()
+        .replace(/[–—]/g,"-")
+        .replace(/\s+/g," ")
+        .trim();
+
+      const parsed=parseDisplayedRosterValue(raw);
+
+      return {
+        ...e,
+        editableValue:raw,
+        display:raw,
+        canonicalValue:raw,
+        time:parsed.time,
+        code:parsed.code,
+        hours:parsed.hours
+      };
+    }));
+  };
+
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
   const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
@@ -1705,7 +1729,7 @@ function App(){
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
-  const upcoming=mine.find(e=>!!e.time && e.date>=todayISO()) || mine.find(e=>!!e.time);
+  const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
   const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
 
   return <div className="shell">
@@ -1727,14 +1751,17 @@ function App(){
     {tab==="roster"&&<main>
       <div className="stats rosterSummary">
         <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
-        <Stat label="OVERTIME" value={Math.max(0,rosterTotalHours-threshold*2).toFixed(2)}/>
+        <Stat label="ROSTER DAYS" value={String(mine.length)}/>
       </div>
       <section className="panel">
         <div className="sectionTitle">
-          <b>MY ROSTER</b>
+          <div>
+            <b>MY ROSTER</b>
+            <small className="editorHint">Edit any shift below. Hours and totals update automatically.</small>
+          </div>
           <span>{mine.length} days imported</span>
         </div>
-        <Roster rows={mine}/>
+        <Roster rows={mine} onEdit={updateEntryValue}/>
       </section>
     </main>}
 
@@ -1832,6 +1859,7 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
   // 1630-2030 = 4.0h
 function effectiveEntryHours(e){
   const candidates=[
+    e?.editableValue,
     e?.canonicalValue,
     e?.display,
     e?.rawCellText,
@@ -1843,6 +1871,8 @@ function effectiveEntryHours(e){
     if(airport.valid) return airport.hours;
   }
 
+  const edited=String(e?.editableValue||"").toUpperCase().trim();
+  if(edited==="RDO") return 0;
   if(e?.code==="RDO") return 0;
 
   const stored=Number(e?.hours);
@@ -1850,25 +1880,54 @@ function effectiveEntryHours(e){
 }
 
 function entryRosterText(e){
+  if(e.editableValue!==undefined && e.editableValue!==null)return e.editableValue;
   if(e.canonicalValue)return e.canonicalValue;
   if(e.display)return e.display;
   if(e.code==="RDO")return "RDO";
   if(e.time)return `${e.time}${e.code==="TRNG"?" TRNG":""}`;
   return e.code||"";
 }
-function Roster({rows}){
+function Roster({rows,onEdit}){
   if(!rows.length)return <div className="empty">No shifts found.</div>;
+
   return <div className="list">
-    {rows.map(e=><div className="item rosterImported" key={e.id}>
-      <div className="rosterDateBlock">
-        <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
-        <span>{e.name}</span>
+    {rows.map(e=>{
+      const value=entryRosterText(e);
+      const hours=effectiveEntryHours(e);
+      const isRDO=String(value||"").toUpperCase().trim()==="RDO";
+
+      return <div className={`item rosterImported ${onEdit?"rosterEditable":""}`} key={e.id}>
+        <div className="rosterDateBlock">
+          <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
+          <span>{e.name}</span>
+        </div>
+
+        {e.sourceCell
+          ? <div className="savedSourceCell"><img src={e.sourceCell} alt={value||"Roster cell"}/></div>
+          : <b className="rosterTextFallback">{value}</b>}
+
+        {onEdit
+          ? <div className="editableShiftWrap">
+              <label>SHIFT</label>
+              <input
+                className="editableShift"
+                value={value}
+                placeholder="HHMM-HHMM or RDO"
+                onChange={ev=>onEdit(e.id,ev.target.value)}
+                inputMode="text"
+                autoCapitalize="characters"
+                spellCheck="false"
+              />
+              <small>24-hour airport time</small>
+            </div>
+          : null}
+
+        <div className="dailyHours">
+          <span>HOURS</span>
+          <strong>{isRDO?"0.0h":hours>0?`${hours.toFixed(1)}h`:"—"}</strong>
+        </div>
       </div>
-      {e.sourceCell
-        ? <div className="savedSourceCell"><img src={e.sourceCell} alt={entryRosterText(e)||"Roster cell"}/></div>
-        : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
-      <strong>{e.code==="RDO"?"RDO":effectiveEntryHours(e)>0?`${effectiveEntryHours(e).toFixed(1)}h`:""}</strong>
-    </div>)}
+    })}
   </div>
 }
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
