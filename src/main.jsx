@@ -122,7 +122,7 @@ function cropCanvas(src,x0,y0,x1,y1,scale=5){
   ctx.putImageData(img,0,0);
   return c;
 }
-function dataURL(c){ try{return c.toDataURL("image/png")}catch{return ""} }
+function dataURL(c){ try{return c.toDataURL('image/jpeg', 0.95)}catch{return ""} }
 
 function cleanText(s){ return String(s||"").replace(/\s+/g," ").trim(); }
 function wordBox(w){
@@ -1454,7 +1454,7 @@ function parseDisplayedRosterValue(value){
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
-  const [query,setQuery]=useState("");
+  const [searchDay,setSearchDay]=useState("");
   const [threshold,setThreshold]=useState(38);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
   const [selectedDate,setSelectedDate]=useState(todayISO());
@@ -1762,7 +1762,13 @@ function App(){
   const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const rosterOvertimeHours=mine.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
-  const filtered=entries.filter(e=>!query||e.name.toLowerCase().includes(query.toLowerCase()));
+  const filtered=entries.filter(e=>{
+    if(!searchDay) return true;
+    if(!e.date) return false;
+    const d=new Date(`${e.date}T12:00:00`);
+    const day=new Intl.DateTimeFormat("en-NZ",{weekday:"long"}).format(d);
+    return day===searchDay;
+  });
 
   return <div className="shell">
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
@@ -1798,8 +1804,60 @@ function App(){
     </main>}
 
     {tab==="search"&&<main>
-      <div className="search"><Search size={17}/><input placeholder="Search by name..." value={query} onChange={e=>setQuery(e.target.value)}/>{query&&<button onClick={()=>setQuery("")}><X size={14}/></button>}</div>
-      <section className="panel"><Roster rows={filtered.slice(0,50)}/></section>
+      <div className="daySearchCard">
+        <div className="daySearchLabel">
+          <Search size={17}/>
+          <span>SEARCH BY DAY</span>
+        </div>
+
+        <div className="daySearchControl">
+          <select
+            value={searchDay}
+            onChange={e=>setSearchDay(e.target.value)}
+            aria-label="Search roster by day"
+          >
+            <option value="">Select day</option>
+            <option value="Monday">Monday</option>
+            <option value="Tuesday">Tuesday</option>
+            <option value="Wednesday">Wednesday</option>
+            <option value="Thursday">Thursday</option>
+            <option value="Friday">Friday</option>
+            <option value="Saturday">Saturday</option>
+            <option value="Sunday">Sunday</option>
+          </select>
+
+          {searchDay&&
+            <button
+              className="dayClear"
+              onClick={()=>setSearchDay("")}
+              aria-label="Clear day"
+            >
+              <X size={14}/>
+            </button>}
+        </div>
+      </div>
+
+      {searchDay&&
+        <div className="searchDayHeading">
+          <b>{searchDay}</b>
+          <span>{filtered.length} {filtered.length===1?"entry":"entries"}</span>
+        </div>}
+
+      <section className="panel searchResults">
+        {searchDay
+          ? filtered.length
+            ? <Roster rows={filtered.slice(0,50)}/>
+            : <div className="emptySearch">
+                <Search size={25}/>
+                <b>No roster found</b>
+                <span>No roster entries are saved for {searchDay}.</span>
+              </div>
+          : <div className="emptySearch">
+              <Search size={25}/>
+              <b>Select a day</b>
+              <span>Choose Monday to Sunday to view matching roster entries.</span>
+            </div>}
+      </section>
     </main>}
 
     {tab==="more"&&<main>
@@ -1807,7 +1865,7 @@ function App(){
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3>
-        <button onClick={exportRosterPhoto}><Camera/><span><b>Export as Photo</b><small>Save your roster as a PNG image</small></span></button>
+        <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
       </section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
@@ -2081,44 +2139,297 @@ function Roster({rows,onEdit}){
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
 
-async function exportRosterPhoto(){
-  const node=document.querySelector(".shell");
-  if(!node) return;
+function exportRosterPhoto(rows=[]){
   try{
-    const rect=node.getBoundingClientRect();
-    const clone=node.cloneNode(true);
-    clone.style.width=rect.width+"px";
-    clone.style.minHeight=rect.height+"px";
-    clone.style.margin="0";
-    const serialized=new XMLSerializer().serializeToString(clone);
-    const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(rect.width)}" height="${Math.ceil(rect.height)}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml">${serialized}</div></foreignObject></svg>`;
-    const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
-    const url=URL.createObjectURL(blob);
-    const img=new Image();
-    img.onload=()=>{
-      const canvas=document.createElement("canvas");
-      const scale=2;
-      canvas.width=Math.ceil(rect.width*scale);
-      canvas.height=Math.ceil(rect.height*scale);
-      const ctx=canvas.getContext("2d");
-      ctx.scale(scale,scale);
-      ctx.fillStyle="#050607";
-      ctx.fillRect(0,0,rect.width,rect.height);
-      ctx.drawImage(img,0,0);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(png=>{
-        if(!png) return;
-        const a=document.createElement("a");
-        a.href=URL.createObjectURL(png);
-        a.download=`vv-duty-roster-${new Date().toISOString().slice(0,10)}.png`;
-        a.click();
-        setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-      },"image/png");
+    const roster=[...rows]
+      .sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")))
+      .slice(0,14);
+
+    if(!roster.length){
+      alert("No roster data to export.");
+      return;
+    }
+
+    const W=1400;
+    const margin=70;
+    const titleH=150;
+    const headH=72;
+    const rowH=92;
+    const summaryH=130;
+    const H=margin*2+titleH+headH+(rowH*roster.length)+summaryH;
+
+    const canvas=document.createElement("canvas");
+    const scale=2;
+    canvas.width=W*scale;
+    canvas.height=H*scale;
+
+    const ctx=canvas.getContext("2d");
+    if(!ctx){
+      alert("Unable to create JPEG on this browser.");
+      return;
+    }
+    ctx.scale(scale,scale);
+
+    const bg="#f2eee4";
+    const ink="#171717";
+    const muted="#625f58";
+    const grid="#69645b";
+    const gold="#a97818";
+    const rtFill="#eef4ec";
+    const otFill="#fbede3";
+
+    ctx.fillStyle=bg;
+    ctx.fillRect(0,0,W,H);
+
+    const roundedRect=(x,y,w,h,r,fill,stroke)=>{
+      ctx.beginPath();
+      if(ctx.roundRect){
+        ctx.roundRect(x,y,w,h,r);
+      }else{
+        ctx.rect(x,y,w,h);
+      }
+      if(fill){ctx.fillStyle=fill;ctx.fill();}
+      if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}
     };
-    img.src=url;
+
+    const drawText=(text,x,y,size=28,weight=500,align="left",color=ink)=>{
+      ctx.fillStyle=color;
+      ctx.font=`${weight} ${size}px Arial, Helvetica, sans-serif`;
+      ctx.textAlign=align;
+      ctx.textBaseline="middle";
+      ctx.fillText(String(text??""),x,y);
+    };
+
+    const dateText=(iso)=>{
+      if(!iso)return "";
+      const d=new Date(`${iso}T12:00:00`);
+      return new Intl.DateTimeFormat("en-NZ",{
+        day:"2-digit",month:"2-digit",year:"numeric"
+      }).format(d);
+    };
+
+    const shortDate=(iso)=>{
+      if(!iso)return "";
+      const d=new Date(`${iso}T12:00:00`);
+      return new Intl.DateTimeFormat("en-NZ",{
+        day:"2-digit",month:"short"
+      }).format(d).toUpperCase();
+    };
+
+    const shiftForType=(e,type)=>{
+      const parts=[];
+      const am=e?.amShift ?? "0000-0000";
+      const pm=e?.pmShift ?? "0000-0000";
+      const amP=airport24HourDuration(am);
+      const pmP=airport24HourDuration(pm);
+
+      if(amP.valid && amP.hours>0 && (e?.amType ?? "RT")===type){
+        parts.push(`AM ${am}`);
+      }
+      if(pmP.valid && pmP.hours>0 && (e?.pmType ?? "RT")===type){
+        parts.push(`PM ${pm}`);
+      }
+
+      if(!parts.length && type==="RT"){
+        const raw=String(
+          e?.originalValue||
+          e?.canonicalValue||
+          e?.rawCellText||
+          e?.display||
+          e?.code||
+          ""
+        ).toUpperCase();
+
+        if(raw.includes("RDO")) return "RDO";
+      }
+      return parts.length ? parts.join(" / ") : "—";
+    };
+
+    const first=roster[0]?.date;
+    const last=roster[roster.length-1]?.date;
+    const employee=roster[0]?.name || "Employee";
+
+    roundedRect(35,35,W-70,H-70,22,"#f6f2e9","#c8c0b2");
+
+    drawText("VV DUTY ROSTER",W/2,85,42,700,"center",ink);
+    drawText(
+      `${shortDate(first)} – ${shortDate(last)}  •  14-DAY ROSTER`,
+      W/2,130,20,600,"center",gold
+    );
+
+    const x0=margin;
+    const y0=margin+titleH;
+    const tableW=W-(margin*2);
+
+    const cols=[
+      {label:"NAME",w:290},
+      {label:"DATE",w:190},
+      {label:"RT",w:350},
+      {label:"OT",w:350},
+      {label:"HOURS",w:140},
+    ];
+
+    const rawSum=cols.reduce((s,c)=>s+c.w,0);
+    const factor=tableW/rawSum;
+    cols.forEach(c=>c.w*=factor);
+
+    roundedRect(
+      x0,y0,tableW,
+      headH+(rowH*roster.length),
+      10,"#faf7ef",grid
+    );
+
+    ctx.fillStyle="#e7e0d3";
+    ctx.fillRect(x0,y0,tableW,headH);
+
+    let cx=x0;
+    cols.forEach((c,i)=>{
+      if(i>0){
+        ctx.strokeStyle=grid;
+        ctx.lineWidth=1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx,y0);
+        ctx.lineTo(cx,y0+headH+(rowH*roster.length));
+        ctx.stroke();
+      }
+      drawText(c.label,cx+c.w/2,y0+headH/2,22,800,"center",ink);
+      cx+=c.w;
+    });
+
+    let totalHours=0;
+    let totalOT=0;
+
+    roster.forEach((e,idx)=>{
+      const y=y0+headH+(idx*rowH);
+
+      if(idx%2===1){
+        ctx.fillStyle="#f3eee5";
+        ctx.fillRect(x0,y,tableW,rowH);
+      }
+
+      ctx.strokeStyle="#9a9388";
+      ctx.lineWidth=1;
+      ctx.beginPath();
+      ctx.moveTo(x0,y);
+      ctx.lineTo(x0+tableW,y);
+      ctx.stroke();
+
+      const hours=effectiveEntryHours(e);
+      const ot=entryOvertimeHours(e);
+
+      totalHours+=hours;
+      totalOT+=ot;
+
+      const values=[
+        e.name||employee,
+        dateText(e.date),
+        shiftForType(e,"RT"),
+        shiftForType(e,"OT"),
+        hours.toFixed(2),
+      ];
+
+      let x=x0;
+
+      values.forEach((val,i)=>{
+        const c=cols[i];
+        const center=x+c.w/2;
+
+        if(i===2 && val!=="—" && val!=="RDO"){
+          roundedRect(x+10,y+14,c.w-20,rowH-28,8,rtFill,null);
+        }
+        if(i===3 && val!=="—"){
+          roundedRect(x+10,y+14,c.w-20,rowH-28,8,otFill,null);
+        }
+
+        if((i===2 || i===3) && String(val).includes(" / ")){
+          const pieces=String(val).split(" / ");
+          drawText(pieces[0],center,y+32,18,700,"center",i===3?"#9b4a1d":ink);
+          drawText(pieces[1],center,y+61,18,700,"center",i===3?"#9b4a1d":ink);
+        }else{
+          drawText(
+            val,center,y+rowH/2,
+            i===4?22:19,
+            i===4?800:600,
+            "center",
+            i===3 && val!=="—"?"#9b4a1d":ink
+          );
+        }
+        x+=c.w;
+      });
+    });
+
+    const sy=y0+headH+(rowH*roster.length)+34;
+    const boxGap=18;
+    const boxW=(tableW-boxGap*2)/3;
+
+    [
+      ["EMPLOYEE",employee],
+      ["TOTAL HOURS",totalHours.toFixed(2)],
+      ["OVERTIME",totalOT.toFixed(2)]
+    ].forEach(([label,value],i)=>{
+      const bx=x0+i*(boxW+boxGap);
+
+      roundedRect(
+        bx,sy,boxW,82,10,
+        i===2?"#fbede3":"#e9e4d9",
+        "#bdb5a8"
+      );
+
+      drawText(label,bx+18,sy+24,14,800,"left",muted);
+      drawText(
+        value,bx+18,sy+56,
+        i===0?21:28,800,"left",
+        i===2?"#9b4a1d":ink
+      );
+    });
+
+    drawText(
+      "Generated by VV Duty Roster",
+      W/2,H-55,14,500,"center",muted
+    );
+
+    // Safari-safe: create JPEG immediately inside the click event.
+    const jpegURL=canvas.toDataURL("image/jpeg",0.94);
+
+    const safeName=employee
+      .replace(/[^a-z0-9]+/gi,"-")
+      .replace(/^-|-$/g,"")
+      .toLowerCase() || "employee";
+
+    const filename=`vv-roster-${safeName}-${first||"14-days"}-${last||""}.jpg`;
+
+    // First try a normal direct download.
+    const a=document.createElement("a");
+    a.href=jpegURL;
+    a.download=filename;
+    a.style.display="none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    // Safari/iOS fallback: if download attribute is ignored,
+    // open the JPEG directly so user can Save Image / Share.
+    const isSafari=/^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    if(isSafari || isIOS){
+      setTimeout(()=>{
+        const w=window.open();
+        if(w){
+          w.document.write(
+            `<html><head><title>${filename}</title></head>
+             <body style="margin:0;background:#111;text-align:center">
+             <img src="${jpegURL}" style="max-width:100%;height:auto" />
+             </body></html>`
+          );
+          w.document.close();
+        }
+      },150);
+    }
+
   }catch(err){
-    console.error("Photo export failed",err);
-    alert("Unable to export photo on this browser.");
+    console.error("JPEG roster export failed",err);
+    alert("JPEG export failed: "+(err?.message||"Unknown error"));
   }
 }
 
