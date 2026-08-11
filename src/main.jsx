@@ -1228,98 +1228,141 @@ async function readCalculationValueFromSourceCell(worker,dataUrl){
 
 
 
-async function readCanonicalRosterCell(worker,raw){
-  const candidates=[];
+async 
+function tightRosterTextCanvas(raw){
+  const src=raw;
+  const ctx=src.getContext("2d");
+  const w=src.width,h=src.height;
+  const img=ctx.getImageData(0,0,w,h).data;
 
-  const addTimeCandidate=(text,weight=1)=>{
-    let s=String(text||"").toUpperCase()
-      .replace(/[–—_]/g,"-")
-      .replace(/:/g,"")
+  // Ignore borders and the mostly-empty right side of a roster cell.
+  const xStart=Math.max(1,Math.floor(w*.02));
+  const xEnd=Math.min(w-1,Math.floor(w*.58));
+  const yStart=Math.max(1,Math.floor(h*.08));
+  const yEnd=Math.min(h-1,Math.floor(h*.92));
+
+  let minX=xEnd,minY=yEnd,maxX=xStart,maxY=yStart,found=false;
+
+  for(let y=yStart;y<yEnd;y++){
+    for(let x=xStart;x<xEnd;x++){
+      const i=(y*w+x)*4;
+      const r=img[i],g=img[i+1],b=img[i+2];
+      const lum=(r+g+b)/3;
+
+      // Printed roster text is substantially darker than the white cell.
+      if(lum<175){
+        found=true;
+        if(x<minX)minX=x;
+        if(x>maxX)maxX=x;
+        if(y<minY)minY=y;
+        if(y>maxY)maxY=y;
+      }
+    }
+  }
+
+  if(!found){
+    return rawCropCanvas(src,xStart,yStart,xEnd,yEnd,4);
+  }
+
+  const padX=Math.max(3,Math.round((maxX-minX+1)*.18));
+  const padY=Math.max(3,Math.round((maxY-minY+1)*.45));
+
+  minX=Math.max(xStart,minX-padX);
+  maxX=Math.min(xEnd,maxX+padX);
+  minY=Math.max(yStart,minY-padY);
+  maxY=Math.min(yEnd,maxY+padY);
+
+  return rawCropCanvas(src,minX,minY,maxX,maxY,8);
+}
+
+function readCanonicalRosterCell(worker,raw){
+  return (async()=>{
+    const tight=tightRosterTextCanvas(raw);
+
+    const normalize=s=>String(s||"")
+      .toUpperCase()
+      .replace(/[–—_:]/g,"-")
       .replace(/\s+/g,"")
       .replace(/O/g,"0");
 
-    // Do not convert arbitrary letters into digits here.
-    const direct=s.match(/(\d{4})-(\d{4})/);
-    if(direct){
-      candidates.push({value:`${direct[1]}-${direct[2]}`,weight});
+    const values=[];
+
+    const add=(text,weight)=>{
+      const s=normalize(text);
+
+      const direct=s.match(/(\d{4})-(\d{4})/);
+      if(direct){
+        values.push({value:`${direct[1]}-${direct[2]}`,weight});
+      }
+
+      const digits=s.replace(/\D/g,"");
+      if(digits.length===8){
+        values.push({
+          value:`${digits.slice(0,4)}-${digits.slice(4)}`,
+          weight:weight*.9
+        });
+      }
+    };
+
+    // Detect RDO/TRNG from the tightly-cropped printed text.
+    const codePasses=[];
+    for(const th of [150,170,190,210]){
+      const c=printedCellVariant(tight,th);
+      codePasses.push(await recognize(worker,c,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
+      codePasses.push(await recognize(worker,c,"8","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
     }
 
-    const digits=s.replace(/\D/g,"");
-    if(digits.length===8){
-      candidates.push({value:`${digits.slice(0,4)}-${digits.slice(4)}`,weight:weight*.92});
+    const rdoVotes=codePasses.filter(t=>/\bRD[O0]\b/i.test(String(t))).length;
+    const trngVotes=codePasses.filter(t=>/\bTRN[G6]\b/i.test(String(t))).length;
+
+    if(rdoVotes>=2) return "RDO";
+
+    // Read the actual printed HHMM-HHMM from a tightly cropped text region.
+    // PSM 7 is strongest for one line; PSM 8/13 are supporting votes.
+    for(const th of [135,150,165,180,195,210,225]){
+      const c=printedCellVariant(tight,th);
+      add(await recognize(worker,c,"7","0123456789-:"),1.6);
+      add(await recognize(worker,c,"8","0123456789-:"),1.15);
+      add(await recognize(worker,c,"13","0123456789-:"),1.0);
     }
-  };
 
-  // 1) Read roster codes from the exact crop.
-  const codePasses=[];
-  for(const th of [170,188,205]){
-    const c=printedCellVariant(raw,th);
-    codePasses.push(await recognize(worker,c,"7","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
-    codePasses.push(await recognize(worker,c,"8","ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"));
-  }
-  const codeJoined=codePasses.join(" ").toUpperCase();
+    add(await recognize(worker,tight,"7","0123456789-:"),1.8);
+    add(await recognize(worker,tight,"8","0123456789-:"),1.25);
 
-  const rdoVotes=codePasses.filter(t=>/\bRD[O0]\b/i.test(String(t))).length;
-  const trngVotes=codePasses.filter(t=>/\bTRN[G6]\b/i.test(String(t))).length;
+    const grouped=new Map();
 
-  if(rdoVotes>=2){
-    return "RDO";
-  }
+    for(const item of values){
+      const parsed=airport24HourDuration(item.value);
+      if(!parsed.valid || !parsed.time) continue;
 
-  // 2) Numeric-only OCR from the SAME exact source crop.
-  // Multiple passes only vote on the value; the result is stored once.
-  for(const th of [150,165,180,195,210,225]){
-    const c=printedCellVariant(raw,th);
-    addTimeCandidate(await recognize(worker,c,"7","0123456789-:"),1.25);
-    addTimeCandidate(await recognize(worker,c,"8","0123456789-:"),1.15);
-    addTimeCandidate(await recognize(worker,c,"13","0123456789-:"),1.0);
-  }
+      const current=grouped.get(parsed.time)||{score:0,count:0};
+      current.score+=item.weight;
+      current.count+=1;
+      grouped.set(parsed.time,current);
+    }
 
-  // Also try the un-thresholded enlarged exact crop.
-  addTimeCandidate(await recognize(worker,raw,"7","0123456789-:"),1.35);
-  addTimeCandidate(await recognize(worker,raw,"8","0123456789-:"),1.2);
+    const ranked=[...grouped.entries()]
+      .map(([value,x])=>({
+        value,
+        score:x.score + x.count*.8
+      }))
+      .sort((a,b)=>b.score-a.score);
 
-  const grouped=new Map();
-  for(const c of candidates){
-    const m=c.value.match(/^(\d{4})-(\d{4})$/);
-    if(!m)continue;
-    const a=m[1],b=m[2];
-    const sh=+a.slice(0,2),sm=+a.slice(2),eh=+b.slice(0,2),em=+b.slice(2);
-    if(sh>23||eh>23||sm>59||em>59)continue;
+    if(ranked.length){
+      const best=ranked[0].value;
+      return trngVotes>=2 ? `${best} TRNG` : best;
+    }
 
-    let mins=(eh*60+em)-(sh*60+sm);
-    if(mins<0)mins+=1440;
-    if(mins<=0||mins>14*60)continue;
+    if(trngVotes>=2) return "TRNG";
 
-    let score=c.weight;
-    if([0,30].includes(sm))score+=.12;
-    if([0,30].includes(em))score+=.12;
-    if(mins>=180&&mins<=600)score+=.12;
+    const knownCodes=["ALTH","HACC","ALV","SICK","LEAVE","OFF","SL","AL"];
+    for(const code of knownCodes){
+      const votes=codePasses.filter(t=>new RegExp(`\\b${code}\\b`,"i").test(String(t))).length;
+      if(votes>=2) return code;
+    }
 
-    const old=grouped.get(c.value)||{score:0,count:0};
-    grouped.set(c.value,{score:old.score+score,count:old.count+1});
-  }
-
-  const ranked=[...grouped.entries()]
-    .map(([value,x])=>({value,...x,total:x.score+x.count*.5}))
-    .sort((a,b)=>b.total-a.total);
-
-  if(ranked.length){
-    const best=ranked[0].value;
-    return trngVotes>=2 ? `${best} TRNG` : best;
-  }
-
-  // Standalone TRNG or another compact roster code.
-  if(trngVotes>=2)return "TRNG";
-
-  const knownCodes=["ALTH","HACC","ALV","SICK","LEAVE","OFF","SL","AL"];
-  for(const code of knownCodes){
-    const votes=codePasses.filter(t=>new RegExp(`\\b${code}\\b`,"i").test(String(t))).length;
-    if(votes>=2)return code;
-  }
-
-  // No invented substitute. Store empty canonical text when it genuinely cannot be read.
-  return "";
+    return "";
+  })();
 }
 
 

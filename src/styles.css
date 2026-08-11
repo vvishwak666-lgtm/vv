@@ -160,3 +160,5 @@
 /* Preserve whole-row OCR values when exact-cell OCR misses. */
 
 /* Airport 24-hour shift calculation enforced globally. */
+
+/* Tight source-cell OCR: blank cell area and borders are excluded before text recognition. */
