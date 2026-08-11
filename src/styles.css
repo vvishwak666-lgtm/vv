@@ -1268,3 +1268,10 @@ nav,
   padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
   height: calc(72px + env(safe-area-inset-bottom)) !important;
 }
+
+.authScreen{min-height:100vh;display:grid;place-items:center;padding:24px;background:#050607}
+.authCard{width:min(100%,380px);padding:24px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:#0d1115;text-align:center}
+.authCard input{width:100%;box-sizing:border-box;min-height:46px;margin:14px 0 10px;padding:0 12px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#090d11;color:#fff}
+.authFull{width:100%}.accessBar{position:fixed;right:12px;top:calc(8px + env(safe-area-inset-top));z-index:160;display:flex;gap:6px}.accessBar button{padding:6px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:#0d1115;color:#fff}
+.adminAccess{max-width:520px!important}.approveRow{display:grid;grid-template-columns:1fr auto;gap:8px;margin:12px 0}.approveRow input{min-width:0;padding:10px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:#090d11;color:#fff}
+.approvedList{display:flex;flex-direction:column;gap:7px;max-height:50vh;overflow:auto}.approvedItem{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border:1px solid rgba(255,255,255,.08);border-radius:10px}.approvedItem b,.approvedItem small{display:block}

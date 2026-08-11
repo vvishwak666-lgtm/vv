@@ -12,6 +12,8 @@ import {
 import "./styles.css";
 
 
+import { createClient } from "@supabase/supabase-js";
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(err => {
@@ -1461,6 +1463,106 @@ function parseDisplayedRosterValue(value){
   return {display:raw,time:"",code:"",hours:0};
 }
 
+
+const supabaseUrl=import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey=import.meta.env.VITE_SUPABASE_ANON_KEY;
+const adminEmail=String(import.meta.env.VITE_ADMIN_EMAIL||"").toLowerCase();
+const supabase=(supabaseUrl&&supabaseKey)?createClient(supabaseUrl,supabaseKey):null;
+
+function AccessGate({children}){
+  const [session,setSession]=useState(null);
+  const [approved,setApproved]=useState(false);
+  const [loading,setLoading]=useState(true);
+  const [email,setEmail]=useState("");
+  const [msg,setMsg]=useState("");
+  const [adminOpen,setAdminOpen]=useState(false);
+  const [users,setUsers]=useState([]);
+  const [newEmail,setNewEmail]=useState("");
+
+  const current=String(session?.user?.email||"").toLowerCase();
+  const isAdmin=current&&current===adminEmail;
+
+  const check=useCallback(async(s)=>{
+    if(!supabase||!s?.user?.email){setApproved(false);return;}
+    const em=String(s.user.email).toLowerCase();
+    if(em===adminEmail){setApproved(true);return;}
+    const {data}=await supabase.from("approved_users")
+      .select("email,active").eq("email",em).eq("active",true).maybeSingle();
+    setApproved(!!data);
+  },[]);
+
+  useEffect(()=>{
+    if(!supabase){setLoading(false);return;}
+    supabase.auth.getSession().then(async({data})=>{
+      setSession(data.session||null);
+      await check(data.session||null);
+      setLoading(false);
+    });
+    const {data}=supabase.auth.onAuthStateChange(async(_e,s)=>{
+      setSession(s||null); await check(s||null);
+    });
+    return()=>data.subscription.unsubscribe();
+  },[check]);
+
+  const signIn=async()=>{
+    const em=email.trim().toLowerCase();
+    if(!em)return;
+    setMsg("Sending sign-in link…");
+    const {error}=await supabase.auth.signInWithOtp({
+      email:em,options:{emailRedirectTo:window.location.origin}
+    });
+    setMsg(error?error.message:"Check your email for the sign-in link.");
+  };
+
+  const loadUsers=async()=>{
+    const {data}=await supabase.from("approved_users")
+      .select("id,email,active,created_at").order("created_at",{ascending:false});
+    setUsers(data||[]);
+  };
+
+  const approve=async()=>{
+    const em=newEmail.trim().toLowerCase();
+    if(!em)return;
+    await supabase.from("approved_users").upsert({email:em,active:true},{onConflict:"email"});
+    setNewEmail(""); await loadUsers();
+  };
+
+  const toggle=async(u)=>{
+    await supabase.from("approved_users").update({active:!u.active}).eq("id",u.id);
+    await loadUsers();
+  };
+
+  if(loading)return <div className="authScreen"><div className="authCard"><h2>VV Duty Roster</h2><p>Checking access…</p></div></div>;
+
+  if(!session)return <div className="authScreen"><div className="authCard">
+    <div className="vv">VV</div><h2>Private Access</h2>
+    <p>Only approved users can use this app.</p>
+    <input type="email" placeholder="Work email" value={email} onChange={e=>setEmail(e.target.value)} />
+    <button className="primary authFull" onClick={signIn}>Send secure sign-in link</button>
+    {msg&&<small>{msg}</small>}
+  </div></div>;
+
+  if(!approved)return <div className="authScreen"><div className="authCard">
+    <h2>Access not approved</h2><p>{current}</p>
+    <button className="ghost authFull" onClick={()=>supabase.auth.signOut()}>Sign out</button>
+  </div></div>;
+
+  return <>
+    {children}
+    <div className="accessBar">
+      {isAdmin&&<button onClick={async()=>{setAdminOpen(true);await loadUsers();}}>Admin</button>}
+      <button onClick={()=>supabase.auth.signOut()}>Sign out</button>
+    </div>
+    {adminOpen&&<div className="modalWrap"><div className="modal adminAccess">
+      <div className="modalHead"><div><h2>Approved Users</h2><p>Approve once; revoke any time.</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
+      <div className="approveRow"><input type="email" placeholder="user@example.com" value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>Approve</button></div>
+      <div className="approvedList">
+        {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?"Access ON":"Access OFF"}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?"Revoke":"Restore"}</button></div>)}
+      </div>
+    </div></div>}
+  </>;
+}
+
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
@@ -2452,4 +2554,4 @@ function exportCSV(rows){
   a.click();
 }
 
-createRoot(document.getElementById("root")).render(<App/>);
+createRoot(document.getElementById("root")).render(<AccessGate><App/></AccessGate>);
