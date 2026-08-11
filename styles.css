@@ -425,3 +425,163 @@ main,
     align-self:center !important;
   }
 }
+
+/* RT / OT selector for each AM and PM shift */
+.shiftLabelRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  width:100%;
+  min-width:0;
+}
+
+.shiftLabelRow label{
+  margin:0;
+}
+
+.shiftTypeSelect{
+  flex:0 0 auto;
+  width:58px;
+  min-width:58px;
+  height:28px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.22);
+  border-radius:7px;
+  background:rgba(255,255,255,.05);
+  color:inherit;
+  padding:2px 5px;
+  font:inherit;
+  font-size:12px;
+  font-weight:900;
+  text-align:center;
+}
+
+.shiftTypeSelect.isOT{
+  border-color:#f5c33d;
+  box-shadow:0 0 0 1px rgba(245,195,61,.15);
+}
+
+.dailyRT{
+  font-size:9px;
+  font-weight:800;
+  opacity:.58;
+}
+
+.dailyOvertime{
+  color:#f5c33d;
+  font-size:9px;
+  font-weight:900;
+  white-space:nowrap;
+}
+
+/* Read-only Calendar / Dashboard AM + PM display */
+.readonlyDualShift{
+  min-width:0;
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+
+.readonlyShiftLine{
+  width:100%;
+  min-width:0;
+  display:grid;
+  grid-template-columns:34px minmax(0,1fr) 38px;
+  gap:8px;
+  align-items:center;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:8px;
+  padding:8px 10px;
+  box-sizing:border-box;
+  background:rgba(255,255,255,.025);
+}
+
+.readonlyShiftLine span{
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.08em;
+  color:#f5c33d;
+}
+
+.readonlyShiftLine strong{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:15px;
+}
+
+.readonlyShiftLine em{
+  font-style:normal;
+  font-size:10px;
+  font-weight:900;
+  text-align:right;
+  opacity:.72;
+}
+
+.readonlySource{
+  width:100% !important;
+  max-width:100% !important;
+}
+
+.readonlySource img{
+  width:100% !important;
+  max-width:100% !important;
+  height:auto !important;
+}
+
+@media(max-width:560px){
+  .readonlyShiftLine{
+    grid-template-columns:30px minmax(0,1fr) 34px;
+    padding:7px 8px;
+    gap:6px;
+  }
+}
+
+/* Compact source-cell image on Dashboard / This Week / Calendar read-only rows */
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.readonlySource{
+  width:150px !important;
+  max-width:150px !important;
+  min-width:0 !important;
+  height:72px !important;
+  overflow:hidden !important;
+  border-radius:8px !important;
+  justify-self:start !important;
+}
+
+.rosterImported:not(.rosterEditable) .savedSourceCell img,
+.readonlySource img{
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  height:72px !important;
+  object-fit:contain !important;
+  object-position:left center !important;
+}
+
+/* Keep read-only weekly row compact and aligned */
+.rosterImported:not(.rosterEditable){
+  min-height:86px !important;
+  align-items:center !important;
+}
+
+.rosterImported:not(.rosterEditable) .dailyHours{
+  align-self:center !important;
+}
+
+@media(max-width:600px){
+  .rosterImported:not(.rosterEditable) .savedSourceCell,
+  .readonlySource{
+    width:118px !important;
+    max-width:118px !important;
+    height:60px !important;
+  }
+
+  .rosterImported:not(.rosterEditable) .savedSourceCell img,
+  .readonlySource img{
+    height:60px !important;
+  }
+}
