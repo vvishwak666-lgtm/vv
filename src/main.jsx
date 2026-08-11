@@ -11,6 +11,16 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(err => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
+
+
 const STORE = "vv-roster-auto-table-v4";
 const CODES = new Set(["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
 
