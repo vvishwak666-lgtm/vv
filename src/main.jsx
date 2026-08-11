@@ -1329,36 +1329,54 @@ function parseDisplayedRosterValue(value){
 
   if(!raw) return {display:"",time:"",code:"",hours:0};
 
-  if(/\bRDO\b/.test(raw)) return {display:"RDO",time:"",code:"RDO",hours:0};
+  if(/\bRDO\b/.test(raw)){
+    return {display:"RDO",time:"",code:"RDO",hours:0};
+  }
 
   const hasTRNG=/\bTRNG\b/.test(raw);
 
-  // Use the displayed HHMM-HHMM only. No OCR substitutions here.
-  const m=raw.match(/(^|[^0-9])(\d{4})\s*-\s*(\d{4})(?=$|[^0-9])/);
-  if(m){
-    const a=m[2], b=m[3];
-    const sh=+a.slice(0,2), sm=+a.slice(2), eh=+b.slice(0,2), em=+b.slice(2);
+  const match=raw.match(/(\d{4})\s*-\s*(\d{4})/);
+  if(match){
+    const a=match[1];
+    const b=match[2];
 
-    if(sh<=23&&eh<=23&&sm<=59&&em<=59){
-      let mins=(eh*60+em)-(sh*60+sm);
-      if(mins<0) mins+=1440;
+    const sh=Number(a.slice(0,2));
+    const sm=Number(a.slice(2,4));
+    const eh=Number(b.slice(0,2));
+    const em=Number(b.slice(2,4));
 
-      // Roster shifts may cross midnight; cap only clearly impossible values.
-      if(mins>0 && mins<=14*60){
+    if(
+      sh>=0 && sh<=23 &&
+      eh>=0 && eh<=23 &&
+      sm>=0 && sm<=59 &&
+      em>=0 && em<=59
+    ){
+      const startMinutes=sh*60+sm;
+      const endMinutes=eh*60+em;
+
+      let durationMinutes=endMinutes-startMinutes;
+      if(durationMinutes<=0) durationMinutes+=24*60;
+
+      if(durationMinutes>0 && durationMinutes<=16*60){
+        const time=`${a}-${b}`;
         return {
-          display:`${a}-${b}${hasTRNG?" TRNG":""}`,
-          time:`${a}-${b}`,
+          display:`${time}${hasTRNG?" TRNG":""}`,
+          time,
           code:hasTRNG?"TRNG":"",
-          hours:mins/60
+          hours:durationMinutes/60
         };
       }
     }
   }
 
-  // Standalone status codes remain visible but do not add work hours.
   const codeMatch=raw.match(/\b(AL|ALV|ALTH|HACC|SICK|SL|LEAVE|OFF|TRNG)\b/);
   if(codeMatch){
-    return {display:codeMatch[1],time:"",code:codeMatch[1],hours:0};
+    return {
+      display:codeMatch[1],
+      time:"",
+      code:codeMatch[1],
+      hours:0
+    };
   }
 
   return {display:raw,time:"",code:"",hours:0};
@@ -1696,6 +1714,11 @@ function App(){
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
 function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
 
+// Deterministic duration examples:
+  // 0430-0930 = 5.0h
+  // 1630-0000 = 7.5h
+  // 1700-0200 = 9.0h
+  // 1630-2030 = 4.0h
 function effectiveEntryHours(e){
   const stored=Number(e?.hours);
   if(Number.isFinite(stored) && stored>0) return stored;

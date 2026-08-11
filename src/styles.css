@@ -154,3 +154,5 @@
 /* Canonical cell-value pipeline: exact source image display remains unchanged. */
 
 /* Missing-hours display fallback uses canonical roster value only. */
+
+/* Duration parser fix: supports early starts and midnight endings. */
