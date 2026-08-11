@@ -1406,7 +1406,8 @@ function airport24HourDuration(value){
 
   // Airport roster rule: if finish is earlier than or equal to start,
   // the finish is on the next calendar day.
-  if(endMinutes<=startMinutes) endMinutes += 24*60;
+  if(endMinutes===startMinutes) return {valid:true,hours:0,time:`${start}-${end}`,display:`${start}-${end}`};
+  if(endMinutes<startMinutes) endMinutes += 24*60;
 
   const durationMinutes=endMinutes-startMinutes;
 
@@ -1679,7 +1680,7 @@ function App(){
         display:parsed.display,
 
         canonicalValue:parsed.display,
-        editableValue:parsed.display,
+        editableValue:"0000-0000",
         originalValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
@@ -1937,8 +1938,9 @@ function Roster({rows,onEdit}){
               <label>SHIFT</label>
               <input
                 className="editableShift"
-                value={value}
-                placeholder="HHMM-HHMM or RDO"
+                onFocus={ev=>ev.currentTarget.select()}
+                value={e.editableValue ?? "0000-0000"}
+                placeholder="0000-0000"
                 onChange={ev=>onEdit(e.id,ev.target.value)}
                 inputMode="text"
                 autoCapitalize="characters"
