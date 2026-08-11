@@ -256,3 +256,50 @@
 .calendarTotals{
   grid-template-columns:repeat(2,minmax(0,1fr)) !important;
 }
+
+/* AM + PM shifts for every date */
+.rosterDualShift{
+  grid-template-columns:minmax(105px,135px) minmax(145px,210px) minmax(300px,1fr) 90px !important;
+  align-items:center;
+}
+.dualShiftEditor{
+  min-width:0;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(130px,1fr));
+  gap:10px;
+}
+.dualShiftEditor .editableShiftWrap{
+  min-width:0;
+}
+.dailyHours{
+  min-width:78px;
+}
+.dailyHours span{
+  text-align:right;
+}
+@media(max-width:900px){
+  .rosterDualShift{
+    grid-template-columns:100px minmax(120px,180px) 1fr 78px !important;
+  }
+  .dualShiftEditor{
+    grid-template-columns:1fr;
+    gap:7px;
+  }
+}
+@media(max-width:650px){
+  .rosterDualShift{
+    grid-template-columns:92px minmax(0,1fr) 72px !important;
+  }
+  .rosterDualShift .savedSourceCell{
+    grid-column:2/3;
+  }
+  .dualShiftEditor{
+    grid-column:2/3;
+    grid-template-columns:1fr;
+  }
+  .rosterDualShift .dailyHours{
+    grid-column:3/4;
+    grid-row:1/4;
+    align-self:center;
+  }
+}

@@ -1681,6 +1681,8 @@ function App(){
 
         canonicalValue:parsed.display,
         editableValue:"0000-0000",
+        amShift:"0000-0000",
+        pmShift:"0000-0000",
         originalValue:parsed.display,
         rawCellText:literal,
         sourceCell:thumb,
@@ -1699,7 +1701,7 @@ function App(){
     setReview(null);setTable(null);setPreview(null);setTab("dashboard");
   };
 
-  const updateEntryValue=(id,nextValue)=>{
+  const updateEntryValue=(id,period,nextValue)=>{
     setEntries(old=>old.map(e=>{
       if(e.id!==id)return e;
 
@@ -1708,19 +1710,30 @@ function App(){
         .replace(/\s+/g," ")
         .trim();
 
-      const parsed=parseDisplayedRosterValue(raw);
-
       return {
         ...e,
-        editableValue:raw,
-        display:raw,
-        canonicalValue:raw,
-        time:parsed.time,
-        code:parsed.code,
-        hours:parsed.hours
+        [period==="pm"?"pmShift":"amShift"]:raw || "0000-0000"
       };
     }));
   };
+
+  useEffect(()=>{
+    setEntries(old=>{
+      let changed=false;
+      const next=old.map(e=>{
+        if(e.amShift===undefined || e.pmShift===undefined){
+          changed=true;
+          return {
+            ...e,
+            amShift:e.amShift ?? "0000-0000",
+            pmShift:e.pmShift ?? "0000-0000"
+          };
+        }
+        return e;
+      });
+      return changed?next:old;
+    });
+  },[]);
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
@@ -1861,8 +1874,18 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
   // 1700-0200 = 9.0h
   // 1630-2030 = 4.0h
 function effectiveEntryHours(e){
+  if(e?.amShift!==undefined || e?.pmShift!==undefined){
+    const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+    const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+    return (am.valid?am.hours:0) + (pm.valid?pm.hours:0);
+  }
+
+  if(e?.editableValue!==undefined && e?.editableValue!==null){
+    const edited=airport24HourDuration(e.editableValue);
+    return edited.valid ? edited.hours : 0;
+  }
+
   const candidates=[
-    e?.editableValue,
     e?.canonicalValue,
     e?.display,
     e?.rawCellText,
@@ -1874,10 +1897,7 @@ function effectiveEntryHours(e){
     if(airport.valid) return airport.hours;
   }
 
-  const edited=String(e?.editableValue||"").toUpperCase().trim();
-  if(edited==="RDO") return 0;
   if(e?.code==="RDO") return 0;
-
   const stored=Number(e?.hours);
   return Number.isFinite(stored) ? stored : 0;
 }
@@ -1907,6 +1927,11 @@ function entryOvertimeHours(e){
 }
 
 function entryRosterText(e){
+  if(e?.amShift!==undefined || e?.pmShift!==undefined){
+    const am=e?.amShift ?? "0000-0000";
+    const pm=e?.pmShift ?? "0000-0000";
+    return `AM ${am} • PM ${pm}`;
+  }
   if(e.editableValue!==undefined && e.editableValue!==null)return e.editableValue;
   if(e.canonicalValue)return e.canonicalValue;
   if(e.display)return e.display;
@@ -1919,40 +1944,57 @@ function Roster({rows,onEdit}){
 
   return <div className="list">
     {rows.map(e=>{
-      const value=entryRosterText(e);
       const hours=effectiveEntryHours(e);
-      const isRDO=String(value||"").toUpperCase().trim()==="RDO";
+      const am=e.amShift ?? "0000-0000";
+      const pm=e.pmShift ?? "0000-0000";
 
-      return <div className={`item rosterImported ${onEdit?"rosterEditable":""}`} key={e.id}>
+      return <div className={`item rosterImported ${onEdit?"rosterEditable rosterDualShift":""}`} key={e.id}>
         <div className="rosterDateBlock">
           <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
           <span>{e.name}</span>
         </div>
 
         {e.sourceCell
-          ? <div className="savedSourceCell"><img src={e.sourceCell} alt={value||"Roster cell"}/></div>
-          : <b className="rosterTextFallback">{value}</b>}
+          ? <div className="savedSourceCell"><img src={e.sourceCell} alt="Original roster cell"/></div>
+          : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
 
         {onEdit
-          ? <div className="editableShiftWrap">
-              <label>SHIFT</label>
-              <input
-                className="editableShift"
-                onFocus={ev=>ev.currentTarget.select()}
-                value={e.editableValue ?? "0000-0000"}
-                placeholder="0000-0000"
-                onChange={ev=>onEdit(e.id,ev.target.value)}
-                inputMode="text"
-                autoCapitalize="characters"
-                spellCheck="false"
-              />
-              <small>24-hour airport time</small>
+          ? <div className="dualShiftEditor">
+              <div className="editableShiftWrap">
+                <label>AM SHIFT</label>
+                <input
+                  className="editableShift"
+                  value={am}
+                  placeholder="0000-0000"
+                  onFocus={ev=>ev.currentTarget.select()}
+                  onChange={ev=>onEdit(e.id,"am",ev.target.value)}
+                  inputMode="text"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                />
+                <small>24-hour airport time</small>
+              </div>
+
+              <div className="editableShiftWrap">
+                <label>PM SHIFT</label>
+                <input
+                  className="editableShift"
+                  value={pm}
+                  placeholder="0000-0000"
+                  onFocus={ev=>ev.currentTarget.select()}
+                  onChange={ev=>onEdit(e.id,"pm",ev.target.value)}
+                  inputMode="text"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                />
+                <small>24-hour airport time</small>
+              </div>
             </div>
           : null}
 
         <div className="dailyHours">
-          <span>HOURS</span>
-          <strong>{isRDO?"0.0h":hours>0?`${hours.toFixed(1)}h`:"—"}</strong>
+          <span>TOTAL HOURS</span>
+          <strong>{hours.toFixed(1)}h</strong>
           {onEdit && entryOvertimeHours(e)>0
             ? <small className="dailyOvertime">+{entryOvertimeHours(e).toFixed(1)} OT</small>
             : null}
