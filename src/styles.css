@@ -539,3 +539,139 @@ main,
     gap:6px;
   }
 }
+
+/* Compact source-cell image on Dashboard / This Week / Calendar read-only rows */
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.readonlySource{
+  width:150px !important;
+  max-width:150px !important;
+  min-width:0 !important;
+  height:72px !important;
+  overflow:hidden !important;
+  border-radius:8px !important;
+  justify-self:start !important;
+}
+
+.rosterImported:not(.rosterEditable) .savedSourceCell img,
+.readonlySource img{
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  height:72px !important;
+  object-fit:contain !important;
+  object-position:left center !important;
+}
+
+/* Keep read-only weekly row compact and aligned */
+.rosterImported:not(.rosterEditable){
+  min-height:86px !important;
+  align-items:center !important;
+}
+
+.rosterImported:not(.rosterEditable) .dailyHours{
+  align-self:center !important;
+}
+
+@media(max-width:600px){
+  .rosterImported:not(.rosterEditable) .savedSourceCell,
+  .readonlySource{
+    width:118px !important;
+    max-width:118px !important;
+    height:60px !important;
+  }
+
+  .rosterImported:not(.rosterEditable) .savedSourceCell img,
+  .readonlySource img{
+    height:60px !important;
+  }
+}
+
+/* FINAL COMPACT ROSTER IMAGE OVERRIDE
+   Dashboard "This Week" and Calendar selected-day cards only.
+   Do not affect My Roster editor. */
+.thisWeek img,
+.weekRoster img,
+.weekRow img,
+.calendarDayDetail img,
+.calendarSelected img,
+.dayDetail img,
+.rosterImported:not(.rosterEditable) img {
+  width: 132px !important;
+  max-width: 132px !important;
+  height: 58px !important;
+  max-height: 58px !important;
+  min-height: 0 !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  display: block !important;
+  border-radius: 7px !important;
+}
+
+/* Prevent the image wrapper itself from stretching to the old large dimensions */
+.thisWeek .savedSourceCell,
+.weekRoster .savedSourceCell,
+.weekRow .savedSourceCell,
+.calendarDayDetail .savedSourceCell,
+.calendarSelected .savedSourceCell,
+.dayDetail .savedSourceCell,
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.rosterImported:not(.rosterEditable) .readonlySource {
+  width: 132px !important;
+  max-width: 132px !important;
+  min-width: 132px !important;
+  height: 58px !important;
+  min-height: 58px !important;
+  max-height: 58px !important;
+  overflow: hidden !important;
+  flex: 0 0 132px !important;
+  padding: 0 !important;
+}
+
+/* If the imported crop is rendered as a background instead of IMG */
+.rosterImported:not(.rosterEditable) .savedSourceCell {
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+}
+
+/* Keep read-only rows compact */
+.rosterImported:not(.rosterEditable) {
+  min-height: 76px !important;
+}
+
+/* My Roster source crop remains usable, but stop accidental global image rules */
+.rosterEditable .savedSourceCell img {
+  max-width: 100% !important;
+}
+
+@media (max-width: 600px) {
+  .thisWeek img,
+  .weekRoster img,
+  .weekRow img,
+  .calendarDayDetail img,
+  .calendarSelected img,
+  .dayDetail img,
+  .rosterImported:not(.rosterEditable) img {
+    width: 108px !important;
+    max-width: 108px !important;
+    height: 50px !important;
+    max-height: 50px !important;
+  }
+
+  .thisWeek .savedSourceCell,
+  .weekRoster .savedSourceCell,
+  .weekRow .savedSourceCell,
+  .calendarDayDetail .savedSourceCell,
+  .calendarSelected .savedSourceCell,
+  .dayDetail .savedSourceCell,
+  .rosterImported:not(.rosterEditable) .savedSourceCell,
+  .rosterImported:not(.rosterEditable) .readonlySource {
+    width: 108px !important;
+    max-width: 108px !important;
+    min-width: 108px !important;
+    height: 50px !important;
+    min-height: 50px !important;
+    max-height: 50px !important;
+    flex-basis: 108px !important;
+  }
+}
