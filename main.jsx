@@ -1807,7 +1807,7 @@ function App(){
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3>
-        <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>JPEG table: Name, Date, RT, OT & Hours</small></span></button>
+        <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
       </section>
       <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
@@ -2104,7 +2104,12 @@ function exportRosterPhoto(rows=[]){
     const scale=2;
     canvas.width=W*scale;
     canvas.height=H*scale;
+
     const ctx=canvas.getContext("2d");
+    if(!ctx){
+      alert("Unable to create JPEG on this browser.");
+      return;
+    }
     ctx.scale(scale,scale);
 
     const bg="#f2eee4";
@@ -2120,14 +2125,18 @@ function exportRosterPhoto(rows=[]){
 
     const roundedRect=(x,y,w,h,r,fill,stroke)=>{
       ctx.beginPath();
-      ctx.roundRect(x,y,w,h,r);
+      if(ctx.roundRect){
+        ctx.roundRect(x,y,w,h,r);
+      }else{
+        ctx.rect(x,y,w,h);
+      }
       if(fill){ctx.fillStyle=fill;ctx.fill();}
       if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}
     };
 
     const drawText=(text,x,y,size=28,weight=500,align="left",color=ink)=>{
       ctx.fillStyle=color;
-      ctx.font=`${weight} ${size}px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif`;
+      ctx.font=`${weight} ${size}px Arial, Helvetica, sans-serif`;
       ctx.textAlign=align;
       ctx.textBaseline="middle";
       ctx.fillText(String(text??""),x,y);
@@ -2136,13 +2145,17 @@ function exportRosterPhoto(rows=[]){
     const dateText=(iso)=>{
       if(!iso)return "";
       const d=new Date(`${iso}T12:00:00`);
-      return new Intl.DateTimeFormat("en-NZ",{day:"2-digit",month:"2-digit",year:"numeric"}).format(d);
+      return new Intl.DateTimeFormat("en-NZ",{
+        day:"2-digit",month:"2-digit",year:"numeric"
+      }).format(d);
     };
 
     const shortDate=(iso)=>{
       if(!iso)return "";
       const d=new Date(`${iso}T12:00:00`);
-      return new Intl.DateTimeFormat("en-NZ",{day:"2-digit",month:"short"}).format(d).toUpperCase();
+      return new Intl.DateTimeFormat("en-NZ",{
+        day:"2-digit",month:"short"
+      }).format(d).toUpperCase();
     };
 
     const shiftForType=(e,type)=>{
@@ -2152,11 +2165,23 @@ function exportRosterPhoto(rows=[]){
       const amP=airport24HourDuration(am);
       const pmP=airport24HourDuration(pm);
 
-      if(amP.valid && amP.hours>0 && (e?.amType ?? "RT")===type) parts.push(`AM ${am}`);
-      if(pmP.valid && pmP.hours>0 && (e?.pmType ?? "RT")===type) parts.push(`PM ${pm}`);
+      if(amP.valid && amP.hours>0 && (e?.amType ?? "RT")===type){
+        parts.push(`AM ${am}`);
+      }
+      if(pmP.valid && pmP.hours>0 && (e?.pmType ?? "RT")===type){
+        parts.push(`PM ${pm}`);
+      }
 
       if(!parts.length && type==="RT"){
-        const raw=String(e?.originalValue||e?.canonicalValue||e?.rawCellText||e?.display||e?.code||"").toUpperCase();
+        const raw=String(
+          e?.originalValue||
+          e?.canonicalValue||
+          e?.rawCellText||
+          e?.display||
+          e?.code||
+          ""
+        ).toUpperCase();
+
         if(raw.includes("RDO")) return "RDO";
       }
       return parts.length ? parts.join(" / ") : "—";
@@ -2166,18 +2191,18 @@ function exportRosterPhoto(rows=[]){
     const last=roster[roster.length-1]?.date;
     const employee=roster[0]?.name || "Employee";
 
-    // Outer page
     roundedRect(35,35,W-70,H-70,22,"#f6f2e9","#c8c0b2");
 
-    // Title
     drawText("VV DUTY ROSTER",W/2,85,42,700,"center",ink);
-    drawText(`${shortDate(first)} – ${shortDate(last)}  •  14-DAY ROSTER`,W/2,130,20,600,"center",gold);
+    drawText(
+      `${shortDate(first)} – ${shortDate(last)}  •  14-DAY ROSTER`,
+      W/2,130,20,600,"center",gold
+    );
 
-    // Table geometry
     const x0=margin;
     const y0=margin+titleH;
     const tableW=W-(margin*2);
-    // NAME | DATE | RT | OT | HOURS
+
     const cols=[
       {label:"NAME",w:290},
       {label:"DATE",w:190},
@@ -2185,14 +2210,17 @@ function exportRosterPhoto(rows=[]){
       {label:"OT",w:350},
       {label:"HOURS",w:140},
     ];
-    // normalize final width exactly
+
     const rawSum=cols.reduce((s,c)=>s+c.w,0);
     const factor=tableW/rawSum;
     cols.forEach(c=>c.w*=factor);
 
-    roundedRect(x0,y0,tableW,headH+(rowH*roster.length),10,"#faf7ef",grid);
+    roundedRect(
+      x0,y0,tableW,
+      headH+(rowH*roster.length),
+      10,"#faf7ef",grid
+    );
 
-    // Header background
     ctx.fillStyle="#e7e0d3";
     ctx.fillRect(x0,y0,tableW,headH);
 
@@ -2201,7 +2229,10 @@ function exportRosterPhoto(rows=[]){
       if(i>0){
         ctx.strokeStyle=grid;
         ctx.lineWidth=1.5;
-        ctx.beginPath();ctx.moveTo(cx,y0);ctx.lineTo(cx,y0+headH+(rowH*roster.length));ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx,y0);
+        ctx.lineTo(cx,y0+headH+(rowH*roster.length));
+        ctx.stroke();
       }
       drawText(c.label,cx+c.w/2,y0+headH/2,22,800,"center",ink);
       cx+=c.w;
@@ -2212,6 +2243,7 @@ function exportRosterPhoto(rows=[]){
 
     roster.forEach((e,idx)=>{
       const y=y0+headH+(idx*rowH);
+
       if(idx%2===1){
         ctx.fillStyle="#f3eee5";
         ctx.fillRect(x0,y,tableW,rowH);
@@ -2219,10 +2251,14 @@ function exportRosterPhoto(rows=[]){
 
       ctx.strokeStyle="#9a9388";
       ctx.lineWidth=1;
-      ctx.beginPath();ctx.moveTo(x0,y);ctx.lineTo(x0+tableW,y);ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0,y);
+      ctx.lineTo(x0+tableW,y);
+      ctx.stroke();
 
       const hours=effectiveEntryHours(e);
       const ot=entryOvertimeHours(e);
+
       totalHours+=hours;
       totalOT+=ot;
 
@@ -2235,6 +2271,7 @@ function exportRosterPhoto(rows=[]){
       ];
 
       let x=x0;
+
       values.forEach((val,i)=>{
         const c=cols[i];
         const center=x+c.w/2;
@@ -2251,13 +2288,18 @@ function exportRosterPhoto(rows=[]){
           drawText(pieces[0],center,y+32,18,700,"center",i===3?"#9b4a1d":ink);
           drawText(pieces[1],center,y+61,18,700,"center",i===3?"#9b4a1d":ink);
         }else{
-          drawText(val,center,y+rowH/2,i===4?22:19,i===4?800:600,"center",i===3 && val!=="—"?"#9b4a1d":ink);
+          drawText(
+            val,center,y+rowH/2,
+            i===4?22:19,
+            i===4?800:600,
+            "center",
+            i===3 && val!=="—"?"#9b4a1d":ink
+          );
         }
         x+=c.w;
       });
     });
 
-    // Summary strip
     const sy=y0+headH+(rowH*roster.length)+34;
     const boxGap=18;
     const boxW=(tableW-boxGap*2)/3;
@@ -2268,26 +2310,68 @@ function exportRosterPhoto(rows=[]){
       ["OVERTIME",totalOT.toFixed(2)]
     ].forEach(([label,value],i)=>{
       const bx=x0+i*(boxW+boxGap);
-      roundedRect(bx,sy,boxW,82,10,i===2?"#fbede3":"#e9e4d9","#bdb5a8");
+
+      roundedRect(
+        bx,sy,boxW,82,10,
+        i===2?"#fbede3":"#e9e4d9",
+        "#bdb5a8"
+      );
+
       drawText(label,bx+18,sy+24,14,800,"left",muted);
-      drawText(value,bx+18,sy+56,i===0?21:28,800,"left",i===2?"#9b4a1d":ink);
+      drawText(
+        value,bx+18,sy+56,
+        i===0?21:28,800,"left",
+        i===2?"#9b4a1d":ink
+      );
     });
 
-    drawText("Generated by VV Duty Roster",W/2,H-55,14,500,"center",muted);
+    drawText(
+      "Generated by VV Duty Roster",
+      W/2,H-55,14,500,"center",muted
+    );
 
-    const safeName=employee.replace(/[^a-z0-9]+/gi,"-").replace(/^-|-$/g,"").toLowerCase() || "employee";
+    // Safari-safe: create JPEG immediately inside the click event.
+    const jpegURL=canvas.toDataURL("image/jpeg",0.94);
+
+    const safeName=employee
+      .replace(/[^a-z0-9]+/gi,"-")
+      .replace(/^-|-$/g,"")
+      .toLowerCase() || "employee";
+
     const filename=`vv-roster-${safeName}-${first||"14-days"}-${last||""}.jpg`;
-    const dataUrl=canvas.toDataURL('image/jpeg', 0.95);
+
+    // First try a normal direct download.
     const a=document.createElement("a");
-    a.href=dataUrl;
+    a.href=jpegURL;
     a.download=filename;
     a.style.display="none";
     document.body.appendChild(a);
     a.click();
     a.remove();
+
+    // Safari/iOS fallback: if download attribute is ignored,
+    // open the JPEG directly so user can Save Image / Share.
+    const isSafari=/^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    if(isSafari || isIOS){
+      setTimeout(()=>{
+        const w=window.open();
+        if(w){
+          w.document.write(
+            `<html><head><title>${filename}</title></head>
+             <body style="margin:0;background:#111;text-align:center">
+             <img src="${jpegURL}" style="max-width:100%;height:auto" />
+             </body></html>`
+          );
+          w.document.close();
+        }
+      },150);
+    }
+
   }catch(err){
-    console.error("Roster PNG export failed",err);
-    alert("Unable to export roster photo on this browser.");
+    console.error("JPEG roster export failed",err);
+    alert("JPEG export failed: "+(err?.message||"Unknown error"));
   }
 }
 
