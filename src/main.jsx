@@ -1976,9 +1976,39 @@ function Roster({rows,onEdit}){
           <span>{e.name}</span>
         </div>
 
-        {e.sourceCell
-          ? <div className="savedSourceCell"><img src={e.sourceCell} alt="Original roster cell"/></div>
-          : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
+        {!onEdit && (e.amShift!==undefined || e.pmShift!==undefined)
+          ? <div className="readonlyDualShift">
+              {(() => {
+                const am=e.amShift ?? "0000-0000";
+                const pm=e.pmShift ?? "0000-0000";
+                const amParsed=airport24HourDuration(am);
+                const pmParsed=airport24HourDuration(pm);
+                const amHas=amParsed.valid && amParsed.hours>0;
+                const pmHas=pmParsed.valid && pmParsed.hours>0;
+
+                if(!amHas && !pmHas){
+                  return e.sourceCell
+                    ? <div className="savedSourceCell readonlySource"><img src={e.sourceCell} alt="Original roster cell"/></div>
+                    : <b className="rosterTextFallback">{entryRosterText(e)}</b>;
+                }
+
+                return <>
+                  {amHas && <div className="readonlyShiftLine">
+                    <span>AM</span>
+                    <strong>{am}</strong>
+                    <em>{e.amType ?? "RT"}</em>
+                  </div>}
+                  {pmHas && <div className="readonlyShiftLine">
+                    <span>PM</span>
+                    <strong>{pm}</strong>
+                    <em>{e.pmType ?? "RT"}</em>
+                  </div>}
+                </>;
+              })()}
+            </div>
+          : e.sourceCell
+            ? <div className="savedSourceCell"><img src={e.sourceCell} alt="Original roster cell"/></div>
+            : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
 
         {onEdit
           ? <div className="dualShiftEditor">
