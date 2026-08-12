@@ -1304,3 +1304,5 @@ nav,
   color:#f7f3e8 !important;
   border:1px solid rgba(255,255,255,.1) !important;
 }
+
+.authCard input + input{margin-top:10px;}

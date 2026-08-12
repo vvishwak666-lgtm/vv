@@ -1485,6 +1485,7 @@ function AccessGate({children}){
   const [approved,setApproved]=useState(false);
   const [loading,setLoading]=useState(true);
   const [email,setEmail]=useState("");
+    const [password,setPassword]=useState("");
   const [msg,setMsg]=useState("");
   const [adminOpen,setAdminOpen]=useState(false);
   const [users,setUsers]=useState([]);
@@ -1517,12 +1518,13 @@ function AccessGate({children}){
 
   const signIn=async()=>{
     const em=email.trim().toLowerCase();
-    if(!em)return;
-    setMsg("Sending sign-in link…");
-    const {error}=await supabase.auth.signInWithOtp({
-      email:em,options:{emailRedirectTo:window.location.origin}
+    if(!em||!password)return;
+    setMsg("Signing in…");
+    const {error}=await supabase.auth.signInWithPassword({
+      email:em,
+      password
     });
-    setMsg(error?error.message:"Check your email for the sign-in link.");
+    setMsg(error?error.message:"");
   };
 
   const loadUsers=async()=>{
@@ -1548,8 +1550,11 @@ function AccessGate({children}){
   if(!session)return <div className="authScreen"><div className="authCard">
     <div className="vv">VV</div><h2>Private Access</h2>
     <p>Only approved users can use this app.</p>
-    <input type="email" placeholder="Work email" value={email} onChange={e=>setEmail(e.target.value)} />
-    <button className="primary authFull" onClick={signIn}>Send secure sign-in link</button>
+    <input type="email" placeholder="Work email" value={email} autoComplete="email" onChange={e=>setEmail(e.target.value)} />
+    <input type="password" placeholder="Password" value={password} autoComplete="current-password"
+      onChange={e=>setPassword(e.target.value)}
+      onKeyDown={e=>{if(e.key==="Enter")signIn();}} />
+    <button className="primary authFull" onClick={signIn}>Sign in</button>
     {msg&&<small>{msg}</small>}
   </div></div>;
 
