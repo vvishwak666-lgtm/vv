@@ -1467,7 +1467,18 @@ function parseDisplayedRosterValue(value){
 const supabaseUrl=import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey=import.meta.env.VITE_SUPABASE_ANON_KEY;
 const adminEmail=String(import.meta.env.VITE_ADMIN_EMAIL||"").toLowerCase();
-const supabase=(supabaseUrl&&supabaseKey)?createClient(supabaseUrl,supabaseKey):null;
+const supabase=(supabaseUrl&&supabaseKey)
+  ? createClient(supabaseUrl,supabaseKey,{
+      auth:{
+        persistSession:true,
+        autoRefreshToken:true,
+        detectSessionInUrl:true,
+        flowType:"pkce",
+        storage:window.localStorage,
+        storageKey:"vv-duty-roster-auth"
+      }
+    })
+  : null;
 
 function AccessGate({children}){
   const [session,setSession]=useState(null);
@@ -1550,8 +1561,8 @@ function AccessGate({children}){
   return <>
     {children}
     <div className="accessBar">
-      {isAdmin&&<button onClick={async()=>{setAdminOpen(true);await loadUsers();}}>Admin</button>}
-      <button onClick={()=>supabase.auth.signOut()}>Sign out</button>
+      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{setAdminOpen(true);await loadUsers();}}>Admin</button>}
+      <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>Sign out</button>
     </div>
     {adminOpen&&<div className="modalWrap"><div className="modal adminAccess">
       <div className="modalHead"><div><h2>Approved Users</h2><p>Approve once; revoke any time.</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>

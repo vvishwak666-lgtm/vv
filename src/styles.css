@@ -1275,3 +1275,32 @@ nav,
 .authFull{width:100%}.accessBar{position:fixed;right:12px;top:calc(8px + env(safe-area-inset-top));z-index:160;display:flex;gap:6px}.accessBar button{padding:6px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:#0d1115;color:#fff}
 .adminAccess{max-width:520px!important}.approveRow{display:grid;grid-template-columns:1fr auto;gap:8px;margin:12px 0}.approveRow input{min-width:0;padding:10px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:#090d11;color:#fff}
 .approvedList{display:flex;flex-direction:column;gap:7px;max-height:50vh;overflow:auto}.approvedItem{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border:1px solid rgba(255,255,255,.08);border-radius:10px}.approvedItem b,.approvedItem small{display:block}
+
+/* Persistent mobile admin controls */
+.accessBar{
+  position:fixed !important;
+  top:calc(8px + env(safe-area-inset-top)) !important;
+  right:10px !important;
+  z-index:999 !important;
+  display:flex !important;
+  gap:6px !important;
+  align-items:center !important;
+}
+.adminMobileButton,
+.signOutMobileButton{
+  min-height:32px !important;
+  padding:7px 10px !important;
+  border-radius:9px !important;
+  font-size:10px !important;
+  font-weight:800 !important;
+}
+.adminMobileButton{
+  background:#f1bd4b !important;
+  color:#181209 !important;
+  border:1px solid rgba(241,189,75,.6) !important;
+}
+.signOutMobileButton{
+  background:rgba(13,17,21,.92) !important;
+  color:#f7f3e8 !important;
+  border:1px solid rgba(255,255,255,.1) !important;
+}
