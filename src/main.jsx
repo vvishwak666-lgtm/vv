@@ -2336,6 +2336,13 @@ function App(){
   const [notifyMinute,setNotifyMinute]=useState(0);
   const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"
   const isApplyingServerValue=useRef(false);
+  // Guards the auto-save effect against firing before we've even tried to
+  // load the real saved value from the server. Without this, the auto-save
+  // effect (which also depends on userId, since it needs it to write to
+  // Supabase) fires the instant userId resolves — racing the load effect
+  // below and sometimes writing the still-default 19:00 back to the server
+  // before the real saved value has had a chance to load into state.
+  const hasAttemptedServerLoad=useRef(false);
   useEffect(()=>{
     if(!supabase)return;
     supabase.auth.getUser().then(({data})=>setUserId(data?.user?.id||null));
@@ -2354,18 +2361,19 @@ function App(){
       try{
         const reg=await navigator.serviceWorker.ready;
         const existing=await reg.pushManager.getSubscription();
-        if(!existing){if(!cancelled)setSubscriptionStatus("inactive");return;}
+        if(!existing){if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}return;}
         const json=existing.toJSON();
         const {data,error}=await supabase.from("push_subscriptions")
           .select("notify_hour,notify_minute").eq("endpoint",json.endpoint).maybeSingle();
         if(cancelled)return;
-        if(error||!data){setSubscriptionStatus("inactive");return;}
+        if(error||!data){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;return;}
         isApplyingServerValue.current=true;
         setNotifyHour(data.notify_hour??19);
         setNotifyMinute(data.notify_minute??0);
         setSubscriptionStatus("active");
+        hasAttemptedServerLoad.current=true;
       }catch{
-        if(!cancelled)setSubscriptionStatus("inactive");
+        if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}
       }
     })();
     return()=>{cancelled=true};
@@ -2443,6 +2451,11 @@ function App(){
     if(skipInitialNotifyEffect.current){skipInitialNotifyEffect.current=false;return;}
     if(isApplyingServerValue.current){isApplyingServerValue.current=false;return;}
     if(!supabase||!userId)return;
+    // Never save before the server load attempt has finished — otherwise this
+    // effect (which also depends on userId) can fire the instant userId
+    // resolves and write the still-default 19:00 back to the server before
+    // the real saved value has loaded, silently clobbering it.
+    if(!hasAttemptedServerLoad.current)return;
     if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
     let cancelled=false;
     (async()=>{
