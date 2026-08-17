@@ -2334,10 +2334,43 @@ function App(){
   const [reminderStatus,setReminderStatus]=useState("");
   const [notifyHour,setNotifyHour]=useState(19);
   const [notifyMinute,setNotifyMinute]=useState(0);
+  const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"
+  const isApplyingServerValue=useRef(false);
   useEffect(()=>{
     if(!supabase)return;
     supabase.auth.getUser().then(({data})=>setUserId(data?.user?.id||null));
   },[]);
+
+  // On open, finds out whether THIS device already has a working
+  // subscription and, if so, loads the time it's actually set to — instead
+  // of always showing the hardcoded 19:00 default regardless of what's
+  // really saved, which was confusingly making it look like the time kept
+  // "resetting" every time the app was reopened.
+  useEffect(()=>{
+    if(!supabase||!userId)return;
+    if(!("serviceWorker" in navigator)||!("PushManager" in window)){setSubscriptionStatus("unsupported");return;}
+    let cancelled=false;
+    (async()=>{
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        const existing=await reg.pushManager.getSubscription();
+        if(!existing){if(!cancelled)setSubscriptionStatus("inactive");return;}
+        const json=existing.toJSON();
+        const {data,error}=await supabase.from("push_subscriptions")
+          .select("notify_hour,notify_minute").eq("endpoint",json.endpoint).maybeSingle();
+        if(cancelled)return;
+        if(error||!data){setSubscriptionStatus("inactive");return;}
+        isApplyingServerValue.current=true;
+        setNotifyHour(data.notify_hour??19);
+        setNotifyMinute(data.notify_minute??0);
+        setSubscriptionStatus("active");
+      }catch{
+        if(!cancelled)setSubscriptionStatus("inactive");
+      }
+    })();
+    return()=>{cancelled=true};
+  },[userId]);
+
 
   // Mirrors this person's own shifts (not every employee's) to Supabase, so
   // the evening reminder job can look up "tomorrow's shift" server-side.
@@ -2393,6 +2426,7 @@ function App(){
       if(error){setReminderStatus("Saved locally but failed to sync: "+error.message);return;}
       const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
       setReminderStatus(`Evening reminders enabled — you'll get a notification at ${hh}:${mm} NZT with tomorrow's shift.`);
+      setSubscriptionStatus("active");
     }catch(err){
       setReminderStatus("Couldn't enable reminders: "+(err?.message||String(err)));
     }
@@ -2401,12 +2435,13 @@ function App(){
   // Auto-saves a changed reminder time immediately, without needing the
   // button tapped again — only if reminders are already enabled on this
   // device (never requests permission or creates a subscription on its own).
-  // Skips the very first run (component mount) so simply opening the app
-  // doesn't reset today's already-sent tracking — only a real picker change
-  // should do that.
+  // Skips the very first run (component mount) and any run caused by loading
+  // the server's saved value above, so opening the app or seeing the loaded
+  // time doesn't get mistaken for a user edit and re-save it pointlessly.
   const skipInitialNotifyEffect=useRef(true);
   useEffect(()=>{
     if(skipInitialNotifyEffect.current){skipInitialNotifyEffect.current=false;return;}
+    if(isApplyingServerValue.current){isApplyingServerValue.current=false;return;}
     if(!supabase||!userId)return;
     if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
     let cancelled=false;
@@ -2414,18 +2449,25 @@ function App(){
       try{
         const reg=await navigator.serviceWorker.ready;
         const existing=await reg.pushManager.getSubscription();
-        if(!existing||cancelled)return;
+        if(!existing){
+          if(!cancelled)setReminderStatus("Reminders aren't enabled on this device yet — tap \"Enable Evening Reminders\" below first.");
+          return;
+        }
+        if(cancelled)return;
         const json=existing.toJSON();
         const {error}=await supabase.from("push_subscriptions").update({
           notify_hour:notifyHour,
           notify_minute:notifyMinute,
           last_sent_date:null // a time change should apply tonight, not wait until tomorrow
         }).eq("endpoint",json.endpoint);
-        if(!error&&!cancelled){
-          const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
-          setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
-        }
-      }catch{ /* no existing subscription yet — nothing to auto-update */ }
+        if(cancelled)return;
+        if(error){setReminderStatus("Couldn't save the new time: "+error.message);return;}
+        const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
+        setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
+        setSubscriptionStatus("active");
+      }catch(err){
+        if(!cancelled)setReminderStatus("Couldn't save the new time: "+(err?.message||String(err)));
+      }
     })();
     return()=>{cancelled=true};
   },[notifyHour,notifyMinute,userId]);
@@ -2646,6 +2688,14 @@ function App(){
       </section>
 
       <section className="panel menu"><h3>NOTIFICATIONS</h3>
+        <p className="rateNote" style={{padding:"0 13px 9px",fontWeight:700,color:
+          subscriptionStatus==="active"?"#75d3a0":subscriptionStatus==="checking"?"#87909a":"#ff9f43"
+        }}>
+          {subscriptionStatus==="checking"&&"Checking reminder status for this device…"}
+          {subscriptionStatus==="active"&&"✓ Reminders are ON for this device."}
+          {subscriptionStatus==="inactive"&&"Reminders are OFF on this device — tap the button below to turn them on."}
+          {subscriptionStatus==="unsupported"&&"This browser doesn't support push notifications."}
+        </p>
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
           Notification time
           <Time24Wheel
@@ -2655,7 +2705,7 @@ function App(){
           />
         </label>
         <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
-        <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already enabled, changing the time above saves automatically — no need to tap the button again.</p>
+        <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already ON for this device, changing the time above saves automatically — no need to tap the button again.</p>
         {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
       </section>
 
