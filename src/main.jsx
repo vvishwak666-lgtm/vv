@@ -2332,6 +2332,8 @@ function App(){
   // this device's local storage, only to what's synced to Supabase below.
   const [userId,setUserId]=useState(null);
   const [reminderStatus,setReminderStatus]=useState("");
+  const [notifyHour,setNotifyHour]=useState(19);
+  const [notifyMinute,setNotifyMinute]=useState(0);
   useEffect(()=>{
     if(!supabase)return;
     supabase.auth.getUser().then(({data})=>setUserId(data?.user?.id||null));
@@ -2383,10 +2385,14 @@ function App(){
         user_id:userId,
         endpoint:json.endpoint,
         p256dh:json.keys.p256dh,
-        auth:json.keys.auth
+        auth:json.keys.auth,
+        notify_hour:notifyHour,
+        notify_minute:notifyMinute,
+        last_sent_date:null // changing the time should apply tonight, not wait until tomorrow
       },{onConflict:"endpoint"});
       if(error){setReminderStatus("Saved locally but failed to sync: "+error.message);return;}
-      setReminderStatus("Evening reminders enabled — you'll get a notification at 7:00 PM NZT with tomorrow's shift.");
+      const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
+      setReminderStatus(`Evening reminders enabled — you'll get a notification at ${hh}:${mm} NZT with tomorrow's shift.`);
     }catch(err){
       setReminderStatus("Couldn't enable reminders: "+(err?.message||String(err)));
     }
@@ -2607,7 +2613,16 @@ function App(){
       </section>
 
       <section className="panel menu"><h3>NOTIFICATIONS</h3>
-        <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at 7:00 PM NZT with tomorrow's shift</small></span></button>
+        <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
+          Notification time
+          <Time24Wheel
+            value={`${String(notifyHour).padStart(2,"0")}:${String(notifyMinute).padStart(2,"0")}`}
+            onChange={v=>{const [h,m]=v.split(":");setNotifyHour(+h);setNotifyMinute(+m)}}
+            ariaLabel="Evening reminder time"
+          />
+        </label>
+        <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
+        <p className="rateNote" style={{padding:"0 13px"}}>Already enabled? Change the time above and tap the button again to update it.</p>
         {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
       </section>
 
