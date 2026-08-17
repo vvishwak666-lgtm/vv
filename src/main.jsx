@@ -2398,6 +2398,39 @@ function App(){
     }
   };
 
+  // Auto-saves a changed reminder time immediately, without needing the
+  // button tapped again — only if reminders are already enabled on this
+  // device (never requests permission or creates a subscription on its own).
+  // Skips the very first run (component mount) so simply opening the app
+  // doesn't reset today's already-sent tracking — only a real picker change
+  // should do that.
+  const skipInitialNotifyEffect=useRef(true);
+  useEffect(()=>{
+    if(skipInitialNotifyEffect.current){skipInitialNotifyEffect.current=false;return;}
+    if(!supabase||!userId)return;
+    if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        const existing=await reg.pushManager.getSubscription();
+        if(!existing||cancelled)return;
+        const json=existing.toJSON();
+        const {error}=await supabase.from("push_subscriptions").update({
+          notify_hour:notifyHour,
+          notify_minute:notifyMinute,
+          last_sent_date:null // a time change should apply tonight, not wait until tomorrow
+        }).eq("endpoint",json.endpoint);
+        if(!error&&!cancelled){
+          const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
+          setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
+        }
+      }catch{ /* no existing subscription yet — nothing to auto-update */ }
+    })();
+    return()=>{cancelled=true};
+  },[notifyHour,notifyMinute,userId]);
+
+
   const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
@@ -2622,7 +2655,7 @@ function App(){
           />
         </label>
         <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
-        <p className="rateNote" style={{padding:"0 13px"}}>Already enabled? Change the time above and tap the button again to update it.</p>
+        <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already enabled, changing the time above saves automatically — no need to tap the button again.</p>
         {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
       </section>
 
