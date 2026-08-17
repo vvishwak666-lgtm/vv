@@ -1,25 +1,20 @@
 // Vercel Serverless Function — sends each signed-in user a push notification
-// with tomorrow's shift. Triggered by vercel.json's cron entry.
+// with tomorrow's shift, at THEIR chosen time (stored per subscription as
+// notify_hour/notify_minute). Triggered on a schedule by vercel.json's cron
+// entry, and/or an external scheduler pinging this URL every ~15 minutes.
 //
-// Design note: Vercel's free (Hobby) plan only runs cron jobs once per day,
-// in UTC, with timing only guaranteed within that hour — not the exact
-// minute, and it doesn't shift automatically for New Zealand daylight
-// saving. Rather than depend on cron precision, this function is safe to
-// call at ANY frequency: it only actually sends once per subscription per
-// NZ calendar day (tracked via last_sent_date), and only during a loose
-// "evening" window. That means:
-//   - On Hobby's once-daily cron, it sends once, whenever that day's
-//     imprecise trigger happens to land within the evening window.
-//   - If you later add a free external scheduler (e.g. cron-job.org) to
-//     call this endpoint every ~15 minutes, sends automatically become
-//     precise to within ~15 minutes of 7:00 PM NZT, with no code changes
-//     and no risk of duplicate notifications — the dedup check handles it.
+// Design note: because different people can choose different times, this
+// function can't gate on one fixed hour up front — instead it fetches every
+// subscription not yet sent to today, and checks each one individually
+// against ITS OWN chosen time (within a tolerance window, so a 15-minute
+// polling interval still reliably catches every configured time). The
+// last_sent_date dedup guarantees a single send per subscription per NZ day
+// regardless of how often or imprecisely this endpoint gets called.
 
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
 
-const TARGET_HOUR_NZT = 19; // 7:00 PM
-const WINDOW_HOURS_EITHER_SIDE = 2; // tolerates Hobby's within-the-hour + DST imprecision
+const TOLERANCE_MINUTES = 20; // covers a ~15-minute polling interval with margin
 
 export default async function handler(req, res) {
   // Vercel automatically sends this header on cron-triggered requests when
@@ -37,16 +32,8 @@ export default async function handler(req, res) {
   const nzNow = new Date(
     new Date().toLocaleString("en-US", { timeZone: "Pacific/Auckland" })
   );
-  const nzHour = nzNow.getHours();
+  const nzMinutesNow = nzNow.getHours() * 60 + nzNow.getMinutes();
   const todayNzIso = nzNow.toISOString().slice(0, 10);
-
-  const withinEveningWindow =
-    Math.abs(nzHour - TARGET_HOUR_NZT) <= WINDOW_HOURS_EITHER_SIDE;
-
-  if (!withinEveningWindow) {
-    res.status(200).json({ skipped: true, reason: "outside evening window", nzHour });
-    return;
-  }
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -62,7 +49,8 @@ export default async function handler(req, res) {
   webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-  // Only subscriptions not already sent to today.
+  // Only subscriptions not already sent to today — cheap first filter before
+  // checking each one's individual chosen time below.
   const { data: subscriptions, error: subError } = await supabase
     .from("push_subscriptions")
     .select("*")
@@ -77,6 +65,18 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Keep only subscriptions whose chosen time is within the tolerance window
+  // of right now — everyone else just isn't due yet today.
+  const due = subscriptions.filter(sub => {
+    const targetMinutes = (sub.notify_hour ?? 19) * 60 + (sub.notify_minute ?? 0);
+    return Math.abs(nzMinutesNow - targetMinutes) <= TOLERANCE_MINUTES;
+  });
+
+  if (!due.length) {
+    res.status(200).json({ sent: 0, reason: "no subscriptions due at this time" });
+    return;
+  }
+
   const tomorrow = new Date(nzNow);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowIso = tomorrow.toISOString().slice(0, 10);
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
     weekday: "short", day: "numeric", month: "short", timeZone: "Pacific/Auckland"
   });
 
-  const userIds = [...new Set(subscriptions.map(s => s.user_id))];
+  const userIds = [...new Set(due.map(s => s.user_id))];
   const { data: rosterRows, error: rosterError } = await supabase
     .from("roster_sync")
     .select("*")
@@ -116,7 +116,7 @@ export default async function handler(req, res) {
 
   let sent = 0, failed = 0, removed = 0;
 
-  for (const sub of subscriptions) {
+  for (const sub of due) {
     const row = rosterByUser.get(sub.user_id);
     const body = formatShiftMessage(row);
     const payload = JSON.stringify({ title: "Tomorrow's Shift", body, url: "/" });
