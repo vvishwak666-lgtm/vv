@@ -203,6 +203,67 @@
   border-color:#f5c33d;
   box-shadow:0 0 0 2px rgba(245,195,61,.15);
 }
+.timeRangeInputs{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.editableShiftTime{
+  flex:1;
+  min-width:0;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 8px;
+  font:inherit;
+  font-weight:800;
+  color-scheme:dark;
+}
+.editableShiftTime:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.time24Group{
+  display:flex;
+  align-items:center;
+  gap:3px;
+  flex:1;
+  min-width:0;
+}
+.time24Select{
+  flex:1;
+  min-width:0;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 4px;
+  font:inherit;
+  font-weight:800;
+  text-align:center;
+  text-align-last:center;
+}
+.time24Select:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.time24Colon{
+  opacity:.5;
+  font-weight:700;
+  flex-shrink:0;
+}
+.timeRangeDash{
+  opacity:.5;
+  font-weight:700;
+  flex-shrink:0;
+}
 .editableShiftWrap small{
   font-size:9px;
   opacity:.52;
@@ -1306,3 +1367,130 @@ nav,
 }
 
 .authCard input + input{margin-top:10px;}
+
+.staffNameFix{border:1px solid #37414c;border-radius:9px;background:#0c1117;padding:2px 10px}
+.staffNameFix summary{padding:9px 0;font-size:10px;color:#e6c27a;cursor:pointer;font-weight:700;list-style:none}
+.staffNameFix summary::-webkit-details-marker{display:none}
+.staffNameFixList{display:flex;flex-direction:column;gap:7px;padding-bottom:10px}
+.staffNameFixRow{display:flex;align-items:center;gap:7px}
+.staffNameFixRow svg{color:#ff9f43;flex-shrink:0}
+.staffNameFixRow input{flex:1;margin-top:0;background:#0b0f14;border:1px solid #39424d;border-radius:7px;color:#f2f3f5;padding:8px}
+.staffNameFixRow.uncertain input{border-color:#ff9f43}
+
+/* Roster table: Day | Start | End | Time | Pay */
+.rosterTable{display:flex;flex-direction:column}
+.rosterTableHead{
+  display:grid;
+  grid-template-columns:74px 1fr 1fr 42px 58px;
+  gap:5px;
+  padding:0 4px 7px;
+  font-size:8px;
+  letter-spacing:.06em;
+  color:#7f8790;
+  text-transform:uppercase;
+  font-weight:700;
+}
+.rosterTableRow{
+  display:grid;
+  grid-template-columns:74px 1fr 1fr 42px 58px;
+  gap:5px;
+  align-items:center;
+  padding:9px 4px;
+  border-top:1px solid #242a31;
+}
+.rosterTableRow:first-of-type{border-top:0}
+.rosterTableDay{display:flex;flex-direction:column;gap:2px;min-width:0}
+.rosterTableDay small{font-size:9px;color:#a7adb4}
+.rosterTableDay span{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rosterTableTypeReadonly{font-size:8px;color:#87909a;font-style:normal;font-weight:700}
+.rosterTableDay .rosterTableType{
+  margin-top:2px;
+  min-height:22px;
+  font-size:9px;
+  padding:2px 4px;
+  border-radius:6px;
+  width:fit-content;
+}
+.rosterTableStart,.rosterTableEnd{min-width:0}
+.rosterTableStart span,.rosterTableEnd span{font-size:12px;font-weight:700}
+.rosterTableStart .time24Group,.rosterTableEnd .time24Group{gap:2px}
+.rosterTableStart .time24Select,.rosterTableEnd .time24Select{min-height:34px;padding:5px 2px;font-size:11px}
+.rosterTableTime{font-size:11px;font-weight:700;color:#e6c27a;text-align:right}
+.rosterTablePay{font-size:11px;font-weight:800;text-align:right}
+.rosterTableRowFlat{grid-template-columns:74px 1fr 42px 58px}
+.rosterTableFlatValue{min-width:0;overflow:hidden}
+.rosterTableFlatValue b{font-size:11px}
+.rosterTableThumb{max-height:34px;border-radius:6px;border:1px solid #303a45}
+.rosterTableTotals{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid #303a45;
+  font-size:10px;
+  color:#a7adb4;
+}
+.rosterTableTotals b{font-size:14px;color:#f3efe5;margin-right:auto}
+.rosterTableTotals b:last-child{margin-right:0;color:#e6c27a}
+@media(max-width:400px){
+  .rosterTableHead,.rosterTableRow{grid-template-columns:58px 1fr 1fr 36px 50px}
+  .rosterTableRowFlat{grid-template-columns:58px 1fr 36px 50px}
+}
+
+/* Hourly Rate settings card */
+.rateCard{
+  background:#13181f;
+  border:1px solid #252c34;
+  border-radius:11px;
+  overflow:hidden;
+}
+.rateRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:13px 14px;
+  border-top:1px solid #242a31;
+  font-size:12px;
+  color:#e6e8eb;
+}
+.rateRow:first-child{border-top:0}
+.rateRowTotal{background:rgba(230,194,122,.06)}
+.rateRowTotal b{font-size:16px;color:#e6c27a}
+.rateValue{display:flex;align-items:center;gap:3px}
+.rateValue small{color:#87909a;font-size:11px}
+.rateValue input{
+  width:70px;
+  background:#0b0f14;
+  border:1px solid #2a3139;
+  color:#fff;
+  border-radius:7px;
+  padding:6px 7px;
+  font:inherit;
+  font-weight:700;
+  text-align:right;
+}
+.rateNote{
+  font-size:9px;
+  color:#7f8790;
+  line-height:1.5;
+  margin:9px 2px 0;
+}
+
+/* Deductions card: label | %input | computed $ amount */
+.rateRowDeduction{
+  display:grid;
+  grid-template-columns:1fr auto auto;
+  gap:10px;
+  align-items:center;
+}
+.rateDeductionAmount{font-size:12px;color:#e6c27a;min-width:56px;text-align:right}
+.rateRowNet{background:rgba(117,211,160,.08)}
+.rateRowNet b{font-size:16px;color:#75d3a0}
+
+/* Gold divider marking the start of each new day's shift rows */
+.rosterTableNewDay{
+  border-top:2px solid #e6c27a;
+  margin-top:4px;
+  padding-top:12px;
+}
