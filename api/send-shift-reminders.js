@@ -138,9 +138,16 @@ export default async function handler(req, res) {
         message: err?.message,
         body: err?.body
       });
-      // 404/410 means the browser unsubscribed or the subscription expired —
-      // clean it up so future runs don't keep failing on it.
-      if (err?.statusCode === 404 || err?.statusCode === 410) {
+      // 404/410 means the browser unsubscribed or the subscription expired.
+      // 403 BadJwtToken means the subscription was created under a VAPID key
+      // that no longer matches VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY (e.g. after
+      // a key rotation) — the push service will never accept it again since
+      // the browser cryptographically bound the subscription to the old key.
+      // In both cases the subscription is permanently dead; clean it up so
+      // future runs don't keep failing on it, and so the client can re-subscribe.
+      const isBadJwt = err?.statusCode === 403 &&
+        typeof err?.body === "string" && err.body.includes("BadJwtToken");
+      if (err?.statusCode === 404 || err?.statusCode === 410 || isBadJwt) {
         await supabase.from("push_subscriptions").delete().eq("id", sub.id);
         removed++;
       }
