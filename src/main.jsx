@@ -2362,15 +2362,21 @@ function App(){
         const reg=await navigator.serviceWorker.ready;
         const existing=await reg.pushManager.getSubscription();
         if(!existing){if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}return;}
-        const json=existing.toJSON();
+        // Keyed by user_id, not endpoint — endpoint changes on every
+        // re-subscribe, which previously left this query unable to find a
+        // row at all after a device re-subscribed (see migration notes).
         const {data,error}=await supabase.from("push_subscriptions")
-          .select("notify_hour,notify_minute").eq("endpoint",json.endpoint).maybeSingle();
+          .select("notify_hour,notify_minute,endpoint").eq("user_id",userId).maybeSingle();
         if(cancelled)return;
         if(error||!data){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;return;}
         isApplyingServerValue.current=true;
         setNotifyHour(data.notify_hour??19);
         setNotifyMinute(data.notify_minute??0);
-        setSubscriptionStatus("active");
+        // If the browser's live subscription endpoint doesn't match what's
+        // stored, the stored row is stale (from a prior device/session) —
+        // treat as inactive so the person is prompted to re-enable, rather
+        // than showing a false "active" status for a dead subscription.
+        setSubscriptionStatus(data.endpoint===existing.toJSON().endpoint?"active":"inactive");
         hasAttemptedServerLoad.current=true;
       }catch{
         if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}
@@ -2422,6 +2428,10 @@ function App(){
         applicationServerKey:urlBase64ToUint8Array(vapidPublicKey)
       });
       const json=sub.toJSON();
+      // Keyed by user_id (requires the unique constraint from the dedupe
+      // migration) instead of endpoint — endpoint changes every time this
+      // runs, which previously caused a new duplicate row per re-subscribe
+      // instead of replacing the old one.
       const {error}=await supabase.from("push_subscriptions").upsert({
         user_id:userId,
         endpoint:json.endpoint,
@@ -2430,7 +2440,7 @@ function App(){
         notify_hour:notifyHour,
         notify_minute:notifyMinute,
         last_sent_date:null // changing the time should apply tonight, not wait until tomorrow
-      },{onConflict:"endpoint"});
+      },{onConflict:"user_id"});
       if(error){setReminderStatus("Saved locally but failed to sync: "+error.message);return;}
       const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
       setReminderStatus(`Evening reminders enabled — you'll get a notification at ${hh}:${mm} NZT with tomorrow's shift.`);
@@ -2467,14 +2477,23 @@ function App(){
           return;
         }
         if(cancelled)return;
-        const json=existing.toJSON();
-        const {error}=await supabase.from("push_subscriptions").update({
+        // Keyed by user_id, not endpoint — see migration notes. Also
+        // requests the updated row back via .select() so we can tell a real
+        // update apart from one that silently matched zero rows (Supabase
+        // returns success either way; only the returned row count tells you
+        // whether anything actually changed).
+        const {data,error}=await supabase.from("push_subscriptions").update({
           notify_hour:notifyHour,
           notify_minute:notifyMinute,
           last_sent_date:null // a time change should apply tonight, not wait until tomorrow
-        }).eq("endpoint",json.endpoint);
+        }).eq("user_id",userId).select();
         if(cancelled)return;
         if(error){setReminderStatus("Couldn't save the new time: "+error.message);return;}
+        if(!data||!data.length){
+          setReminderStatus("Couldn't save the new time — no saved subscription found for this account. Tap \"Enable Evening Reminders\" again to fix this.");
+          setSubscriptionStatus("inactive");
+          return;
+        }
         const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
         setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
         setSubscriptionStatus("active");
