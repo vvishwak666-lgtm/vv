@@ -954,9 +954,12 @@ async function detectNamesInTableRegion(canvas,region,worker){
     });
   }
 
+  // Only merge candidates that land on the same physical row (by position).
+  // Two employees whose OCR'd names happen to look alike must NOT be
+  // collapsed into a single row — that silently deletes a real employee.
   const dedup=[];
   for(const n of candidates){
-    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<4 || x.name.toLowerCase()===n.name.toLowerCase())){
+    if(!dedup.some(x=>Math.abs(x.cy-n.cy)<4)){
       dedup.push(n);
     }
   }
@@ -977,6 +980,295 @@ function attachBoundsWithinTable(staff,region){
     return {...r,y0:Math.max(region.y0,upper+1),y1:Math.min(region.y1,lower-1)};
   });
 }
+
+// --- Geometric row detection -------------------------------------------
+// Row boundaries come ONLY from the table's horizontal ruling lines (or, for
+// the header band, from its distinct dark fill). OCR is never allowed to
+// decide whether a row exists — it only runs afterward, inside an already-
+// fixed row band, to read the name text. This prevents a hard-to-OCR name
+// (faint ink, cramped handwriting, glare) from silently deleting an
+// employee, and prevents two different employees from being merged just
+// because OCR happened to read similar-looking text for both of them.
+
+function horizontalRowScan(canvas,region){
+  const ctx=canvas.getContext("2d");
+  const left=Math.max(0,Math.floor(region.x0));
+  const right=Math.min(canvas.width,Math.ceil(region.x1));
+  const top=Math.max(0,Math.floor(region.y0));
+  const bottom=Math.min(canvas.height,Math.ceil(region.y1));
+  const w=Math.max(1,right-left), h=Math.max(1,bottom-top);
+  const img=ctx.getImageData(left,top,w,h),d=img.data;
+
+  const darkFrac=new Array(h).fill(0); // ruling lines: dark across ~full width
+  const avgLum=new Array(h).fill(255); // header shading: dark on average
+
+  for(let y=0;y<h;y++){
+    let dark=0,total=0,sum=0;
+    for(let x=0;x<w;x+=2){
+      const i=(y*w+x)*4;
+      const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+      sum+=g;total++;
+      if(g<190)dark++;
+    }
+    darkFrac[y]=total?dark/total:0;
+    avgLum[y]=total?sum/total:255;
+  }
+  return {darkFrac,avgLum,top,h};
+}
+
+function detectRowLinesInTableRegion(canvas,region){
+  const {darkFrac,top,h}=horizontalRowScan(canvas,region);
+  const lineThreshold=.5;
+  const isLine=new Array(h).fill(false);
+  for(let y=0;y<h;y++)isLine[y]=darkFrac[y]>=lineThreshold;
+
+  // A run of consecutive dark rows is either a THIN printed ruling line
+  // (collapse to a single midpoint boundary) or a THICK shaded header bar
+  // (its own start and end are both real boundaries — collapsing it to one
+  // midpoint would merge the header into whichever row sits next to it,
+  // which is exactly the bug that let header text bleed into an employee
+  // row and vice versa).
+  const THIN_RUN_MAX=6;
+  const pts=[0];
+  let start=null;
+  for(let y=0;y<h;y++){
+    if(isLine[y]){
+      if(start===null)start=y;
+    }else if(start!==null){
+      const runLen=y-start;
+      if(runLen<=THIN_RUN_MAX)pts.push(Math.round((start+y-1)/2));
+      else{pts.push(start);pts.push(y-1);}
+      start=null;
+    }
+  }
+  if(start!==null){
+    const runLen=h-start;
+    if(runLen<=THIN_RUN_MAX)pts.push(Math.round((start+h-1)/2));
+    else{pts.push(start);pts.push(h-1);}
+  }
+  pts.push(h-1);
+
+  const abs=[...new Set(pts.map(y=>y+top))].sort((a,b)=>a-b);
+  // Only merge points that are essentially duplicates (a couple px of noise);
+  // a genuine thin header bar's two edges must NOT be merged away.
+  const lines=[];
+  for(const y of abs){
+    if(!lines.length||y-lines[lines.length-1]>2)lines.push(y);
+  }
+  return lines;
+}
+
+function detectRowBandsInTableRegion(canvas,region){
+
+  const lines=detectRowLinesInTableRegion(canvas,region);
+  // Need enough ruled lines to trust this as a real grid; otherwise the
+  // caller should fall back to the legacy OCR-driven detector.
+  if(lines.length<4)return [];
+
+  const bands=[];
+  for(let i=0;i<lines.length-1;i++){
+    const y0=lines[i]+(i===0?0:1);
+    const y1=lines[i+1];
+    if(y1-y0<3)continue; // degenerate sliver between two adjacent lines
+    bands.push({y0,y1,cy:(y0+y1)/2,height:y1-y0});
+  }
+  if(!bands.length)return [];
+
+  // Shift-block header bars are structurally much thinner than a real
+  // employee row (verified against real rosters: ~16px vs ~31px). This is a
+  // pure geometry check — independent of OCR and of shading color, which
+  // varies by photo and can be nearly indistinguishable from a legitimate
+  // employee row's own zebra-striping (luminance alone would misclassify
+  // real employee rows as headers). A height-based cut can't accidentally
+  // delete a real employee, since every real row clusters tightly around
+  // the table's typical row height.
+  const heights=[...bands.map(b=>b.height)].sort((a,b)=>a-b);
+  const medianHeight=heights[Math.floor(heights.length/2)];
+
+  return bands.filter(b=>b.height>=medianHeight*.55);
+}
+
+
+function nameCellVariant(raw,threshold){
+  const c=document.createElement("canvas");
+  c.width=raw.width;c.height=raw.height;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(raw,0,0);
+  const img=ctx.getImageData(0,0,c.width,c.height),d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<threshold?0:255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return c;
+}
+
+// Read a name cell with several independent OCR passes (different contrast
+// thresholds and page-segmentation modes) and only trust the result when
+// passes agree. This raises accuracy without ever fabricating a name: if the
+// passes disagree, we report low confidence rather than guessing.
+async function robustNameOCR(worker,raw){
+  const variants=[
+    {canvas:preprocessCanvas(raw,1.5),psm:"7"},
+    {canvas:nameCellVariant(raw,150),psm:"7"},
+    {canvas:nameCellVariant(raw,170),psm:"7"},
+    {canvas:nameCellVariant(raw,190),psm:"13"}
+  ];
+
+  const results=[];
+  for(const v of variants){
+    try{
+      await worker.setParameters({tessedit_pageseg_mode:v.psm,preserve_interword_spaces:"1"});
+      const r=await worker.recognize(v.canvas);
+      const text=cleanStaffName((r.data.text||"").replace(/\n+/g," "));
+      if(text)results.push({text,conf:r.data.confidence||0});
+    }catch{ /* a single failed pass just doesn't vote */ }
+  }
+  if(!results.length)return {name:"",confident:false};
+
+  // Group passes whose readings agree once case/punctuation noise is
+  // stripped. Passes agreeing across different thresholds/segmentations is a
+  // far stronger signal than any single pass's self-reported confidence.
+  const norm=s=>s.toLowerCase().replace(/[^a-z]/g,"");
+  const groups=new Map();
+  for(const r of results){
+    const key=norm(r.text);
+    if(!key)continue;
+    const g=groups.get(key)||{text:r.text,count:0,conf:0};
+    g.count++;
+    g.conf=Math.max(g.conf,r.conf);
+    if(r.text.length>g.text.length)g.text=r.text; // keep the best-formed casing/punctuation
+    groups.set(key,g);
+  }
+  const ranked=[...groups.values()].sort((a,b)=>(b.count-a.count)||(b.conf-a.conf));
+  const top=ranked[0];
+  if(!top)return {name:"",confident:false};
+  return {name:top.text,confident:top.count>=2||(top.conf>=65&&plausibleStaffName(top.text))};
+}
+
+// Find the real vertical rule between the name column and the first date
+// column, instead of assuming a fixed width fraction — the fraction that
+// works for one roster's column proportions can clip real letters or bleed
+// into the next column's shift-time text on another roster.
+function detectNameColumnBounds(canvas,region,bands){
+  const ctx=canvas.getContext("2d");
+  const left=Math.max(0,Math.floor(region.x0));
+  const scanRight=Math.min(canvas.width,Math.floor(region.x0+(region.x1-region.x0)*.35));
+  const w=scanRight-left;
+  const fallback={nx0:region.x0,nx1:region.x0+(region.x1-region.x0)*.19};
+  if(w<=0||!bands.length)return fallback;
+
+  const sample=bands.slice(0,8);
+  if(!sample.length)return fallback;
+
+  // Vote per band rather than pooling pixels into one average: a genuine
+  // column divider is dark for nearly the full height of MOST sampled rows.
+  // One non-standard row (a free-floating title line with no grid under it,
+  // or a column-day header whose border stroke renders slightly differently)
+  // should only cost that row's single vote, not drag down a shared average
+  // enough to hide the real line.
+  const votes=new Array(w).fill(0);
+  for(const b of sample){
+    const y0=Math.max(0,Math.floor(b.y0)),y1=Math.min(canvas.height,Math.ceil(b.y1));
+    const rh=Math.max(1,y1-y0);
+    const img=ctx.getImageData(left,y0,w,rh);const d=img.data;
+    for(let x=0;x<w;x++){
+      let dark=0;
+      for(let ry=0;ry<rh;ry++){
+        const i=(ry*w+x)*4;
+        const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+        if(g<190)dark++;
+      }
+      if(dark/rh>.85)votes[x]++;
+    }
+  }
+
+  const minX=Math.round(w*.02);
+  const needed=Math.max(1,Math.ceil(sample.length*.6));
+  const isCandidate=new Array(w).fill(false);
+  for(let x=minX;x<w;x++)isCandidate[x]=votes[x]>=needed;
+
+  // A genuine printed ruling line is only a few px wide. A wide contiguous
+  // dark block (screenshot chrome, a scrollbar sliver, a stray margin baked
+  // into the image) can also pass the vote test but is not a column divider
+  // — skip it entirely rather than anchoring on its edge.
+  const MAX_LINE_WIDTH=5;
+  const lineMidpoints=[];
+  let runStart=null;
+  for(let x=minX;x<w;x++){
+    if(isCandidate[x]){
+      if(runStart===null)runStart=x;
+    }else if(runStart!==null){
+      if(x-runStart<=MAX_LINE_WIDTH)lineMidpoints.push(Math.round((runStart+x-1)/2));
+      runStart=null;
+    }
+  }
+  if(runStart!==null&&w-runStart<=MAX_LINE_WIDTH)lineMidpoints.push(Math.round((runStart+w-1)/2));
+
+  if(lineMidpoints.length<2)return fallback;
+  const leftBorder=left+lineMidpoints[0];
+  const rightCandidate=lineMidpoints.find(x=>x>lineMidpoints[0]+5);
+  if(rightCandidate===undefined)return {nx0:leftBorder+2,nx1:fallback.nx1};
+  const rightBorder=left+rightCandidate;
+  return {nx0:leftBorder+2,nx1:rightBorder-1};
+}
+
+// Known non-employee table text (title/date line, column-day headers) —
+// only used to drop a band when OCR CONFIDENTLY reads one of these, never as
+// a general "doesn't look like a name" guess that could delete a real,
+// hard-to-read employee.
+function looksLikeTableHeaderText(s){
+  const t=(s||"").trim();
+  if(!t)return false;
+  if(/\b(?:AIRPORT|WORKING|HOURS|SHIFT|ROSTER)\b/i.test(t))return true;
+  if(/\b(?:MON|TUE|WED|THU|FRI|SAT|SUN)(?:DAY)?\b/i.test(t))return true;
+  if(/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(t))return true;
+  return false;
+}
+
+async function namesForRowBands(canvas,bands,region,worker){
+  let nx0,nx1,columnDetectError="";
+  try{
+    ({nx0,nx1}=detectNameColumnBounds(canvas,region,bands));
+  }catch(err){
+    columnDetectError=String(err?.message||err);
+    const fallback=region.x0+(region.x1-region.x0)*.19;
+    nx0=region.x0;nx1=fallback;
+  }
+
+  const out=[];
+  for(let i=0;i<bands.length;i++){
+    const b=bands[i];
+    let name="",confident=false,debugError=columnDetectError;
+    try{
+      const raw=rawCropCanvas(canvas,nx0,b.y0,nx1,b.y1,5);
+      const read=await robustNameOCR(worker,raw);
+      name=read.name;confident=read.confident;
+    }catch(err){
+      // Surface the real failure instead of silently swallowing it — a crash
+      // and ordinary poor handwriting must not look identical, or a genuine
+      // bug is impossible to tell apart from normal OCR limitations.
+      debugError=(debugError?debugError+"; ":"")+String(err?.message||err);
+    }
+
+    if(looksLikeTableHeaderText(name))continue; // title/date/column-header row, not an employee
+
+    // The row itself is guaranteed to exist because it came from the grid,
+    // not from this OCR result. If OCR can't produce a confident name we
+    // still keep the row and flag it for manual review instead of dropping it.
+    out.push({
+      id:`row-${i}`,
+      name: name || `Row ${i+1} — name not read`,
+      nameUncertain: !confident || !plausibleStaffName(name),
+      debugError: debugError||undefined,
+      cy:b.cy,y0:b.y0,y1:b.y1
+    });
+  }
+  return out;
+}
+
+
 
 function detectGridInTableRegion(canvas,region,staff){
   const W=canvas.width;
@@ -1385,6 +1677,60 @@ function readCanonicalRosterCell(worker,raw){
 }
 
 
+// Converts between the app's compact "HHMM-HHMM" airport format and the
+// "HH:MM" format required by <input type="time">, which iOS Safari renders
+// as the native scrollable wheel picker (Start/End) — the same UX as the
+// Air New Zealand app's shift-time picker.
+function airportPartToClock(v){
+  const t=String(v||"").replace(/\D/g,"");
+  if(t.length!==4)return "";
+  const hh=t.slice(0,2),mm=t.slice(2,4);
+  if(+hh>23||+mm>59)return "";
+  return `${hh}:${mm}`;
+}
+function clockToAirportPart(v){
+  return String(v||"").replace(":","");
+}
+function splitAirportRange(s){
+  const [a,b]=String(s||"").split("-");
+  return {start:airportPartToClock(a),end:airportPartToClock(b)};
+}
+function joinAirportRange(startClock,endClock){
+  const a=clockToAirportPart(startClock)||"0000";
+  const b=clockToAirportPart(endClock)||"0000";
+  return `${a}-${b}`;
+}
+
+const HOUR_OPTIONS=Array.from({length:24},(_,i)=>String(i).padStart(2,"0"));
+const MINUTE_OPTIONS=Array.from({length:60},(_,i)=>String(i).padStart(2,"0"));
+
+// Always-24-hour wheel picker. iOS renders each <select> as its own native
+// scrollable wheel, but — unlike <input type="time"> — the displayed values
+// are exactly what's listed here, not silently swapped to 12-hour AM/PM by
+// the phone's system Region setting.
+function Time24Wheel({value,onChange,ariaLabel}){
+  const [hh,mm]=value?value.split(":"):["00","00"];
+  return <div className="time24Group" aria-label={ariaLabel}>
+    <select
+      className="time24Select"
+      value={hh}
+      onChange={ev=>onChange(`${ev.target.value}:${mm}`)}
+      aria-label={`${ariaLabel} hour`}
+    >
+      {HOUR_OPTIONS.map(h=><option key={h} value={h}>{h}</option>)}
+    </select>
+    <span className="time24Colon">:</span>
+    <select
+      className="time24Select"
+      value={mm}
+      onChange={ev=>onChange(`${hh}:${ev.target.value}`)}
+      aria-label={`${ariaLabel} minute`}
+    >
+      {MINUTE_OPTIONS.map(m=><option key={m} value={m}>{m}</option>)}
+    </select>
+  </div>;
+}
+
 function airport24HourDuration(value){
   const raw=String(value||"").toUpperCase().trim()
     .replace(/[–—]/g,"-")
@@ -1473,7 +1819,7 @@ const supabase=(supabaseUrl&&supabaseKey)
         persistSession:true,
         autoRefreshToken:true,
         detectSessionInUrl:true,
-        flowType:"pkce",
+        flowType:"implicit",
         storage:window.localStorage,
         storageKey:"vv-duty-roster-auth"
       }
@@ -1508,6 +1854,15 @@ function AccessGate({children}){
 
   useEffect(()=>{
     if(!supabase){setLoading(false);return;}
+
+    // Keep an explicit recovery marker in the redirect URL. On some mobile
+    // browsers the Supabase PASSWORD_RECOVERY event can happen before React's
+    // listener is mounted, so relying on that event alone can show Sign in.
+    const params=new URLSearchParams(window.location.search);
+    const hashParams=new URLSearchParams(window.location.hash.replace(/^#/,""));
+    const recoveryFromUrl=params.get("recovery")==="1" || hashParams.get("type")==="recovery";
+    if(recoveryFromUrl) setRecoveryMode(true);
+
     supabase.auth.getSession().then(async({data})=>{
       setSession(data.session||null);
       await check(data.session||null);
@@ -1515,11 +1870,29 @@ function AccessGate({children}){
     });
     const {data}=supabase.auth.onAuthStateChange(async(event,s)=>{
       setSession(s||null);
-      if(event==="PASSWORD_RECOVERY") setRecoveryMode(true);
+      if(event==="PASSWORD_RECOVERY" || recoveryFromUrl) setRecoveryMode(true);
       await check(s||null);
     });
     return()=>data.subscription.unsubscribe();
   },[check]);
+
+  const sendPasswordRecovery=async()=>{
+    const em=email.trim().toLowerCase();
+    if(!em){setMsg("Enter your email first.");return;}
+    setMsg("Sending password reset email…");
+    // Always return recovery links to the production VV app. Using an
+    // uploaded Vercel preview here can create a redirect mismatch.
+    const redirectTo="https://vv-sigma-one.vercel.app/?recovery=1";
+    try{
+      const result=await Promise.race([
+        supabase.auth.resetPasswordForEmail(em,{redirectTo}),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("Request timed out. Please try again.")),15000))
+      ]);
+      setMsg(result?.error?result.error.message:"Password reset email sent. Check your inbox.");
+    }catch(err){
+      setMsg(err?.message||"Could not send password reset email. Please try again.");
+    }
+  };
 
   const signIn=async()=>{
     const em=email.trim().toLowerCase();
@@ -1551,6 +1924,8 @@ function AccessGate({children}){
     setRecoveryMode(false);
     setNewPassword("");
     setConfirmPassword("");
+    // Remove the recovery marker so refreshes return to normal app mode.
+    window.history.replaceState({},document.title,window.location.pathname);
   };
 
   const loadUsers=async()=>{
@@ -1593,6 +1968,7 @@ function AccessGate({children}){
       onChange={e=>setPassword(e.target.value)}
       onKeyDown={e=>{if(e.key==="Enter")signIn();}} />
     <button className="primary authFull" onClick={signIn}>Sign in</button>
+    <button className="ghost authFull" onClick={sendPasswordRecovery}>Forgot password?</button>
     {msg&&<small>{msg}</small>}
   </div></div>;
 
@@ -1622,6 +1998,13 @@ function App(){
   const [tab,setTab]=useState("dashboard");
   const [searchDay,setSearchDay]=useState("");
   const [threshold,setThreshold]=useState(38);
+  const [payRate,setPayRate]=useState(33.39);
+  const [otTier1Hours,setOtTier1Hours]=useState(3);
+  const [otTier1Mult,setOtTier1Mult]=useState(1.5);
+  const [otTier2Mult,setOtTier2Mult]=useState(2.0);
+  const [payFrequency,setPayFrequency]=useState("fortnightly");
+  const [unionPct,setUnionPct]=useState(0.37);
+  const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
   const [selectedDate,setSelectedDate]=useState(todayISO());
 
@@ -1635,8 +2018,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold}))}catch{}},[entries,threshold]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -1661,9 +2044,19 @@ function App(){
         setStatus(`Reading employee names — table ${ti+1} of ${regions.length}`);
         setProgress(25+Math.round((ti/regions.length)*45));
 
-        const names=await detectNamesInTableRegion(canvas,region,worker);
-        if(!names.length)continue;
-        const staff=attachBoundsWithinTable(names,region);
+        let staff;
+        const bands=detectRowBandsInTableRegion(canvas,region);
+        if(bands.length>=3){
+          // Primary path: rows come from the table's ruled lines, so every
+          // employee row survives even if OCR can't read a given name.
+          staff=await namesForRowBands(canvas,bands,region,worker);
+        }else{
+          // Fallback: no reliable horizontal ruling detected in this photo —
+          // use the legacy OCR-driven name detector instead.
+          const names=await detectNamesInTableRegion(canvas,region,worker);
+          staff=attachBoundsWithinTable(names,region);
+        }
+        if(!staff.length)continue;
         const firstDate=await inferFirstDateForRegion(canvas,region,worker);
         const grid=detectGridInTableRegion(canvas,region,staff);
 
@@ -1800,6 +2193,14 @@ function App(){
     setSelectedStaff(id);
     setReview(null);
     await readStaffRow(table,id);
+  };
+
+  // Lets the admin correct an OCR misread directly, rather than needing a
+  // re-scan. Clears the uncertain flag once a human has confirmed/fixed it,
+  // and updates any row review already open for this employee.
+  const updateStaffName=(id,newName)=>{
+    setTable(t=>t?{...t,staff:t.staff.map(s=>s.id===id?{...s,name:newName,nameUncertain:false}:s)}:t);
+    setReview(r=>r&&r.staffId===id?{...r,name:newName}:r);
   };
 
   const upload=(files)=>{
@@ -1942,13 +2343,13 @@ function App(){
     {tab==="dashboard"&&<main>
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)}/></section>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
       <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
       <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
-      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)}/></section>
+      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
       <div className="stats calendarTotals"><Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
     </main>}
 
@@ -1965,7 +2366,7 @@ function App(){
           </div>
           <span>{mine.length} days imported</span>
         </div>
-        <Roster rows={mine} onEdit={updateEntryValue}/>
+        <Roster rows={mine} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
       </section>
     </main>}
 
@@ -2012,7 +2413,7 @@ function App(){
       <section className="panel searchResults">
         {searchDay
           ? filtered.length
-            ? <Roster rows={filtered.slice(0,50)}/>
+            ? <Roster rows={filtered.slice(0,50)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
             : <div className="emptySearch">
                 <Search size={25}/>
                 <b>No roster found</b>
@@ -2033,7 +2434,99 @@ function App(){
       <section className="panel menu"><h3>EXPORT</h3>
         <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
       </section>
-      <section className="panel menu"><h3>SETTINGS</h3><label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label><button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
+
+      <section className="panel">
+        <div className="sectionTitle"><b>HOURLY RATE</b></div>
+        <div className="rateCard">
+          <div className="rateRow">
+            <span>Hourly Rate</span>
+            <div className="rateValue">
+              <small>$</small>
+              <input type="number" step="0.01" min="0" value={payRate} onChange={ev=>setPayRate(+ev.target.value||0)} aria-label="Hourly rate"/>
+            </div>
+          </div>
+          <div className="rateRow">
+            <span>OT hours at tier 1</span>
+            <div className="rateValue">
+              <input type="number" step="0.5" min="0" value={otTier1Hours} onChange={ev=>setOtTier1Hours(+ev.target.value||0)} aria-label="Overtime tier 1 hours"/>
+              <small>hrs</small>
+            </div>
+          </div>
+          <div className="rateRow">
+            <span>Tier 1 rate (first {otTier1Hours}h OT)</span>
+            <div className="rateValue">
+              <input type="number" step="0.1" min="1" value={otTier1Mult} onChange={ev=>setOtTier1Mult(+ev.target.value||1.5)} aria-label="Overtime tier 1 multiplier"/>
+              <small>×</small>
+            </div>
+          </div>
+          <div className="rateRow">
+            <span>Tier 2 rate (remaining OT)</span>
+            <div className="rateValue">
+              <input type="number" step="0.1" min="1" value={otTier2Mult} onChange={ev=>setOtTier2Mult(+ev.target.value||2.0)} aria-label="Overtime tier 2 multiplier"/>
+              <small>×</small>
+            </div>
+          </div>
+          <div className="rateRow rateRowTotal">
+            <span>Total Pay</span>
+            <b>${totalPayForRows(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult).toFixed(2)}</b>
+          </div>
+        </div>
+        <p className="rateNote">Matches a typical payslip: OT-tagged shift hours are paid at Tier 1 up to the threshold, then Tier 2 beyond it — combined across a day's AM and PM shifts, not reset per shift.</p>
+      </section>
+
+      {(()=>{
+        const totalPay=totalPayForRows(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+        const tax=periodNzPaye(totalPay,payFrequency);
+        const unionFee=totalPay*(unionPct/100);
+        const kiwiSaver=totalPay*(kiwiSaverPct/100);
+        const totalDeducted=tax+unionFee+kiwiSaver;
+        const netPay=totalPay-totalDeducted;
+        return <section className="panel">
+          <div className="sectionTitle"><b>DEDUCTIONS</b></div>
+          <div className="rateCard">
+            <div className="rateRow rateRowDeduction">
+              <span>Tax (NZ PAYE + ACC)</span>
+              <div className="rateValue">
+                <select value={payFrequency} onChange={ev=>setPayFrequency(ev.target.value)} aria-label="Pay frequency">
+                  <option value="weekly">Weekly</option>
+                  <option value="fortnightly">Fortnightly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+              <b className="rateDeductionAmount">${tax.toFixed(2)}</b>
+            </div>
+            <div className="rateRow rateRowDeduction">
+              <span>Union Fee</span>
+              <div className="rateValue">
+                <input type="number" step="0.01" min="0" value={unionPct} onChange={ev=>setUnionPct(+ev.target.value||0)} aria-label="Union fee percentage"/>
+                <small>%</small>
+              </div>
+              <b className="rateDeductionAmount">${unionFee.toFixed(2)}</b>
+            </div>
+            <div className="rateRow rateRowDeduction">
+              <span>KiwiSaver</span>
+              <div className="rateValue">
+                <input type="number" step="0.01" min="0" value={kiwiSaverPct} onChange={ev=>setKiwiSaverPct(+ev.target.value||0)} aria-label="KiwiSaver percentage"/>
+                <small>%</small>
+              </div>
+              <b className="rateDeductionAmount">${kiwiSaver.toFixed(2)}</b>
+            </div>
+            <div className="rateRow rateRowTotal">
+              <span>Total Deducted</span>
+              <b>${totalDeducted.toFixed(2)}</b>
+            </div>
+            <div className="rateRow rateRowNet">
+              <span>Net Pay</span>
+              <b>${netPay.toFixed(2)}</b>
+            </div>
+          </div>
+          <p className="rateNote">Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Net Pay = Total Pay − (Tax + Union Fee + KiwiSaver).</p>
+        </section>;
+      })()}
+
+      <section className="panel menu"><h3>SETTINGS</h3>
+        <label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label>
+        <button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
     </main>}
 
     <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
@@ -2049,14 +2542,34 @@ function App(){
       <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables</div></div>
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div></div>
         <div className="autoControls">
           <label>Employee
             <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
               <option value="">Select employee…</option>
-              {table.staff.map(s=><option key={s.id} value={s.id}>{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
+              {table.staff.map(s=><option key={s.id} value={s.id}>{s.nameUncertain?"⚠ ":""}{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
           </label>
+
+          {table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
+            <summary>Fix employee names ({table.staff.filter(s=>s.nameUncertain).length} flagged)</summary>
+            <div className="staffNameFixList">
+              {table.staff.map(s=>(
+                <div className={"staffNameFixRow"+(s.nameUncertain?" uncertain":"")} key={s.id}>
+                  {s.nameUncertain&&<AlertTriangle size={14}/>}
+                  <div style={{flex:1}}>
+                    <input
+                      value={s.name}
+                      placeholder="Employee name"
+                      onChange={e=>updateStaffName(s.id,e.target.value)}
+                    />
+                    {s.debugError&&<small style={{color:"#ff7777",display:"block",marginTop:3}}>Error: {s.debugError}</small>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>}
+
           {review&&<>
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
@@ -2186,121 +2699,221 @@ function entryRosterText(e){
   if(e.time)return `${e.time}${e.code==="TRNG"?" TRNG":""}`;
   return e.code||"";
 }
-function Roster({rows,onEdit}){
+// Applies the tier1/tier2 split to a chunk of OT hours, given how many OT
+// hours already happened earlier in the SAME day — so a day with 2h OT in
+// the AM and 2h OT in the PM sees 3h at tier1 and 1h at tier2 (combined),
+// not 2h+2h both mistakenly landing entirely inside tier1.
+function tieredOtPay(hoursAlreadyOtToday,hoursThisShift,payRate,tier1Hours,tier1Mult,tier2Mult){
+  const h=hoursThisShift||0;
+  const tier1Remaining=Math.max(tier1Hours-hoursAlreadyOtToday,0);
+  const atTier1=Math.min(h,tier1Remaining);
+  const atTier2=h-atTier1;
+  return atTier1*payRate*tier1Mult + atTier2*payRate*tier2Mult;
+}
+
+// Computes AM and PM pay for one day together (not independently), so OT
+// tiering correctly accumulates across both shifts of that day.
+function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
+  const am=e.amShift ?? "0000-0000";
+  const pm=e.pmShift ?? "0000-0000";
+  const amParsed=airport24HourDuration(am);
+  const pmParsed=airport24HourDuration(pm);
+  const amHours=amParsed.valid?amParsed.hours:0;
+  const pmHours=pmParsed.valid?pmParsed.hours:0;
+  const amType=e.amType??"RT";
+  const pmType=e.pmType??"RT";
+
+  let otSoFar=0,amPay,pmPay;
+
+  if(amType==="OT"){
+    amPay=tieredOtPay(otSoFar,amHours,payRate,tier1Hours,tier1Mult,tier2Mult);
+    otSoFar+=amHours;
+  }else{
+    amPay=amHours*payRate;
+  }
+
+  if(pmType==="OT"){
+    pmPay=tieredOtPay(otSoFar,pmHours,payRate,tier1Hours,tier1Mult,tier2Mult);
+    otSoFar+=pmHours;
+  }else{
+    pmPay=pmHours*payRate;
+  }
+
+  return {amHours,pmHours,amPay,pmPay,amType,pmType};
+}
+
+// Sums Pay across a set of entries the same way the Roster table computes
+// it per row, for the Settings "Total Pay" summary.
+// NZ IRD resident income tax brackets, 2025–26 and 2026–27 tax years
+// (thresholds set 31 July 2024, unchanged since). Source: IRD tax rates for
+// individuals. Verify against ird.govt.nz if this is used in a later tax year.
+const NZ_TAX_BRACKETS=[
+  {upTo:15600,rate:0.105},
+  {upTo:53500,rate:0.175},
+  {upTo:78100,rate:0.30},
+  {upTo:180000,rate:0.33},
+  {upTo:Infinity,rate:0.39}
+];
+// ACC earner's levy, 2025–26 year: 1.67% of earnings, capped at $152,790.
+const ACC_LEVY_RATE=0.0167;
+const ACC_LEVY_CAP=152790;
+
+const PAY_PERIODS_PER_YEAR={weekly:52,fortnightly:26,monthly:12};
+
+function annualNzPaye(annualIncome){
+  let tax=0,lower=0;
+  for(const b of NZ_TAX_BRACKETS){
+    if(annualIncome<=lower)break;
+    const taxableInBracket=Math.min(annualIncome,b.upTo)-lower;
+    tax+=taxableInBracket*b.rate;
+    lower=b.upTo;
+  }
+  return tax;
+}
+
+// Standard IRD method for PAYE on regular salary/wages: annualize this
+// period's gross pay by pay frequency, apply the progressive brackets to
+// the annualized figure, then divide back down to one period. Adds the ACC
+// earner's levy (also capped annually) since it's deducted alongside PAYE.
+// This won't be cent-for-cent identical to every payroll vendor's exact
+// rounding or tax-code handling, but matches the standard IRD calculation.
+function periodNzPaye(periodGross,payFrequency){
+  const periodsPerYear=PAY_PERIODS_PER_YEAR[payFrequency]||26;
+  const annualIncome=periodGross*periodsPerYear;
+  const annualTax=annualNzPaye(annualIncome);
+  const annualAcc=Math.min(annualIncome,ACC_LEVY_CAP)*ACC_LEVY_RATE;
+  return (annualTax+annualAcc)/periodsPerYear;
+}
+
+
+function totalPayForRows(rows,payRate,tier1Hours,tier1Mult,tier2Mult){
+  let total=0;
+  for(const e of rows){
+    const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
+    if(isDualSource){
+      const {amPay,pmPay}=dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult);
+      total+=amPay+pmPay;
+    }else{
+      total+=effectiveEntryHours(e)*payRate;
+    }
+  }
+  return total;
+}
+
+function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mult=2.0}){
   if(!rows.length)return <div className="empty">No shifts found.</div>;
 
-  return <div className="list">
-    {rows.map(e=>{
-      const hours=effectiveEntryHours(e);
+  // Every row in the table is one Start–End period (AM or PM), matching the
+  // requested Day/Start/End/Time/Pay layout. RDO or unparseable entries fall
+  // back to a single flat row, same as before.
+  const shiftRows=[];
+  for(const e of rows){
+    const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
+
+    if(onEdit){
+      // Editable rows always expose AM + PM, even if currently blank/RDO,
+      // so the admin can fill in a shift that wasn't there before.
       const am=e.amShift ?? "0000-0000";
       const pm=e.pmShift ?? "0000-0000";
+      const {amHours,pmHours,amPay,pmPay}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+      shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay});
+      shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay});
+      continue;
+    }
 
-      return <div className={`item rosterImported ${onEdit?"rosterEditable rosterDualShift":""}`} key={e.id}>
-        <div className="rosterDateBlock">
-          <small>{fmt(e.date,{weekday:"short",day:"numeric",month:"short"})}</small>
-          <span>{e.name}</span>
+    if(isDualSource){
+      const am=e.amShift ?? "0000-0000";
+      const pm=e.pmShift ?? "0000-0000";
+      const amParsed=airport24HourDuration(am);
+      const pmParsed=airport24HourDuration(pm);
+      const amHas=amParsed.valid && amParsed.hours>0;
+      const pmHas=pmParsed.valid && pmParsed.hours>0;
+      if(!amHas && !pmHas){
+        shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours:0,pay:0});
+      }else{
+        const {amHours,pmHours,amPay,pmPay}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+        if(amHas)shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay});
+        if(pmHas)shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay});
+      }
+      continue;
+    }
+
+    {
+      const hours=effectiveEntryHours(e);
+      shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours,pay:hours*payRate});
+    }
+  }
+
+  let totalHours=0,totalPay=0;
+  for(const r of shiftRows){
+    totalHours+=r.hours||0;
+    totalPay+=r.pay||0;
+  }
+
+  return <div className="rosterTable">
+    <div className="rosterTableHead">
+      <span>Day</span><span>Start</span><span>End</span><span>Time</span><span>Pay</span>
+    </div>
+
+    {shiftRows.map((r,i)=>{
+      const {e,period}=r;
+      const dayLabel=fmt(e.date,{weekday:"short",day:"numeric",month:"short"});
+      const isNewDay=i===0||shiftRows[i-1].e.id!==e.id;
+      const dayClass=isNewDay?" rosterTableNewDay":"";
+
+      if(period===null){
+        return <div className={"rosterTableRow rosterTableRowFlat"+dayClass} key={e.id+"-flat-"+i}>
+          <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
+          <div className="rosterTableFlatValue">
+            {r.sourceCell
+              ? <img src={r.sourceCell} alt="Original roster cell" className="rosterTableThumb"/>
+              : <b>{r.label}</b>}
+          </div>
+          <div className="rosterTableTime">{(r.hours||0).toFixed(1)}h</div>
+          <div className="rosterTablePay">${(r.pay||0).toFixed(2)}</div>
+        </div>;
+      }
+
+      const periodLabel=period.toUpperCase();
+      const {start,end}=splitAirportRange(r.value);
+      const pay=r.pay||0;
+
+      return <div className={"rosterTableRow"+dayClass} key={e.id+"-"+period}>
+        <div className="rosterTableDay">
+          <small>{dayLabel}</small>
+          <span>{e.name} · {periodLabel}</span>
+          {onEdit
+            ? <select
+                className={`shiftTypeSelect rosterTableType ${r.type==="OT"?"isOT":""}`}
+                value={r.type}
+                onChange={ev=>onEdit(e.id,period,ev.target.value,"type")}
+                aria-label={`${periodLabel} shift type`}
+              >
+                <option value="RT">RT</option>
+                <option value="OT">OT</option>
+              </select>
+            : <em className="rosterTableTypeReadonly">{r.type}</em>}
         </div>
-
-        {!onEdit && (e.amShift!==undefined || e.pmShift!==undefined)
-          ? <div className="readonlyDualShift">
-              {(() => {
-                const am=e.amShift ?? "0000-0000";
-                const pm=e.pmShift ?? "0000-0000";
-                const amParsed=airport24HourDuration(am);
-                const pmParsed=airport24HourDuration(pm);
-                const amHas=amParsed.valid && amParsed.hours>0;
-                const pmHas=pmParsed.valid && pmParsed.hours>0;
-
-                if(!amHas && !pmHas){
-                  return e.sourceCell
-                    ? <div className="savedSourceCell readonlySource"><img src={e.sourceCell} alt="Original roster cell"/></div>
-                    : <b className="rosterTextFallback">{entryRosterText(e)}</b>;
-                }
-
-                return <>
-                  {amHas && <div className="readonlyShiftLine">
-                    <span>AM</span>
-                    <strong>{am}</strong>
-                    <em>{e.amType ?? "RT"}</em>
-                  </div>}
-                  {pmHas && <div className="readonlyShiftLine">
-                    <span>PM</span>
-                    <strong>{pm}</strong>
-                    <em>{e.pmType ?? "RT"}</em>
-                  </div>}
-                </>;
-              })()}
-            </div>
-          : e.sourceCell
-            ? <div className="savedSourceCell"><img src={e.sourceCell} alt="Original roster cell"/></div>
-            : <b className="rosterTextFallback">{entryRosterText(e)}</b>}
-
-        {onEdit
-          ? <div className="dualShiftEditor">
-              <div className="editableShiftWrap">
-                <div className="shiftLabelRow">
-                  <label>AM SHIFT</label>
-                  <select
-                    className={`shiftTypeSelect ${(e.amType ?? "RT")==="OT" ? "isOT" : ""}`}
-                    value={e.amType ?? "RT"}
-                    onChange={ev=>onEdit(e.id,"am",ev.target.value,"type")}
-                    aria-label="AM shift type"
-                  >
-                    <option value="RT">RT</option>
-                    <option value="OT">OT</option>
-                  </select>
-                </div>
-                <input
-                  className="editableShift"
-                  value={am}
-                  placeholder="0000-0000"
-                  onFocus={ev=>ev.currentTarget.select()}
-                  onChange={ev=>onEdit(e.id,"am",ev.target.value)}
-                  inputMode="text"
-                  autoCapitalize="off"
-                  spellCheck="false"
-                />
-                <small>24-hour airport time</small>
-              </div>
-
-              <div className="editableShiftWrap">
-                <div className="shiftLabelRow">
-                  <label>PM SHIFT</label>
-                  <select
-                    className={`shiftTypeSelect ${(e.pmType ?? "RT")==="OT" ? "isOT" : ""}`}
-                    value={e.pmType ?? "RT"}
-                    onChange={ev=>onEdit(e.id,"pm",ev.target.value,"type")}
-                    aria-label="PM shift type"
-                  >
-                    <option value="RT">RT</option>
-                    <option value="OT">OT</option>
-                  </select>
-                </div>
-                <input
-                  className="editableShift"
-                  value={pm}
-                  placeholder="0000-0000"
-                  onFocus={ev=>ev.currentTarget.select()}
-                  onChange={ev=>onEdit(e.id,"pm",ev.target.value)}
-                  inputMode="text"
-                  autoCapitalize="off"
-                  spellCheck="false"
-                />
-                <small>24-hour airport time</small>
-              </div>
-            </div>
-          : null}
-
-        <div className="dailyHours">
-          <span>TOTAL HOURS</span>
-          <strong>{hours.toFixed(1)}h</strong>
-          {onEdit && entryOvertimeHours(e)>0
-            ? <small className="dailyOvertime">{entryOvertimeHours(e).toFixed(1)}h OT</small>
-            : <small className="dailyRT">RT</small>}
+        <div className="rosterTableStart">
+          {onEdit
+            ? <Time24Wheel value={start} onChange={v=>onEdit(e.id,period,joinAirportRange(v,end))} ariaLabel={`${periodLabel} start time`}/>
+            : <span>{start||"--:--"}</span>}
         </div>
-      </div>
+        <div className="rosterTableEnd">
+          {onEdit
+            ? <Time24Wheel value={end} onChange={v=>onEdit(e.id,period,joinAirportRange(start,v))} ariaLabel={`${periodLabel} end time`}/>
+            : <span>{end||"--:--"}</span>}
+        </div>
+        <div className="rosterTableTime">{r.hours.toFixed(1)}h</div>
+        <div className="rosterTablePay">${pay.toFixed(2)}</div>
+      </div>;
     })}
-  </div>
+
+    <div className="rosterTableTotals">
+      <span>Total Time</span><b>{totalHours.toFixed(1)}h</b>
+      <span>Total Pay</span><b>${totalPay.toFixed(2)}</b>
+    </div>
+  </div>;
 }
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
 function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
