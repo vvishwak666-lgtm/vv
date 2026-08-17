@@ -115,6 +115,7 @@ export default async function handler(req, res) {
   }
 
   let sent = 0, failed = 0, removed = 0;
+  const failures = [];
 
   for (const sub of due) {
     const row = rosterByUser.get(sub.user_id);
@@ -131,6 +132,12 @@ export default async function handler(req, res) {
       await supabase.from("push_subscriptions").update({ last_sent_date: todayNzIso }).eq("id", sub.id);
     } catch (err) {
       failed++;
+      failures.push({
+        subscriptionId: sub.id,
+        statusCode: err?.statusCode,
+        message: err?.message,
+        body: err?.body
+      });
       // 404/410 means the browser unsubscribed or the subscription expired —
       // clean it up so future runs don't keep failing on it.
       if (err?.statusCode === 404 || err?.statusCode === 410) {
@@ -140,5 +147,5 @@ export default async function handler(req, res) {
     }
   }
 
-  res.status(200).json({ sent, failed, removed, tomorrow: tomorrowIso });
+  res.status(200).json({ sent, failed, removed, tomorrow: tomorrowIso, failures });
 }
