@@ -2026,12 +2026,28 @@ function App(){
   const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
   const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
   const [flightsScope,setFlightsScope]=useState("all"); // "all"|"domestic"|"international"
+  // Keeps the list focused on flights actually relevant right now — from
+  // about an hour ago (so recently-landed/departed flights don't vanish
+  // instantly) through the next several hours. Adjust the two numbers below
+  // to widen/narrow the window.
+  const FLIGHT_WINDOW_HOURS_BACK=1;
+  const FLIGHT_WINDOW_HOURS_FORWARD=6;
+  function isWithinFlightWindow(iso){
+    if(!iso)return false;
+    const t=new Date(iso).getTime();
+    if(isNaN(t))return false;
+    const now=Date.now();
+    return t>=now-FLIGHT_WINDOW_HOURS_BACK*3600000 && t<=now+FLIGHT_WINDOW_HOURS_FORWARD*3600000;
+  }
   const visibleFlights=useMemo(()=>{
     if(!flights)return[];
-    if(flightsScope==="all")return flights;
-    return flights.filter(f=>
-      flightsScope==="domestic" ? isDomesticRoute(f.route) : !isDomesticRoute(f.route)
-    );
+    let list=flights.filter(f=>isWithinFlightWindow(f.scheduledTime));
+    if(flightsScope!=="all"){
+      list=list.filter(f=>
+        flightsScope==="domestic" ? isDomesticRoute(f.route) : !isDomesticRoute(f.route)
+      );
+    }
+    return list.sort((a,b)=>new Date(a.scheduledTime)-new Date(b.scheduledTime));
   },[flights,flightsScope]);
 
   async function fetchFlights(direction=flightsDirection){
@@ -2680,7 +2696,7 @@ function App(){
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Plane size={17}/>
-          <span>AKL · AIR NEW ZEALAND</span>
+          <span>AKL · AIR NEW ZEALAND · NEXT {FLIGHT_WINDOW_HOURS_FORWARD}H</span>
         </div>
         <div className="daySearchControl">
           <select
@@ -2744,7 +2760,7 @@ function App(){
               : <div className="emptySearch">
                   <Plane size={25}/>
                   <b>No flights found</b>
-                  <span>No {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} to show right now.</span>
+                  <span>No {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} in the next {FLIGHT_WINDOW_HOURS_FORWARD} hours.</span>
                 </div>}
         </section>}
 
