@@ -30,6 +30,28 @@ function todayISO(){ return new Date().toISOString().slice(0,10); }
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+// Separate from fmt() above: that helper is hardcoded for plain calendar
+// dates like "2026-08-18" and always appends "T12:00:00" before parsing.
+// Flight times (and other full timestamps) are already complete ISO
+// datetimes — appending T12:00:00 onto those breaks parsing entirely
+// (silently produces "Invalid Date"). This formats a real timestamp as-is.
+function fmtTime(iso){
+  if(!iso)return"";
+  const d=new Date(iso);
+  return isNaN(d.getTime())?"":d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+}
+
+// IATA codes for New Zealand airports Air NZ serves domestically. Anything
+// AKL connects to outside this set is treated as international. Not
+// exhaustive of every tiny NZ airstrip, but covers all scheduled Air NZ
+// domestic routes out of Auckland.
+const NZ_DOMESTIC_IATA=new Set([
+  "WLG","CHC","ZQN","DUD","NPE","NSN","ROT","TUO","PMR","WHK","HLZ",
+  "GIS","NPL","IVC","BHE","WKA","KKE","TEU","WRE","KAT","GTN","PPQ","THH"
+]);
+function isDomesticRoute(iataCode){
+  return NZ_DOMESTIC_IATA.has(String(iataCode||"").toUpperCase());
+}
 
 function normalizeShift(value){
   let t=String(value||"").toUpperCase().trim()
@@ -2002,6 +2024,14 @@ function App(){
   const [flightsError,setFlightsError]=useState(null);
   const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
   const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
+  const [flightsScope,setFlightsScope]=useState("all"); // "all"|"domestic"|"international"
+  const visibleFlights=useMemo(()=>{
+    if(!flights)return[];
+    if(flightsScope==="all")return flights;
+    return flights.filter(f=>
+      flightsScope==="domestic" ? isDomesticRoute(f.route) : !isDomesticRoute(f.route)
+    );
+  },[flights,flightsScope]);
 
   async function fetchFlights(direction=flightsDirection){
     setFlightsLoading(true);
@@ -2671,6 +2701,16 @@ function App(){
         </div>
       </div>
 
+      <div className="flightsScopeToggle">
+        {["all","domestic","international"].map(s=>
+          <button
+            key={s}
+            className={flightsScope===s?"on":""}
+            onClick={()=>setFlightsScope(s)}
+          >{s==="all"?"All":s==="domestic"?"Domestic":"International"}</button>
+        )}
+      </div>
+
       {flightsError&&
         <div className="emptySearch">
           <AlertTriangle size={25}/>
@@ -2682,18 +2722,18 @@ function App(){
         <section className="panel searchResults">
           {flightsLoading&&!flights
             ? <div className="emptySearch"><Plane size={25}/><b>Loading flights…</b></div>
-            : (flights||[]).length
+            : visibleFlights.length
               ? <div className="flightsList">
-                  {flights.map(f=>
+                  {visibleFlights.map(f=>
                     <div key={f.flightNumber} className="flightRow">
                       <div className="flightMain">
                         <b>{f.flightNumber}</b>
                         <span>{flightsDirection==="departures"?`to ${f.route}`:`from ${f.route}`}</span>
                       </div>
                       <div className="flightTimes">
-                        <span>{fmt(f.scheduledTime,{hour:"2-digit",minute:"2-digit"})}</span>
+                        <span>{fmtTime(f.scheduledTime)}</span>
                         {f.estimatedTime!==f.scheduledTime&&
-                          <small>est. {fmt(f.estimatedTime,{hour:"2-digit",minute:"2-digit"})}</small>}
+                          <small>est. {fmtTime(f.estimatedTime)}</small>}
                       </div>
                       {f.gate&&<div className="flightGate">Gate {f.gate}</div>}
                       <div className={`flightStatus status-${f.status.toLowerCase().replace(/\s+/g,"-")}`}>{f.status}</div>
@@ -2703,12 +2743,12 @@ function App(){
               : <div className="emptySearch">
                   <Plane size={25}/>
                   <b>No flights found</b>
-                  <span>No {flightsDirection} to show right now.</span>
+                  <span>No {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} to show right now.</span>
                 </div>}
         </section>}
 
       {flightsUpdatedAt&&
-        <small className="flightsUpdatedAt">Updated {fmt(flightsUpdatedAt,{hour:"2-digit",minute:"2-digit"})}</small>}
+        <small className="flightsUpdatedAt">Updated {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
     {tab==="more"&&<main>
