@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import {
   Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
   Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
-  Users, Clock3
+  Users, Clock3, Plane, RefreshCw
 } from "lucide-react";
 import "./styles.css";
 
@@ -1997,6 +1997,62 @@ function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
   const [searchDay,setSearchDay]=useState("");
+  const [flights,setFlights]=useState(null); // null = not yet loaded
+  const [flightsLoading,setFlightsLoading]=useState(false);
+  const [flightsError,setFlightsError]=useState(null);
+  const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
+  const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
+
+  // Generates a plausible-looking set of Air NZ AKL flights for UI development
+  // while waiting on live API access. Swap the body of fetchFlights (marked
+  // below) for a real API call — the shape returned by setFlights([...]) is
+  // the contract the UI expects: {flightNumber, route, scheduledTime,
+  // estimatedTime, status, gate, direction}.
+  function mockFlights(direction){
+    const now=new Date();
+    const routes=direction==="departures"
+      ? [["AKL","WLG"],["AKL","CHC"],["AKL","SYD"],["AKL","BNE"],["AKL","NAN"],["AKL","ZQN"]]
+      : [["WLG","AKL"],["CHC","AKL"],["SYD","AKL"],["BNE","AKL"],["NAN","AKL"],["ZQN","AKL"]];
+    const statuses=["On time","On time","On time","Delayed","Boarding","Landed"];
+    return routes.map((route,i)=>{
+      const sched=new Date(now.getTime()+(i-2)*35*60000);
+      const delayMin=statuses[i]==="Delayed"?Math.round(15+Math.random()*30):0;
+      const est=new Date(sched.getTime()+delayMin*60000);
+      return {
+        flightNumber:`NZ${100+i*37}`,
+        route:direction==="departures"?route[1]:route[0],
+        scheduledTime:sched.toISOString(),
+        estimatedTime:est.toISOString(),
+        status:statuses[i],
+        gate:direction==="departures"?`${10+i}`:null,
+        direction
+      };
+    });
+  }
+
+  async function fetchFlights(direction=flightsDirection){
+    setFlightsLoading(true);
+    setFlightsError(null);
+    try{
+      // --- SWAP POINT: replace this block with a real API call once ---
+      // --- AirLabs/AeroDataBox access is confirmed, e.g.:            ---
+      // const res = await fetch(`/api/flights?airport=AKL&direction=${direction}&airline=NZ`);
+      // const data = await res.json();
+      // setFlights(data.flights);
+      await new Promise(r=>setTimeout(r,500)); // simulate network latency
+      setFlights(mockFlights(direction));
+      // --- end swap point ---
+      setFlightsUpdatedAt(new Date());
+    }catch(err){
+      setFlightsError(err?.message||"Couldn't load flight status.");
+    }finally{
+      setFlightsLoading(false);
+    }
+  }
+
+  useEffect(()=>{
+    if(tab==="flights"&&flights===null)fetchFlights(flightsDirection);
+  },[tab]);
   const [threshold,setThreshold]=useState(38);
   const [payRate,setPayRate]=useState(33.39);
   const [otTier1Hours,setOtTier1Hours]=useState(3);
@@ -2423,6 +2479,15 @@ function App(){
       const vapidPublicKey=import.meta.env.VITE_VAPID_PUBLIC_KEY;
       if(!vapidPublicKey){setReminderStatus("Missing VAPID key — set VITE_VAPID_PUBLIC_KEY and redeploy.");return;}
       const reg=await navigator.serviceWorker.ready;
+      // The browser refuses subscribe() with a different applicationServerKey
+      // while an old subscription still exists on the device (throws
+      // "Provided applicationServerKey does not match the key in the
+      // existing subscription") — this bites every time the VAPID key pair
+      // is rotated server-side, since the device's old subscription doesn't
+      // know or care that the server-side key changed. Unsubscribing first
+      // guarantees subscribe() below can always succeed with the current key.
+      const staleSub=await reg.pushManager.getSubscription();
+      if(staleSub)await staleSub.unsubscribe();
       const sub=await reg.pushManager.subscribe({
         userVisibleOnly:true,
         applicationServerKey:urlBase64ToUint8Array(vapidPublicKey)
@@ -2611,7 +2676,81 @@ function App(){
       </section>
     </main>}
 
+    {tab==="flights"&&<main>
+      <div className="daySearchCard">
+        <div className="daySearchLabel">
+          <Plane size={17}/>
+          <span>AKL · AIR NEW ZEALAND</span>
+        </div>
+        <div className="daySearchControl">
+          <select
+            value={flightsDirection}
+            onChange={e=>{const d=e.target.value;setFlightsDirection(d);fetchFlights(d);}}
+            aria-label="Departures or arrivals"
+          >
+            <option value="departures">Departures</option>
+            <option value="arrivals">Arrivals</option>
+          </select>
+          <button
+            className="dayClear"
+            onClick={()=>fetchFlights(flightsDirection)}
+            aria-label="Refresh flight status"
+            disabled={flightsLoading}
+          >
+            <RefreshCw size={14} className={flightsLoading?"spin":""}/>
+          </button>
+        </div>
+      </div>
+
+      <div className="flightsMockNotice">
+        <AlertTriangle size={14}/>
+        <span>Showing sample data — live AKL/NZ flight status isn't connected yet.</span>
+      </div>
+
+      {flightsError&&
+        <div className="emptySearch">
+          <AlertTriangle size={25}/>
+          <b>Couldn't load flights</b>
+          <span>{flightsError}</span>
+        </div>}
+
+      {!flightsError&&
+        <section className="panel searchResults">
+          {flightsLoading&&!flights
+            ? <div className="emptySearch"><Plane size={25}/><b>Loading flights…</b></div>
+            : (flights||[]).length
+              ? <div className="flightsList">
+                  {flights.map(f=>
+                    <div key={f.flightNumber} className="flightRow">
+                      <div className="flightMain">
+                        <b>{f.flightNumber}</b>
+                        <span>{flightsDirection==="departures"?`to ${f.route}`:`from ${f.route}`}</span>
+                      </div>
+                      <div className="flightTimes">
+                        <span>{fmt(f.scheduledTime,{hour:"2-digit",minute:"2-digit"})}</span>
+                        {f.estimatedTime!==f.scheduledTime&&
+                          <small>est. {fmt(f.estimatedTime,{hour:"2-digit",minute:"2-digit"})}</small>}
+                      </div>
+                      {f.gate&&<div className="flightGate">Gate {f.gate}</div>}
+                      <div className={`flightStatus status-${f.status.toLowerCase().replace(/\s+/g,"-")}`}>{f.status}</div>
+                    </div>
+                  )}
+                </div>
+              : <div className="emptySearch">
+                  <Plane size={25}/>
+                  <b>No flights found</b>
+                  <span>No {flightsDirection} to show right now.</span>
+                </div>}
+        </section>}
+
+      {flightsUpdatedAt&&
+        <small className="flightsUpdatedAt">Updated {fmt(flightsUpdatedAt,{hour:"2-digit",minute:"2-digit"})}</small>}
+    </main>}
+
     {tab==="more"&&<main>
+      <section className="panel menu"><h3>LIVE FLIGHTS</h3>
+        <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Departures &amp; arrivals (sample data for now)</small></span></button>
+      </section>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
