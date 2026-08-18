@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import {
   Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
   Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
-  Users, Clock3
+  Users, Clock3, Plane, RefreshCw
 } from "lucide-react";
 import "./styles.css";
 
@@ -30,6 +30,29 @@ function todayISO(){ return new Date().toISOString().slice(0,10); }
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+// Separate from fmt() above: that helper is hardcoded for plain calendar
+// dates like "2026-08-18" and always appends "T12:00:00" before parsing.
+// Flight times (and other full timestamps) are already complete ISO
+// datetimes — appending T12:00:00 onto those breaks parsing entirely
+// (silently produces "Invalid Date"). This formats a real timestamp as-is.
+function fmtTime(iso){
+  if(!iso)return"";
+  const d=new Date(iso);
+  return isNaN(d.getTime())?"":d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit",hour12:false});
+}
+
+// IATA codes for New Zealand airports Air NZ serves domestically. Anything
+// AKL connects to outside this set is treated as international. Not
+// exhaustive of every tiny NZ airstrip, but covers all scheduled Air NZ
+// domestic routes out of Auckland.
+const NZ_DOMESTIC_IATA=new Set([
+  "WLG","CHC","ZQN","DUD","NPE","NSN","ROT","TUO","PMR","WHK","HLZ",
+  "GIS","NPL","IVC","BHE","WKA","KKE","TRG","WRE","KAT","GMN","PPQ",
+  "TIU","WSZ","HKK","WAG"
+]);
+function isDomesticRoute(iataCode){
+  return NZ_DOMESTIC_IATA.has(String(iataCode||"").toUpperCase());
+}
 
 function normalizeShift(value){
   let t=String(value||"").toUpperCase().trim()
@@ -1997,12 +2020,46 @@ function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
   const [searchDay,setSearchDay]=useState("");
+  const [flights,setFlights]=useState(null); // null = not yet loaded
+  const [flightsLoading,setFlightsLoading]=useState(false);
+  const [flightsError,setFlightsError]=useState(null);
+  const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
+  const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
+  const [flightsScope,setFlightsScope]=useState("all"); // "all"|"domestic"|"international"
+  const visibleFlights=useMemo(()=>{
+    if(!flights)return[];
+    if(flightsScope==="all")return flights;
+    return flights.filter(f=>
+      flightsScope==="domestic" ? isDomesticRoute(f.route) : !isDomesticRoute(f.route)
+    );
+  },[flights,flightsScope]);
+
+  async function fetchFlights(direction=flightsDirection){
+    setFlightsLoading(true);
+    setFlightsError(null);
+    try{
+      const res=await fetch(`/api/flights?direction=${direction}`);
+      const data=await res.json();
+      if(!res.ok||data.error)throw new Error(data.error||"Couldn't load flight status.");
+      setFlights(data.flights||[]);
+      setFlightsUpdatedAt(new Date());
+    }catch(err){
+      setFlightsError(err?.message||"Couldn't load flight status.");
+    }finally{
+      setFlightsLoading(false);
+    }
+  }
+
+  useEffect(()=>{
+    if(tab==="flights"&&flights===null)fetchFlights(flightsDirection);
+  },[tab]);
   const [threshold,setThreshold]=useState(38);
   const [payRate,setPayRate]=useState(33.39);
   const [otTier1Hours,setOtTier1Hours]=useState(3);
   const [otTier1Mult,setOtTier1Mult]=useState(1.5);
   const [otTier2Mult,setOtTier2Mult]=useState(2.0);
   const [payFrequency,setPayFrequency]=useState("fortnightly");
+  const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
   const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
   const [calendarMonth,setCalendarMonth]=useState(todayISO().slice(0,7)+"-01");
@@ -2018,8 +2075,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"")}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -2319,8 +2376,200 @@ function App(){
   },[]);
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
-  const myName=names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
+  // Prefer an explicit "this is me" selection; fall back to the old
+  // name-matching guess only if nothing has been chosen yet. The guess alone
+  // isn't safe for anyone whose name isn't Vimal/Prabhakar or first
+  // alphabetically — which matters once more than one person uses the app.
+  const myName=myNameOverride||names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
   const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
+
+  // Needed so shift data and push subscriptions can be linked to the signed-in
+  // account — evening reminders are sent server-side, which has no access to
+  // this device's local storage, only to what's synced to Supabase below.
+  const [userId,setUserId]=useState(null);
+  const [reminderStatus,setReminderStatus]=useState("");
+  const [notifyHour,setNotifyHour]=useState(19);
+  const [notifyMinute,setNotifyMinute]=useState(0);
+  const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"
+  const isApplyingServerValue=useRef(false);
+  // Guards the auto-save effect against firing before we've even tried to
+  // load the real saved value from the server. Without this, the auto-save
+  // effect (which also depends on userId, since it needs it to write to
+  // Supabase) fires the instant userId resolves — racing the load effect
+  // below and sometimes writing the still-default 19:00 back to the server
+  // before the real saved value has had a chance to load into state.
+  const hasAttemptedServerLoad=useRef(false);
+  useEffect(()=>{
+    if(!supabase)return;
+    supabase.auth.getUser().then(({data})=>setUserId(data?.user?.id||null));
+  },[]);
+
+  // On open, finds out whether THIS device already has a working
+  // subscription and, if so, loads the time it's actually set to — instead
+  // of always showing the hardcoded 19:00 default regardless of what's
+  // really saved, which was confusingly making it look like the time kept
+  // "resetting" every time the app was reopened.
+  useEffect(()=>{
+    if(!supabase||!userId)return;
+    if(!("serviceWorker" in navigator)||!("PushManager" in window)){setSubscriptionStatus("unsupported");return;}
+    let cancelled=false;
+    (async()=>{
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        const existing=await reg.pushManager.getSubscription();
+        if(!existing){if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}return;}
+        // Keyed by user_id, not endpoint — endpoint changes on every
+        // re-subscribe, which previously left this query unable to find a
+        // row at all after a device re-subscribed (see migration notes).
+        const {data,error}=await supabase.from("push_subscriptions")
+          .select("notify_hour,notify_minute,endpoint").eq("user_id",userId).maybeSingle();
+        if(cancelled)return;
+        if(error||!data){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;return;}
+        isApplyingServerValue.current=true;
+        setNotifyHour(data.notify_hour??19);
+        setNotifyMinute(data.notify_minute??0);
+        // If the browser's live subscription endpoint doesn't match what's
+        // stored, the stored row is stale (from a prior device/session) —
+        // treat as inactive so the person is prompted to re-enable, rather
+        // than showing a false "active" status for a dead subscription.
+        setSubscriptionStatus(data.endpoint===existing.toJSON().endpoint?"active":"inactive");
+        hasAttemptedServerLoad.current=true;
+      }catch{
+        if(!cancelled){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;}
+      }
+    })();
+    return()=>{cancelled=true};
+  },[userId]);
+
+
+  // Mirrors this person's own shifts (not every employee's) to Supabase, so
+  // the evening reminder job can look up "tomorrow's shift" server-side.
+  useEffect(()=>{
+    if(!supabase||!userId||!mine.length)return;
+    const rows=mine.filter(e=>e.date).map(e=>({
+      user_id:userId,
+      date:e.date,
+      name:e.name||"",
+      am_shift:e.amShift??null,
+      pm_shift:e.pmShift??null,
+      am_type:e.amType??"RT",
+      pm_type:e.pmType??"RT",
+      updated_at:new Date().toISOString()
+    }));
+    supabase.from("roster_sync").upsert(rows,{onConflict:"user_id,date"})
+      .then(({error})=>{if(error)console.warn("roster_sync upsert failed:",error.message)});
+  },[mine,userId]);
+
+  function urlBase64ToUint8Array(base64String){
+    const padding="=".repeat((4-base64String.length%4)%4);
+    const base64=(base64String+padding).replace(/-/g,"+").replace(/_/g,"/");
+    const raw=atob(base64);
+    return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
+  }
+
+  const enableEveningReminders=async()=>{
+    if(!supabase||!userId){setReminderStatus("Sign in first.");return;}
+    if(!("serviceWorker" in navigator)||!("PushManager" in window)){
+      setReminderStatus("This browser doesn't support push notifications.");
+      return;
+    }
+    try{
+      const perm=await Notification.requestPermission();
+      if(perm!=="granted"){setReminderStatus("Notification permission was not granted.");return;}
+      const vapidPublicKey=import.meta.env.VITE_VAPID_PUBLIC_KEY;
+      if(!vapidPublicKey){setReminderStatus("Missing VAPID key — set VITE_VAPID_PUBLIC_KEY and redeploy.");return;}
+      const reg=await navigator.serviceWorker.ready;
+      // The browser refuses subscribe() with a different applicationServerKey
+      // while an old subscription still exists on the device (throws
+      // "Provided applicationServerKey does not match the key in the
+      // existing subscription") — this bites every time the VAPID key pair
+      // is rotated server-side, since the device's old subscription doesn't
+      // know or care that the server-side key changed. Unsubscribing first
+      // guarantees subscribe() below can always succeed with the current key.
+      const staleSub=await reg.pushManager.getSubscription();
+      if(staleSub)await staleSub.unsubscribe();
+      const sub=await reg.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:urlBase64ToUint8Array(vapidPublicKey)
+      });
+      const json=sub.toJSON();
+      // Keyed by user_id (requires the unique constraint from the dedupe
+      // migration) instead of endpoint — endpoint changes every time this
+      // runs, which previously caused a new duplicate row per re-subscribe
+      // instead of replacing the old one.
+      const {error}=await supabase.from("push_subscriptions").upsert({
+        user_id:userId,
+        endpoint:json.endpoint,
+        p256dh:json.keys.p256dh,
+        auth:json.keys.auth,
+        notify_hour:notifyHour,
+        notify_minute:notifyMinute,
+        last_sent_date:null // changing the time should apply tonight, not wait until tomorrow
+      },{onConflict:"user_id"});
+      if(error){setReminderStatus("Saved locally but failed to sync: "+error.message);return;}
+      const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
+      setReminderStatus(`Evening reminders enabled — you'll get a notification at ${hh}:${mm} NZT with tomorrow's shift.`);
+      setSubscriptionStatus("active");
+    }catch(err){
+      setReminderStatus("Couldn't enable reminders: "+(err?.message||String(err)));
+    }
+  };
+
+  // Auto-saves a changed reminder time immediately, without needing the
+  // button tapped again — only if reminders are already enabled on this
+  // device (never requests permission or creates a subscription on its own).
+  // Skips the very first run (component mount) and any run caused by loading
+  // the server's saved value above, so opening the app or seeing the loaded
+  // time doesn't get mistaken for a user edit and re-save it pointlessly.
+  const skipInitialNotifyEffect=useRef(true);
+  useEffect(()=>{
+    if(skipInitialNotifyEffect.current){skipInitialNotifyEffect.current=false;return;}
+    if(isApplyingServerValue.current){isApplyingServerValue.current=false;return;}
+    if(!supabase||!userId)return;
+    // Never save before the server load attempt has finished — otherwise this
+    // effect (which also depends on userId) can fire the instant userId
+    // resolves and write the still-default 19:00 back to the server before
+    // the real saved value has loaded, silently clobbering it.
+    if(!hasAttemptedServerLoad.current)return;
+    if(!("serviceWorker" in navigator)||!("PushManager" in window))return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        const existing=await reg.pushManager.getSubscription();
+        if(!existing){
+          if(!cancelled)setReminderStatus("Reminders aren't enabled on this device yet — tap \"Enable Evening Reminders\" below first.");
+          return;
+        }
+        if(cancelled)return;
+        // Keyed by user_id, not endpoint — see migration notes. Also
+        // requests the updated row back via .select() so we can tell a real
+        // update apart from one that silently matched zero rows (Supabase
+        // returns success either way; only the returned row count tells you
+        // whether anything actually changed).
+        const {data,error}=await supabase.from("push_subscriptions").update({
+          notify_hour:notifyHour,
+          notify_minute:notifyMinute,
+          last_sent_date:null // a time change should apply tonight, not wait until tomorrow
+        }).eq("user_id",userId).select();
+        if(cancelled)return;
+        if(error){setReminderStatus("Couldn't save the new time: "+error.message);return;}
+        if(!data||!data.length){
+          setReminderStatus("Couldn't save the new time — no saved subscription found for this account. Tap \"Enable Evening Reminders\" again to fix this.");
+          setSubscriptionStatus("inactive");
+          return;
+        }
+        const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
+        setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
+        setSubscriptionStatus("active");
+      }catch(err){
+        if(!cancelled)setReminderStatus("Couldn't save the new time: "+(err?.message||String(err)));
+      }
+    })();
+    return()=>{cancelled=true};
+  },[notifyHour,notifyMinute,userId]);
+
+
   const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
@@ -2427,7 +2676,86 @@ function App(){
       </section>
     </main>}
 
+    {tab==="flights"&&<main>
+      <div className="daySearchCard">
+        <div className="daySearchLabel">
+          <Plane size={17}/>
+          <span>AKL · AIR NEW ZEALAND</span>
+        </div>
+        <div className="daySearchControl">
+          <select
+            value={flightsDirection}
+            onChange={e=>{const d=e.target.value;setFlightsDirection(d);fetchFlights(d);}}
+            aria-label="Departures or arrivals"
+          >
+            <option value="departures">Departures</option>
+            <option value="arrivals">Arrivals</option>
+          </select>
+          <button
+            className="dayClear"
+            onClick={()=>fetchFlights(flightsDirection)}
+            aria-label="Refresh flight status"
+            disabled={flightsLoading}
+          >
+            <RefreshCw size={14} className={flightsLoading?"spin":""}/>
+          </button>
+        </div>
+      </div>
+
+      <div className="flightsScopeToggle">
+        {["all","domestic","international"].map(s=>
+          <button
+            key={s}
+            className={flightsScope===s?"on":""}
+            onClick={()=>setFlightsScope(s)}
+          >{s==="all"?"All":s==="domestic"?"Domestic":"International"}</button>
+        )}
+      </div>
+
+      {flightsError&&
+        <div className="emptySearch">
+          <AlertTriangle size={25}/>
+          <b>Couldn't load flights</b>
+          <span>{flightsError}</span>
+        </div>}
+
+      {!flightsError&&
+        <section className="panel searchResults">
+          {flightsLoading&&!flights
+            ? <div className="emptySearch"><Plane size={25}/><b>Loading flights…</b></div>
+            : visibleFlights.length
+              ? <div className="flightsList">
+                  {visibleFlights.map(f=>
+                    <div key={f.flightNumber} className="flightRow">
+                      <div className="flightMain">
+                        <b>{f.flightNumber}</b>
+                        <span>{flightsDirection==="departures"?`to ${f.route}`:`from ${f.route}`}</span>
+                      </div>
+                      <div className="flightTimes">
+                        <span>{fmtTime(f.scheduledTime)}</span>
+                        {f.estimatedTime!==f.scheduledTime&&
+                          <small>est. {fmtTime(f.estimatedTime)}</small>}
+                      </div>
+                      {f.gate&&<div className="flightGate">Gate {f.gate}</div>}
+                      <div className={`flightStatus status-${f.status.toLowerCase().replace(/\s+/g,"-")}`}>{f.status}</div>
+                    </div>
+                  )}
+                </div>
+              : <div className="emptySearch">
+                  <Plane size={25}/>
+                  <b>No flights found</b>
+                  <span>No {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} to show right now.</span>
+                </div>}
+        </section>}
+
+      {flightsUpdatedAt&&
+        <small className="flightsUpdatedAt">Updated {fmtTime(flightsUpdatedAt)}</small>}
+    </main>}
+
     {tab==="more"&&<main>
+      <section className="panel menu"><h3>LIVE FLIGHTS</h3>
+        <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Live departures &amp; arrivals</small></span></button>
+      </section>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
@@ -2523,6 +2851,39 @@ function App(){
           <p className="rateNote">Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Net Pay = Total Pay − (Tax + Union Fee + KiwiSaver).</p>
         </section>;
       })()}
+
+      <section className="panel menu"><h3>MY PROFILE</h3>
+        <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
+          Which name on the roster is you?
+          <select value={myName} onChange={ev=>setMyNameOverride(ev.target.value)}>
+            {names.length===0&&<option value="">No roster imported yet</option>}
+            {names.map(n=><option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <p className="rateNote" style={{padding:"0 13px 13px"}}>"My Roster" and evening shift reminders are based on this. Get it right before enabling reminders below, or you'll be notified about someone else's shift.</p>
+      </section>
+
+      <section className="panel menu"><h3>NOTIFICATIONS</h3>
+        <p className="rateNote" style={{padding:"0 13px 9px",fontWeight:700,color:
+          subscriptionStatus==="active"?"#75d3a0":subscriptionStatus==="checking"?"#87909a":"#ff9f43"
+        }}>
+          {subscriptionStatus==="checking"&&"Checking reminder status for this device…"}
+          {subscriptionStatus==="active"&&"✓ Reminders are ON for this device."}
+          {subscriptionStatus==="inactive"&&"Reminders are OFF on this device — tap the button below to turn them on."}
+          {subscriptionStatus==="unsupported"&&"This browser doesn't support push notifications."}
+        </p>
+        <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
+          Notification time
+          <Time24Wheel
+            value={`${String(notifyHour).padStart(2,"0")}:${String(notifyMinute).padStart(2,"0")}`}
+            onChange={v=>{const [h,m]=v.split(":");setNotifyHour(+h);setNotifyMinute(+m)}}
+            ariaLabel="Evening reminder time"
+          />
+        </label>
+        <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
+        <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already ON for this device, changing the time above saves automatically — no need to tap the button again.</p>
+        {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
+      </section>
 
       <section className="panel menu"><h3>SETTINGS</h3>
         <label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label>
