@@ -38,7 +38,7 @@ function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso
 function fmtTime(iso){
   if(!iso)return"";
   const d=new Date(iso);
-  return isNaN(d.getTime())?"":d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+  return isNaN(d.getTime())?"":d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit",hour12:false});
 }
 
 // IATA codes for New Zealand airports Air NZ serves domestically. Anything
@@ -47,7 +47,8 @@ function fmtTime(iso){
 // domestic routes out of Auckland.
 const NZ_DOMESTIC_IATA=new Set([
   "WLG","CHC","ZQN","DUD","NPE","NSN","ROT","TUO","PMR","WHK","HLZ",
-  "GIS","NPL","IVC","BHE","WKA","KKE","TEU","WRE","KAT","GTN","PPQ","THH"
+  "GIS","NPL","IVC","BHE","WKA","KKE","TRG","WRE","KAT","GMN","PPQ",
+  "TIU","WSZ","HKK","WAG"
 ]);
 function isDomesticRoute(iataCode){
   return NZ_DOMESTIC_IATA.has(String(iataCode||"").toUpperCase());
