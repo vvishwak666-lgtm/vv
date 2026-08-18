@@ -2003,45 +2003,14 @@ function App(){
   const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
   const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
 
-  // Generates a plausible-looking set of Air NZ AKL flights for UI development
-  // while waiting on live API access. Swap the body of fetchFlights (marked
-  // below) for a real API call — the shape returned by setFlights([...]) is
-  // the contract the UI expects: {flightNumber, route, scheduledTime,
-  // estimatedTime, status, gate, direction}.
-  function mockFlights(direction){
-    const now=new Date();
-    const routes=direction==="departures"
-      ? [["AKL","WLG"],["AKL","CHC"],["AKL","SYD"],["AKL","BNE"],["AKL","NAN"],["AKL","ZQN"]]
-      : [["WLG","AKL"],["CHC","AKL"],["SYD","AKL"],["BNE","AKL"],["NAN","AKL"],["ZQN","AKL"]];
-    const statuses=["On time","On time","On time","Delayed","Boarding","Landed"];
-    return routes.map((route,i)=>{
-      const sched=new Date(now.getTime()+(i-2)*35*60000);
-      const delayMin=statuses[i]==="Delayed"?Math.round(15+Math.random()*30):0;
-      const est=new Date(sched.getTime()+delayMin*60000);
-      return {
-        flightNumber:`NZ${100+i*37}`,
-        route:direction==="departures"?route[1]:route[0],
-        scheduledTime:sched.toISOString(),
-        estimatedTime:est.toISOString(),
-        status:statuses[i],
-        gate:direction==="departures"?`${10+i}`:null,
-        direction
-      };
-    });
-  }
-
   async function fetchFlights(direction=flightsDirection){
     setFlightsLoading(true);
     setFlightsError(null);
     try{
-      // --- SWAP POINT: replace this block with a real API call once ---
-      // --- AirLabs/AeroDataBox access is confirmed, e.g.:            ---
-      // const res = await fetch(`/api/flights?airport=AKL&direction=${direction}&airline=NZ`);
-      // const data = await res.json();
-      // setFlights(data.flights);
-      await new Promise(r=>setTimeout(r,500)); // simulate network latency
-      setFlights(mockFlights(direction));
-      // --- end swap point ---
+      const res=await fetch(`/api/flights?direction=${direction}`);
+      const data=await res.json();
+      if(!res.ok||data.error)throw new Error(data.error||"Couldn't load flight status.");
+      setFlights(data.flights||[]);
       setFlightsUpdatedAt(new Date());
     }catch(err){
       setFlightsError(err?.message||"Couldn't load flight status.");
@@ -2702,11 +2671,6 @@ function App(){
         </div>
       </div>
 
-      <div className="flightsMockNotice">
-        <AlertTriangle size={14}/>
-        <span>Showing sample data — live AKL/NZ flight status isn't connected yet.</span>
-      </div>
-
       {flightsError&&
         <div className="emptySearch">
           <AlertTriangle size={25}/>
@@ -2749,7 +2713,7 @@ function App(){
 
     {tab==="more"&&<main>
       <section className="panel menu"><h3>LIVE FLIGHTS</h3>
-        <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Departures &amp; arrivals (sample data for now)</small></span></button>
+        <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Live departures &amp; arrivals</small></span></button>
       </section>
       <section className="panel menu"><h3>IMPORT</h3>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
