@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   url.searchParams.set("access_key", apiKey);
   url.searchParams.set(airportParam, "AKL");
   url.searchParams.set("airline_iata", "NZ");
-  url.searchParams.set("limit", "20");
+  url.searchParams.set("limit", "100");
 
   try {
     const upstream = await fetch(url.toString());
