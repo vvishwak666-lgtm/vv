@@ -36,14 +36,27 @@ export default async function handler(req, res) {
       return;
     }
 
+    // aviationstack labels departure/arrival "scheduled"/"estimated" times
+    // with a "+00:00" (UTC) suffix, but the value is actually the airport's
+    // LOCAL time, not real UTC — a known quirk of their API. Left as-is, the
+    // browser parses these as true UTC and every flight ends up looking
+    // ~12-13 hours away from "now" (NZ's real UTC offset), which silently
+    // breaks any near-term time-window filtering on the frontend. Stripping
+    // the offset makes the browser treat the string as local time instead,
+    // which correctly matches the device's clock for users in NZ.
+    function stripFakeUtcOffset(iso) {
+      if (!iso) return iso;
+      return iso.replace(/(?:Z|[+-]\d{2}:?\d{2})$/, "");
+    }
+
     // Normalise to the shape the frontend expects (see mockFlights() in
     // main.tsx for the exact contract): flightNumber, route, scheduledTime,
     // estimatedTime, status, gate, direction.
     const flights = (data.data || []).map(f => {
       const leg = direction === "departures" ? f.departure : f.arrival;
       const otherLeg = direction === "departures" ? f.arrival : f.departure;
-      const scheduled = leg?.scheduled || null;
-      const estimated = leg?.estimated || leg?.actual || scheduled;
+      const scheduled = stripFakeUtcOffset(leg?.scheduled || null);
+      const estimated = stripFakeUtcOffset(leg?.estimated || leg?.actual || leg?.scheduled || null);
       return {
         flightNumber: f.flight?.iata || f.flight?.icao || "—",
         route: otherLeg?.iata || otherLeg?.icao || "—",
