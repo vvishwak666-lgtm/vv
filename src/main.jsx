@@ -2321,8 +2321,6 @@ function App(){
 
         canonicalValue:parsed.display,
         editableValue:"0000-0000",
-        amShift:"0000-0000",
-        pmShift:"0000-0000",
         amType:"RT",
         pmType:"RT",
         originalValue:parsed.display,
@@ -2372,15 +2370,15 @@ function App(){
     setEntries(old=>{
       let changed=false;
       const next=old.map(e=>{
-        if(
-          e.amShift===undefined || e.pmShift===undefined ||
-          e.amType===undefined || e.pmType===undefined
-        ){
+        // Only backfill amType/pmType (safe, lossless defaults). amShift/pmShift
+        // are deliberately left undefined until deriveAmPmSeed derives a real
+        // value from the OCR'd time or the user explicitly edits a shift —
+        // stamping them to "0000-0000" here silently discards the imported
+        // time on every reload.
+        if(e.amType===undefined || e.pmType===undefined){
           changed=true;
           return {
             ...e,
-            amShift:e.amShift ?? "0000-0000",
-            pmShift:e.pmShift ?? "0000-0000",
             amType:e.amType ?? "RT",
             pmType:e.pmType ?? "RT"
           };
