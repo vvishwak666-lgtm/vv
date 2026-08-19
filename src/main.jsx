@@ -3004,6 +3004,32 @@ function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on"
   // 1630-0000 = 7.5h
   // 1700-0200 = 9.0h
   // 1630-2030 = 4.0h
+// When an entry hasn't been explicitly split into AM/PM yet — which is the
+// normal state for most single-shift OCR imports like "1400-2300" — edit
+// mode used to default BOTH periods to 0000-0000, silently throwing away
+// the actual time that was successfully read off the roster photo. This
+// recovers that value from wherever it's actually stored (editableValue,
+// canonicalValue, display, or the raw OCR'd e.time) and seeds the correct
+// period with it — AM if the shift starts before noon, otherwise PM — so
+// the person only has to confirm or nudge the time rather than re-enter an
+// entire shift from a blank 00:00-00:00.
+function deriveAmPmSeed(e){
+  if(e?.amShift!==undefined || e?.pmShift!==undefined){
+    return {am:e.amShift ?? "0000-0000", pm:e.pmShift ?? "0000-0000"};
+  }
+  const candidates=[e?.editableValue, e?.canonicalValue, e?.display, e?.rawCellText, e?.time].filter(Boolean);
+  for(const raw of candidates){
+    const parsed=airport24HourDuration(raw);
+    if(parsed.valid && parsed.hours>0){
+      const {start}=splitAirportRange(raw);
+      const startHour=Number(String(start||"").split(":")[0]);
+      const isAm=Number.isFinite(startHour) ? startHour<12 : true;
+      return isAm ? {am:parsed.time,pm:"0000-0000"} : {am:"0000-0000",pm:parsed.time};
+    }
+  }
+  return {am:"0000-0000",pm:"0000-0000"};
+}
+
 function effectiveEntryHours(e){
   if(e?.amShift!==undefined || e?.pmShift!==undefined){
     const am=airport24HourDuration(e?.amShift ?? "0000-0000");
@@ -3189,10 +3215,14 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
 
     if(onEdit){
       // Editable rows always expose AM + PM, even if currently blank/RDO,
-      // so the admin can fill in a shift that wasn't there before.
-      const am=e.amShift ?? "0000-0000";
-      const pm=e.pmShift ?? "0000-0000";
-      const {amHours,pmHours,amPay,pmPay}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+      // so the admin can fill in a shift that wasn't there before. If the
+      // entry hasn't been explicitly split yet, deriveAmPmSeed recovers the
+      // real OCR'd time (e.g. "1400-2300") instead of showing 00:00-00:00.
+      const seed=deriveAmPmSeed(e);
+      const am=seed.am;
+      const pm=seed.pm;
+      const seededEntry=(e.amShift!==undefined || e.pmShift!==undefined) ? e : {...e,amShift:am,pmShift:pm};
+      const {amHours,pmHours,amPay,pmPay}=dayShiftPays(seededEntry,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
       shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay});
       shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay});
       continue;
