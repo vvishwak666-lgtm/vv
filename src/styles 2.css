@@ -1,0 +1,1494 @@
+*{box-sizing:border-box}html,body,#root{margin:0;min-height:100%;background:#0b0f14;color:#f3efe5;font-family:Inter,system-ui,-apple-system,sans-serif}button,input{font:inherit}.shell{max-width:520px;margin:auto;min-height:100vh;padding:20px 16px 92px;background:radial-gradient(circle at 50% -10%,#171b21,#0b0f14 45%)}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.vv{font-family:Georgia,serif;font-size:38px;letter-spacing:2px;color:#e5c48a}.sub{font-size:9px;letter-spacing:.2em;color:#a7a29a}.ghost{border:1px solid #2b3139;background:#13181f;color:#b3bac2;border-radius:11px;padding:9px}.hero{background:linear-gradient(135deg,#2a2418,#15191f);border:1px solid #3a3428;border-radius:14px;padding:18px;margin-bottom:10px}.hero small{color:#b8a983;font-size:9px;letter-spacing:.08em}.hero h2{font-size:14px;margin:9px 0 3px}.hero h1{font-size:26px;margin:0 0 5px}.hero p{font-size:11px;color:#aab0b6}.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0}.stats.three{grid-template-columns:repeat(3,1fr)}.stat,.panel{background:#13181f;border:1px solid #252c34;border-radius:11px}.stat{padding:13px}.stat small{display:block;color:#86cfc0;font-size:9px}.stat b{display:block;font-size:24px;margin-top:5px}.panel{padding:13px;margin-top:10px}.sectionTitle{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}.sectionTitle b{font-size:11px;letter-spacing:.06em}.sectionTitle span{font-size:9px;color:#7f8790}.list{display:flex;flex-direction:column}.item{display:flex;justify-content:space-between;align-items:center;padding:11px 2px;border-top:1px solid #242a31}.item:first-child{border-top:0}.item div{display:flex;flex-direction:column;gap:3px}.item small{font-size:9px;color:#a7adb4}.item b{font-size:13px}.item span{font-size:9px;color:#78808a}.item strong{font-size:13px;color:#e6c27a}.item strong small{display:inline;color:#777f88}.empty{text-align:center;color:#6f7780;padding:26px;font-size:11px}.bottom{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(520px,100%);display:grid;grid-template-columns:repeat(5,1fr);background:rgba(11,15,20,.97);border-top:1px solid #252c34;padding:8px 4px calc(8px + env(safe-area-inset-bottom));z-index:30}.bottom button{background:none;border:0;color:#717984;display:flex;flex-direction:column;gap:3px;align-items:center;font-size:8px}.bottom svg{width:18px}.bottom .on{color:#e5b653}.monthHead{display:flex;justify-content:space-between;align-items:center}.monthHead h2{font-size:18px}.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}.dow{text-align:center;font-size:8px;color:#777f88;padding:6px 0}.cal button{aspect-ratio:1;border:0;background:#12171d;color:#e5e7ea;border-radius:50%;position:relative}.cal button.selected{background:#e2bd79;color:#111}.cal button span{position:absolute;width:5px;height:5px;border-radius:50%;background:#41ba79;bottom:4px;left:50%;transform:translateX(-50%)}.cal button span.off{background:#666}.search{display:flex;align-items:center;gap:8px;border:1px solid #2a3139;background:#12171d;border-radius:11px;padding:11px}.search input{flex:1;background:none;border:0;outline:0;color:#fff}.search button{border:0;background:none;color:#777}.menu h3{font-size:9px;color:#777f88;letter-spacing:.08em}.menu>button{width:100%;display:flex;gap:11px;align-items:center;background:#171d24;border:0;border-top:1px solid #252c34;color:#eef0f2;padding:13px;text-align:left}.menu>button:first-of-type{border-top:0}.menu>button svg{width:18px}.menu>button span{display:flex;flex-direction:column}.menu>button small{font-size:9px;color:#777f88;margin-top:2px}.menu .danger{color:#e26868}.setting{display:flex;justify-content:space-between;align-items:center;color:#b8bec5;font-size:11px;padding:12px 0}.setting input{width:70px;background:#0b0f14;border:1px solid #2a3139;color:#fff;border-radius:7px;padding:7px}.toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:90;width:min(480px,calc(100% - 24px));background:#2c1f21;border:1px solid #653c42;color:#f0a6ad;border-radius:10px;padding:10px;display:flex;gap:8px;align-items:center;font-size:11px}.toast button{margin-left:auto;border:0;background:none;color:#f0a6ad}.modalWrap{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:70;display:flex;align-items:center;justify-content:center;padding:14px}.modal{width:min(920px,100%);max-height:94vh;overflow:auto;background:#151b22;border:1px solid #3a424c;border-radius:16px;padding:16px}.modal.compact{max-width:350px;text-align:center}.modalHead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.modalHead h2{margin:0 0 3px;font-size:18px}.modalHead p{margin:0;color:#8b939d;font-size:10px;line-height:1.45}.namePicker{position:relative;margin-top:14px;background:#080b0f;border:1px solid #303843;border-radius:12px;overflow:hidden;touch-action:none;cursor:crosshair;user-select:none}.namePicker img{display:block;width:100%;height:auto;max-height:68vh;object-fit:contain;pointer-events:none}.nameBox{position:absolute;border:2px solid #ffd25a;background:rgba(255,194,49,.22);box-shadow:0 0 12px rgba(255,194,49,.65);border-radius:3px;z-index:3;pointer-events:none}.nameBox span{position:absolute;left:0;top:-22px;background:#ffd25a;color:#111;border-radius:5px;padding:3px 6px;font-size:9px;font-weight:800;white-space:nowrap}.rowBand{position:absolute;left:0;right:0;background:rgba(255,185,34,.12);border-top:1px solid rgba(255,199,67,.75);border-bottom:1px solid rgba(255,199,67,.75);z-index:2;pointer-events:none}.rowBand span{position:absolute;right:7px;top:50%;transform:translateY(-50%);background:rgba(10,13,17,.9);color:#ffd25a;border:1px solid rgba(255,210,90,.45);border-radius:5px;padding:3px 6px;font-size:8px;font-weight:700}.selectorTips{display:flex;flex-direction:column;gap:4px;margin-top:10px;padding:10px 12px;background:#10151b;border:1px solid #28303a;border-radius:9px}.selectorTips b{font-size:10px;color:#e6c27a}.selectorTips span{font-size:9px;line-height:1.4;color:#8b939d}.selectorActions{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:10px}.primary,.secondary{border-radius:10px;padding:12px;font-weight:750;display:flex;align-items:center;justify-content:center;gap:7px}.primary{border:0;background:#f0b63d;color:#111}.secondary{border:1px solid #46505c;background:#151b22;color:#e6e8eb}.primary:disabled{opacity:.4;cursor:not-allowed}.reviewMeta{display:grid;grid-template-columns:1fr 1.3fr;gap:9px;margin:13px 0}.reviewMeta label{font-size:9px;color:#aeb4bb}.reviewMeta input{display:block;width:100%;margin-top:5px;background:#0d1217;border:1px solid #303842;color:#fff;border-radius:8px;padding:9px}.preciseReview{border:1px solid #2b323b;border-radius:10px;overflow:hidden}.preciseRow{display:grid;grid-template-columns:92px 104px minmax(160px,1fr) 52px;gap:8px;align-items:center;padding:7px 8px;border-top:1px solid #252c34}.preciseRow:first-child{border-top:0}.preciseRow.bad{background:rgba(255,67,67,.08);outline:1px solid rgba(255,82,82,.35);outline-offset:-1px}.dateCol{font-size:10px;color:#a9b0b8}.cellThumb{height:42px;border:1px solid #3a424d;border-radius:7px;background:#fff;overflow:hidden}.cellThumb img{width:100%;height:100%;object-fit:contain}.editCol{display:flex;flex-direction:column;gap:2px}.editCol input{width:100%;background:#0b1015;border:1px solid #39424d;border-radius:7px;color:#f2f3f5;padding:8px;font-weight:750;text-transform:uppercase}.bad .editCol input{border-color:#ff5757;background:rgba(255,70,70,.05)}.editCol small{font-size:8px;color:#ff7777}.hoursCol{text-align:right;color:#e6c27a;font-size:10px;font-weight:700}.importFooter{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}.importFooter .primary{min-width:210px}.ready{color:#75d3a0;font-size:10px}.notReady{color:#ff7777;font-size:10px}.spinner{width:28px;height:28px;border:3px solid #39414b;border-top-color:#e6b954;border-radius:50%;margin:0 auto;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:700px){.shell{padding-top:16px}.selectorActions,.reviewMeta{grid-template-columns:1fr}.preciseRow{grid-template-columns:72px 74px minmax(100px,1fr) 38px;gap:5px;padding:6px}.cellThumb{height:38px}.editCol input{padding:6px;font-size:10px}.importFooter{flex-direction:column;align-items:stretch}.importFooter .primary{min-width:0}.modal{padding:12px}.namePicker img{max-height:55vh}}
+
+.autoTableModal{max-width:980px}
+.autoLayout{display:grid;grid-template-columns:1.25fr .75fr;gap:14px;margin-top:14px}
+.autoPreview{position:relative;background:#090d12;border:1px solid #303844;border-radius:12px;overflow:hidden;min-height:260px;display:flex;align-items:center;justify-content:center}
+.autoPreview img{display:block;width:100%;height:auto;max-height:55vh;object-fit:contain}
+.detectedBadge{position:absolute;left:10px;bottom:10px;display:flex;align-items:center;gap:6px;background:rgba(9,13,18,.9);border:1px solid #44505c;color:#e7c66f;border-radius:8px;padding:7px 9px;font-size:10px;font-weight:700}
+.autoControls{display:flex;flex-direction:column;gap:10px}
+.autoControls label{font-size:10px;color:#adb4bc}
+.autoControls select,.autoControls input{width:100%;margin-top:5px;background:#0c1117;border:1px solid #37414c;border-radius:9px;color:#fff;padding:10px}
+.workingHoursCard{display:flex;align-items:center;gap:10px;background:#121820;border:1px solid #303a45;border-radius:10px;padding:13px}
+.workingHoursCard svg{color:#e5ba58}
+.workingHoursCard span{display:flex;flex-direction:column}.workingHoursCard small{font-size:8px;color:#818a94}.workingHoursCard b{font-size:22px;margin-top:2px}
+.selectedRowTitle{display:flex;justify-content:space-between;align-items:center;margin:14px 0 7px;padding:0 2px}.selectedRowTitle b{font-size:14px}.selectedRowTitle span{font-size:9px;color:#87909a}
+@media(max-width:720px){.autoLayout{grid-template-columns:1fr}.autoPreview{min-height:180px}.autoPreview img{max-height:38vh}}
+
+.autoControls select{font-size:14px;font-weight:700}
+.detectedBadge{box-shadow:0 3px 16px rgba(0,0,0,.35)}
+
+.precisionNote{font-size:9px;color:#8fa0ad}
+
+.preciseRow.bad .cellThumb{outline:2px solid rgba(255,88,88,.75);outline-offset:-2px}
+.preciseRow.bad .editCol input::placeholder{color:#c98080}
+
+.preciseRow.bad .cellThumb{box-shadow:0 0 0 2px rgba(255,82,82,.55) inset}
+
+.detectedBadge{max-width:calc(100% - 20px)}
+
+/* Numeric-only fallback added for final unresolved shift cells. */
+
+.rosterStatus{font-size:11px;font-weight:800;color:#dcb458;text-align:right}
+.preciseRow .editCol input{font-variant-numeric:tabular-nums}
+
+.preciseRow.bad{background:transparent!important}
+.preciseRow.bad .editCol input{border-color:#37414c!important;background:#0c1117!important}
+.preciseRow.bad .cellThumb{outline:none!important;box-shadow:none!important}
+
+/* Exact source-cell mode: selected employee view shows original roster cells */
+.exactSourceReview{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  margin-top:10px;
+}
+.exactSourceRow{
+  display:grid;
+  grid-template-columns:130px minmax(190px,1fr);
+  align-items:center;
+  gap:12px;
+  padding:9px 10px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+}
+.exactDate{
+  font-size:13px;
+  font-weight:800;
+  white-space:nowrap;
+}
+.exactRosterCell{
+  min-height:54px;
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.16);
+  border-radius:9px;
+  background:#fff;
+}
+.exactRosterCell img{
+  width:100%;
+  height:64px;
+  display:block;
+  object-fit:contain;
+  object-position:left center;
+}
+.exactModeFooter .ready{color:#e8bf63}
+@media(max-width:620px){
+  .exactSourceRow{grid-template-columns:92px 1fr;gap:8px;padding:7px}
+  .exactDate{font-size:11px}
+  .exactRosterCell{min-height:48px}
+  .exactRosterCell img{height:56px}
+}
+
+/* Imported roster rows keep the original source-cell image */
+.rosterImported{
+  display:grid !important;
+  grid-template-columns:minmax(105px,145px) minmax(170px,1fr) 58px;
+  align-items:center;
+  gap:10px;
+}
+.rosterDateBlock{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+.rosterDateBlock span{
+  font-size:10px;
+  opacity:.62;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.savedSourceCell{
+  min-height:40px;
+  border-radius:8px;
+  background:#fff;
+  overflow:hidden;
+  display:flex;
+  align-items:center;
+}
+.savedSourceCell img{
+  display:block;
+  width:100%;
+  height:44px;
+  object-fit:contain;
+  object-position:left center;
+}
+.rosterTextFallback{
+  font-size:16px;
+}
+@media(max-width:620px){
+  .rosterImported{
+    grid-template-columns:88px minmax(130px,1fr) 44px;
+    gap:7px;
+  }
+  .savedSourceCell img{height:40px}
+}
+
+/* Source-of-truth data layer update: visual cells unchanged. */
+
+/* Dashboard upcoming shift uses the same exact source-cell image */
+.heroSourceCell{
+  margin:10px 0 8px;
+  max-width:360px;
+  min-height:56px;
+  border-radius:10px;
+  overflow:hidden;
+  background:#fff;
+  display:flex;
+  align-items:center;
+}
+.heroSourceCell img{
+  width:100%;
+  height:64px;
+  object-fit:contain;
+  object-position:left center;
+  display:block;
+}
+
+/* v3: hour calculations use only displayed HHMM-HHMM roster value. */
+
+/* Canonical cell-value pipeline: exact source image display remains unchanged. */
+
+/* Missing-hours display fallback uses canonical roster value only. */
+
+/* Duration parser fix: supports early starts and midnight endings. */
+
+/* Preserve whole-row OCR values when exact-cell OCR misses. */
+
+/* Airport 24-hour shift calculation enforced globally. */
+
+/* Tight source-cell OCR: blank cell area and borders are excluded before text recognition. */
+
+/* My Roster total-hours summary */
+.rosterSummary{
+  margin-bottom:14px;
+}
+
+/* Editable daily airport shift values */
+.rosterEditable{
+  grid-template-columns:minmax(100px,135px) minmax(150px,220px) minmax(180px,1fr) 72px !important;
+}
+.editableShiftWrap{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.editableShiftWrap label,
+.dailyHours span{
+  font-size:9px;
+  letter-spacing:.08em;
+  opacity:.6;
+  font-weight:800;
+}
+.editableShift{
+  width:100%;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 11px;
+  font:inherit;
+  font-weight:800;
+  text-transform:uppercase;
+}
+.editableShift:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.timeRangeInputs{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.editableShiftTime{
+  flex:1;
+  min-width:0;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 8px;
+  font:inherit;
+  font-weight:800;
+  color-scheme:dark;
+}
+.editableShiftTime:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.time24Group{
+  display:flex;
+  align-items:center;
+  gap:3px;
+  flex:1;
+  min-width:0;
+}
+.time24Select{
+  flex:1;
+  min-width:0;
+  min-height:42px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  color:inherit;
+  padding:9px 4px;
+  font:inherit;
+  font-weight:800;
+  text-align:center;
+  text-align-last:center;
+}
+.time24Select:focus{
+  outline:none;
+  border-color:#f5c33d;
+  box-shadow:0 0 0 2px rgba(245,195,61,.15);
+}
+.time24Colon{
+  opacity:.5;
+  font-weight:700;
+  flex-shrink:0;
+}
+.timeRangeDash{
+  opacity:.5;
+  font-weight:700;
+  flex-shrink:0;
+}
+.editableShiftWrap small{
+  font-size:9px;
+  opacity:.52;
+}
+.dailyHours{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:4px;
+}
+.dailyHours strong{
+  color:#f5c33d;
+  white-space:nowrap;
+}
+.editorHint{
+  display:block;
+  margin-top:4px;
+  opacity:.62;
+  font-size:10px;
+  font-weight:500;
+}
+@media(max-width:760px){
+  .rosterEditable{
+    grid-template-columns:95px minmax(120px,1fr) 64px !important;
+  }
+  .rosterEditable .savedSourceCell{
+    grid-column:2/3;
+  }
+  .rosterEditable .editableShiftWrap{
+    grid-column:2/3;
+  }
+  .rosterEditable .dailyHours{
+    grid-column:3/4;
+    grid-row:1/3;
+    align-self:center;
+  }
+}
+
+/* Grand total + edit-generated overtime */
+.calendarTotals{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+.dailyOvertime{
+  color:#f5c33d;
+  font-size:9px;
+  font-weight:800;
+  white-space:nowrap;
+}
+
+/* Calendar summary now mirrors My Roster exactly */
+.calendarTotals{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+
+
+
+/* AM + PM roster rows — strict contained layout */
+.rosterEditable.rosterDualShift{
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  display:grid !important;
+  grid-template-columns:90px 125px minmax(0,1fr) 70px !important;
+  gap:8px !important;
+  align-items:center !important;
+  overflow:hidden !important;
+}
+
+.rosterEditable.rosterDualShift > *{
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+
+.rosterEditable.rosterDualShift .rosterDateBlock{
+  width:90px !important;
+  overflow:hidden;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell{
+  width:125px !important;
+  max-width:125px !important;
+  overflow:hidden !important;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell img{
+  display:block !important;
+  width:125px !important;
+  max-width:125px !important;
+  height:auto !important;
+  object-fit:contain !important;
+}
+
+.dualShiftEditor{
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:6px !important;
+  overflow:hidden !important;
+}
+
+.dualShiftEditor .editableShiftWrap{
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+}
+
+.dualShiftEditor .editableShift{
+  display:block !important;
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  font-size:14px !important;
+  padding:8px 10px !important;
+}
+
+.rosterEditable.rosterDualShift .dailyHours{
+  width:70px !important;
+  min-width:70px !important;
+  max-width:70px !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-end !important;
+  justify-content:center !important;
+  text-align:right !important;
+}
+
+.rosterEditable.rosterDualShift .dailyHours span{
+  font-size:8px !important;
+  line-height:1.1 !important;
+  white-space:normal !important;
+}
+
+.rosterEditable.rosterDualShift .dailyHours strong{
+  font-size:14px !important;
+  white-space:nowrap !important;
+}
+
+.panel,
+.list,
+.item,
+main,
+.shell{
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+
+.list,
+.panel{
+  overflow-x:hidden !important;
+}
+
+/* Keep whole app slightly wider on desktop so four columns fit comfortably */
+.shell{
+  width:min(100%, 860px) !important;
+}
+
+@media(max-width:760px){
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:82px 105px minmax(0,1fr) 62px !important;
+    gap:6px !important;
+  }
+
+  .rosterEditable.rosterDualShift .rosterDateBlock{
+    width:82px !important;
+  }
+
+  .rosterEditable.rosterDualShift .savedSourceCell,
+  .rosterEditable.rosterDualShift .savedSourceCell img{
+    width:105px !important;
+    max-width:105px !important;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    width:62px !important;
+    min-width:62px !important;
+    max-width:62px !important;
+  }
+}
+
+@media(max-width:560px){
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:76px minmax(0,1fr) 58px !important;
+    grid-template-areas:
+      "date source hours"
+      "date editor hours" !important;
+    align-items:start !important;
+  }
+
+  .rosterEditable.rosterDualShift .rosterDateBlock{
+    grid-area:date !important;
+    width:76px !important;
+  }
+
+  .rosterEditable.rosterDualShift .savedSourceCell,
+  .rosterEditable.rosterDualShift .rosterTextFallback{
+    grid-area:source !important;
+    width:100% !important;
+    max-width:100% !important;
+  }
+
+  .rosterEditable.rosterDualShift .savedSourceCell img{
+    width:100% !important;
+    max-width:100% !important;
+  }
+
+  .rosterEditable.rosterDualShift .dualShiftEditor{
+    grid-area:editor !important;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    grid-area:hours !important;
+    width:58px !important;
+    min-width:58px !important;
+    max-width:58px !important;
+    align-self:center !important;
+  }
+}
+
+/* RT / OT selector for each AM and PM shift */
+.shiftLabelRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  width:100%;
+  min-width:0;
+}
+
+.shiftLabelRow label{
+  margin:0;
+}
+
+.shiftTypeSelect{
+  flex:0 0 auto;
+  width:58px;
+  min-width:58px;
+  height:28px;
+  box-sizing:border-box;
+  border:1px solid rgba(255,255,255,.22);
+  border-radius:7px;
+  background:rgba(255,255,255,.05);
+  color:inherit;
+  padding:2px 5px;
+  font:inherit;
+  font-size:12px;
+  font-weight:900;
+  text-align:center;
+}
+
+.shiftTypeSelect.isOT{
+  border-color:#f5c33d;
+  box-shadow:0 0 0 1px rgba(245,195,61,.15);
+}
+
+.dailyRT{
+  font-size:9px;
+  font-weight:800;
+  opacity:.58;
+}
+
+.dailyOvertime{
+  color:#f5c33d;
+  font-size:9px;
+  font-weight:900;
+  white-space:nowrap;
+}
+
+/* Read-only Calendar / Dashboard AM + PM display */
+.readonlyDualShift{
+  min-width:0;
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+}
+
+.readonlyShiftLine{
+  width:100%;
+  min-width:0;
+  display:grid;
+  grid-template-columns:34px minmax(0,1fr) 38px;
+  gap:8px;
+  align-items:center;
+  border:1px solid rgba(255,255,255,.14);
+  border-radius:8px;
+  padding:8px 10px;
+  box-sizing:border-box;
+  background:rgba(255,255,255,.025);
+}
+
+.readonlyShiftLine span{
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.08em;
+  color:#f5c33d;
+}
+
+.readonlyShiftLine strong{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:15px;
+}
+
+.readonlyShiftLine em{
+  font-style:normal;
+  font-size:10px;
+  font-weight:900;
+  text-align:right;
+  opacity:.72;
+}
+
+.readonlySource{
+  width:100% !important;
+  max-width:100% !important;
+}
+
+.readonlySource img{
+  width:100% !important;
+  max-width:100% !important;
+  height:auto !important;
+}
+
+@media(max-width:560px){
+  .readonlyShiftLine{
+    grid-template-columns:30px minmax(0,1fr) 34px;
+    padding:7px 8px;
+    gap:6px;
+  }
+}
+
+/* Compact source-cell image on Dashboard / This Week / Calendar read-only rows */
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.readonlySource{
+  width:150px !important;
+  max-width:150px !important;
+  min-width:0 !important;
+  height:72px !important;
+  overflow:hidden !important;
+  border-radius:8px !important;
+  justify-self:start !important;
+}
+
+.rosterImported:not(.rosterEditable) .savedSourceCell img,
+.readonlySource img{
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  height:72px !important;
+  object-fit:contain !important;
+  object-position:left center !important;
+}
+
+/* Keep read-only weekly row compact and aligned */
+.rosterImported:not(.rosterEditable){
+  min-height:86px !important;
+  align-items:center !important;
+}
+
+.rosterImported:not(.rosterEditable) .dailyHours{
+  align-self:center !important;
+}
+
+@media(max-width:600px){
+  .rosterImported:not(.rosterEditable) .savedSourceCell,
+  .readonlySource{
+    width:118px !important;
+    max-width:118px !important;
+    height:60px !important;
+  }
+
+  .rosterImported:not(.rosterEditable) .savedSourceCell img,
+  .readonlySource img{
+    height:60px !important;
+  }
+}
+
+/* FINAL COMPACT ROSTER IMAGE OVERRIDE
+   Dashboard "This Week" and Calendar selected-day cards only.
+   Do not affect My Roster editor. */
+.thisWeek img,
+.weekRoster img,
+.weekRow img,
+.calendarDayDetail img,
+.calendarSelected img,
+.dayDetail img,
+.rosterImported:not(.rosterEditable) img {
+  width: 132px !important;
+  max-width: 132px !important;
+  height: 58px !important;
+  max-height: 58px !important;
+  min-height: 0 !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  display: block !important;
+  border-radius: 7px !important;
+}
+
+/* Prevent the image wrapper itself from stretching to the old large dimensions */
+.thisWeek .savedSourceCell,
+.weekRoster .savedSourceCell,
+.weekRow .savedSourceCell,
+.calendarDayDetail .savedSourceCell,
+.calendarSelected .savedSourceCell,
+.dayDetail .savedSourceCell,
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.rosterImported:not(.rosterEditable) .readonlySource {
+  width: 132px !important;
+  max-width: 132px !important;
+  min-width: 132px !important;
+  height: 58px !important;
+  min-height: 58px !important;
+  max-height: 58px !important;
+  overflow: hidden !important;
+  flex: 0 0 132px !important;
+  padding: 0 !important;
+}
+
+/* If the imported crop is rendered as a background instead of IMG */
+.rosterImported:not(.rosterEditable) .savedSourceCell {
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+}
+
+/* Keep read-only rows compact */
+.rosterImported:not(.rosterEditable) {
+  min-height: 76px !important;
+}
+
+/* My Roster source crop remains usable, but stop accidental global image rules */
+.rosterEditable .savedSourceCell img {
+  max-width: 100% !important;
+}
+
+@media (max-width: 600px) {
+  .thisWeek img,
+  .weekRoster img,
+  .weekRow img,
+  .calendarDayDetail img,
+  .calendarSelected img,
+  .dayDetail img,
+  .rosterImported:not(.rosterEditable) img {
+    width: 108px !important;
+    max-width: 108px !important;
+    height: 50px !important;
+    max-height: 50px !important;
+  }
+
+  .thisWeek .savedSourceCell,
+  .weekRoster .savedSourceCell,
+  .weekRow .savedSourceCell,
+  .calendarDayDetail .savedSourceCell,
+  .calendarSelected .savedSourceCell,
+  .dayDetail .savedSourceCell,
+  .rosterImported:not(.rosterEditable) .savedSourceCell,
+  .rosterImported:not(.rosterEditable) .readonlySource {
+    width: 108px !important;
+    max-width: 108px !important;
+    min-width: 108px !important;
+    height: 50px !important;
+    min-height: 50px !important;
+    max-height: 50px !important;
+    flex-basis: 108px !important;
+  }
+}
+
+/* =========================================================
+   VV DUTY ROSTER — MOBILE-FIRST REFERENCE DESIGN
+   Keeps existing logic; updates visual hierarchy/layout only.
+   ========================================================= */
+
+:root{
+  --vv-bg:#050607;
+  --vv-panel:#0d1115;
+  --vv-panel-2:#11171c;
+  --vv-line:rgba(255,255,255,.08);
+  --vv-text:#f7f3e8;
+  --vv-muted:#8c959d;
+  --vv-gold:#f1bd4b;
+  --vv-green:#55d889;
+  --vv-orange:#f08a42;
+  --vv-red:#ef5b5b;
+}
+
+html,body,#root{
+  background:var(--vv-bg) !important;
+  color:var(--vv-text) !important;
+}
+
+body{
+  margin:0;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif;
+}
+
+.shell{
+  width:min(100%, 430px) !important;
+  max-width:430px !important;
+  min-height:100vh;
+  margin:0 auto !important;
+  padding:14px 14px 92px !important;
+  box-sizing:border-box !important;
+  background:
+    radial-gradient(circle at top,rgba(241,189,75,.05),transparent 22%),
+    var(--vv-bg) !important;
+}
+
+main{
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+
+/* Logo / top area */
+.brand,
+.logo,
+header{
+  max-width:100% !important;
+}
+
+.brand{
+  margin:2px 0 16px !important;
+}
+
+.brandSub{
+  display:block;
+  margin-top:3px;
+  font-size:8px;
+  letter-spacing:.18em;
+  color:var(--vv-muted);
+  text-transform:uppercase;
+}
+
+/* Generic panels */
+.panel{
+  background:linear-gradient(180deg,var(--vv-panel),#0a0e12) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:14px !important;
+  box-shadow:none !important;
+  overflow:hidden !important;
+  margin-bottom:12px !important;
+}
+
+.sectionTitle{
+  padding:12px 12px 8px !important;
+  display:flex !important;
+  align-items:flex-start !important;
+  justify-content:space-between !important;
+  gap:10px !important;
+}
+
+.sectionTitle b{
+  font-size:13px !important;
+  letter-spacing:.01em;
+}
+
+.sectionTitle span,
+.sectionTitle small,
+.editorHint{
+  color:var(--vv-muted) !important;
+  font-size:9px !important;
+}
+
+/* Summary cards */
+.stats{
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:8px !important;
+  margin:10px 0 12px !important;
+}
+
+.stats.three{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+
+.stat,
+.stats > div{
+  background:var(--vv-panel-2) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:12px !important;
+  padding:12px !important;
+  min-height:64px;
+  box-sizing:border-box;
+}
+
+.stat label,
+.stats label{
+  color:var(--vv-muted) !important;
+  font-size:8px !important;
+  letter-spacing:.06em !important;
+  text-transform:uppercase;
+}
+
+.stat strong,
+.stats strong{
+  font-size:22px !important;
+  line-height:1 !important;
+}
+
+/* Upcoming shift card */
+.hero,
+.upcoming,
+.upcomingCard{
+  background:
+    linear-gradient(135deg,rgba(241,189,75,.16),rgba(241,189,75,.05)),
+    var(--vv-panel) !important;
+  border:1px solid rgba(241,189,75,.18) !important;
+  border-radius:14px !important;
+  padding:14px !important;
+  box-shadow:none !important;
+}
+
+/* Lists / rows */
+.list{
+  display:flex !important;
+  flex-direction:column !important;
+  gap:0 !important;
+  overflow:visible !important;
+}
+
+.item{
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  border-bottom:1px solid var(--vv-line) !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  padding:10px 12px !important;
+  margin:0 !important;
+  box-shadow:none !important;
+}
+
+.item:last-child{
+  border-bottom:0 !important;
+}
+
+.rosterDateBlock small{
+  display:block !important;
+  color:var(--vv-text) !important;
+  font-size:10px !important;
+  font-weight:800 !important;
+}
+
+.rosterDateBlock span{
+  display:block !important;
+  color:var(--vv-muted) !important;
+  font-size:9px !important;
+  margin-top:2px !important;
+}
+
+/* Compact read-only shift view */
+.readonlyDualShift{
+  gap:5px !important;
+}
+
+.readonlyShiftLine{
+  border:0 !important;
+  background:transparent !important;
+  border-radius:0 !important;
+  padding:2px 0 !important;
+  grid-template-columns:26px minmax(0,1fr) 30px !important;
+  gap:6px !important;
+}
+
+.readonlyShiftLine span{
+  font-size:8px !important;
+  color:var(--vv-gold) !important;
+}
+
+.readonlyShiftLine strong{
+  font-size:12px !important;
+}
+
+.readonlyShiftLine em{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+}
+
+/* Original OCR crop compact like attachment thumbnail */
+.rosterImported:not(.rosterEditable) .savedSourceCell,
+.readonlySource{
+  width:112px !important;
+  max-width:112px !important;
+  min-width:112px !important;
+  height:48px !important;
+  min-height:48px !important;
+  max-height:48px !important;
+  border-radius:8px !important;
+  background:#f2f0e8 !important;
+  overflow:hidden !important;
+}
+
+.rosterImported:not(.rosterEditable) .savedSourceCell img,
+.readonlySource img{
+  width:112px !important;
+  max-width:112px !important;
+  height:48px !important;
+  max-height:48px !important;
+  object-fit:contain !important;
+}
+
+/* My Roster editor becomes stacked, phone-native */
+.rosterEditable.rosterDualShift{
+  display:grid !important;
+  grid-template-columns:76px minmax(0,1fr) 54px !important;
+  grid-template-areas:
+    "date source hours"
+    "date editor hours" !important;
+  gap:8px !important;
+  align-items:start !important;
+  padding:10px 12px !important;
+  overflow:hidden !important;
+}
+
+.rosterEditable.rosterDualShift .rosterDateBlock{
+  grid-area:date !important;
+  width:auto !important;
+  min-width:0 !important;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell,
+.rosterEditable.rosterDualShift .rosterTextFallback{
+  grid-area:source !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  height:44px !important;
+  overflow:hidden !important;
+  border-radius:8px !important;
+}
+
+.rosterEditable.rosterDualShift .savedSourceCell img{
+  width:100% !important;
+  height:44px !important;
+  object-fit:contain !important;
+}
+
+.rosterEditable.rosterDualShift .dualShiftEditor{
+  grid-area:editor !important;
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:7px !important;
+  width:100% !important;
+  min-width:0 !important;
+}
+
+.editableShiftWrap{
+  gap:3px !important;
+}
+
+.shiftLabelRow{
+  min-height:22px !important;
+}
+
+.shiftLabelRow label{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+  letter-spacing:.07em !important;
+}
+
+.shiftTypeSelect{
+  width:48px !important;
+  min-width:48px !important;
+  height:24px !important;
+  border-radius:6px !important;
+  background:#0b0f13 !important;
+  color:var(--vv-text) !important;
+  font-size:10px !important;
+  border:1px solid var(--vv-line) !important;
+}
+
+.shiftTypeSelect.isOT{
+  color:var(--vv-orange) !important;
+  border-color:rgba(240,138,66,.35) !important;
+}
+
+.editableShift{
+  min-height:40px !important;
+  height:40px !important;
+  padding:8px 10px !important;
+  border-radius:8px !important;
+  background:#090d11 !important;
+  border:1px solid var(--vv-line) !important;
+  color:var(--vv-text) !important;
+  font-size:15px !important;
+  font-weight:800 !important;
+}
+
+.editableShift:focus{
+  border-color:rgba(241,189,75,.5) !important;
+  box-shadow:0 0 0 2px rgba(241,189,75,.08) !important;
+}
+
+.editableShiftWrap small{
+  font-size:8px !important;
+  color:var(--vv-muted) !important;
+}
+
+.rosterEditable.rosterDualShift .dailyHours{
+  grid-area:hours !important;
+  width:54px !important;
+  min-width:54px !important;
+  max-width:54px !important;
+  align-self:center !important;
+}
+
+.dailyHours span{
+  font-size:7px !important;
+  color:var(--vv-muted) !important;
+  letter-spacing:.04em !important;
+}
+
+.dailyHours strong{
+  font-size:13px !important;
+  color:var(--vv-gold) !important;
+}
+
+.dailyOvertime{
+  color:var(--vv-orange) !important;
+  font-size:8px !important;
+}
+
+.dailyRT{
+  color:var(--vv-muted) !important;
+  font-size:8px !important;
+}
+
+/* Calendar */
+.calendarHeader,
+.monthHead{
+  margin-bottom:8px !important;
+}
+
+.calendarGrid{
+  gap:6px !important;
+}
+
+.calendarGrid button,
+.dayButton,
+.calendarDay{
+  border-radius:50% !important;
+  aspect-ratio:1 !important;
+  background:#12171c !important;
+  border:0 !important;
+  color:var(--vv-text) !important;
+  font-size:12px !important;
+  box-shadow:none !important;
+}
+
+.calendarGrid button.selected,
+.dayButton.selected,
+.calendarDay.selected{
+  background:var(--vv-gold) !important;
+  color:#1a1307 !important;
+}
+
+.calendarGrid button.hasShift::after,
+.dayButton.hasShift::after,
+.calendarDay.hasShift::after{
+  background:var(--vv-green) !important;
+}
+
+/* Search / More */
+input,
+select,
+button{
+  font-family:inherit;
+}
+
+input[type="search"],
+.searchInput,
+select{
+  background:#0b0f13 !important;
+  border:1px solid var(--vv-line) !important;
+  color:var(--vv-text) !important;
+  border-radius:9px !important;
+}
+
+.moreCard,
+.settingsCard,
+.importCard,
+.exportCard{
+  background:var(--vv-panel) !important;
+  border:1px solid var(--vv-line) !important;
+  border-radius:12px !important;
+}
+
+/* Bottom navigation */
+nav,
+.bottomNav,
+.tabbar{
+  position:fixed !important;
+  left:50% !important;
+  bottom:0 !important;
+  transform:translateX(-50%) !important;
+  width:min(100%,430px) !important;
+  height:72px !important;
+  box-sizing:border-box !important;
+  padding:8px 14px 12px !important;
+  background:rgba(6,8,10,.96) !important;
+  backdrop-filter:blur(16px) !important;
+  -webkit-backdrop-filter:blur(16px) !important;
+  border-top:1px solid var(--vv-line) !important;
+  z-index:100 !important;
+}
+
+nav button,
+.bottomNav button,
+.tabbar button{
+  color:var(--vv-muted) !important;
+  background:transparent !important;
+  border:0 !important;
+  font-size:9px !important;
+}
+
+nav button.active,
+.bottomNav button.active,
+.tabbar button.active{
+  color:var(--vv-gold) !important;
+}
+
+/* Desktop preview should still look like a phone app, centered */
+@media(min-width:700px){
+  body{
+    background:#07090b !important;
+  }
+
+  .shell{
+    border-left:1px solid rgba(255,255,255,.03);
+    border-right:1px solid rgba(255,255,255,.03);
+  }
+}
+
+/* Small phone */
+@media(max-width:380px){
+  .shell{
+    padding-left:10px !important;
+    padding-right:10px !important;
+  }
+
+  .rosterEditable.rosterDualShift{
+    grid-template-columns:68px minmax(0,1fr) 48px !important;
+    padding-left:8px !important;
+    padding-right:8px !important;
+  }
+
+  .rosterEditable.rosterDualShift .dailyHours{
+    width:48px !important;
+    min-width:48px !important;
+    max-width:48px !important;
+  }
+}
+
+/* Search by Day */
+.daySearchCard{
+  background:var(--vv-panel,#0d1115);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:14px;
+  padding:12px;
+  margin-bottom:12px;
+}
+.daySearchLabel{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-bottom:8px;
+  font-size:9px;
+  font-weight:900;
+  letter-spacing:.08em;
+  color:var(--vv-gold,#f1bd4b);
+}
+.daySearchControl{
+  position:relative;
+}
+.daySearchControl select{
+  width:100%;
+  min-height:46px;
+  box-sizing:border-box;
+  padding:0 42px 0 12px;
+  background:#090d11 !important;
+  border:1px solid rgba(255,255,255,.1) !important;
+  border-radius:10px !important;
+  color:var(--vv-text,#f7f3e8) !important;
+  font-size:15px;
+  font-weight:700;
+}
+.dayClear{
+  position:absolute;
+  right:7px;
+  top:50%;
+  transform:translateY(-50%);
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:50%;
+  background:rgba(255,255,255,.07);
+  color:#fff;
+}
+.searchDayHeading{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:10px;
+  padding:2px 2px 10px;
+}
+.searchDayHeading b{
+  font-size:13px;
+}
+.searchDayHeading span{
+  color:var(--vv-muted,#8c959d);
+  font-size:9px;
+}
+.searchResults{
+  min-height:120px;
+}
+.emptySearch{
+  min-height:150px;
+  padding:24px 18px;
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  gap:7px;
+  color:var(--vv-muted,#8c959d);
+}
+.emptySearch b{
+  color:var(--vv-text,#f7f3e8);
+  font-size:14px;
+}
+.emptySearch span{
+  max-width:270px;
+  font-size:10px;
+  line-height:1.5;
+}
+
+/* iPhone / PWA safe-area support */
+html, body, #root {
+  min-height: 100%;
+  background: #050607;
+}
+body {
+  margin: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.shell {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom)) !important;
+}
+nav,
+.bottomNav,
+.tabbar {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+  height: calc(72px + env(safe-area-inset-bottom)) !important;
+}
+
+.authScreen{min-height:100vh;display:grid;place-items:center;padding:24px;background:#050607}
+.authCard{width:min(100%,380px);padding:24px;border:1px solid rgba(255,255,255,.1);border-radius:18px;background:#0d1115;text-align:center}
+.authCard input{width:100%;box-sizing:border-box;min-height:46px;margin:14px 0 10px;padding:0 12px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:#090d11;color:#fff}
+.authFull{width:100%}.accessBar{position:fixed;right:12px;top:calc(8px + env(safe-area-inset-top));z-index:160;display:flex;gap:6px}.accessBar button{padding:6px 8px;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:#0d1115;color:#fff}
+.adminAccess{max-width:520px!important}.approveRow{display:grid;grid-template-columns:1fr auto;gap:8px;margin:12px 0}.approveRow input{min-width:0;padding:10px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:#090d11;color:#fff}
+.approvedList{display:flex;flex-direction:column;gap:7px;max-height:50vh;overflow:auto}.approvedItem{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border:1px solid rgba(255,255,255,.08);border-radius:10px}.approvedItem b,.approvedItem small{display:block}
+
+/* Persistent mobile admin controls */
+.accessBar{
+  position:fixed !important;
+  top:calc(8px + env(safe-area-inset-top)) !important;
+  right:10px !important;
+  z-index:999 !important;
+  display:flex !important;
+  gap:6px !important;
+  align-items:center !important;
+}
+.adminMobileButton,
+.signOutMobileButton{
+  min-height:32px !important;
+  padding:7px 10px !important;
+  border-radius:9px !important;
+  font-size:10px !important;
+  font-weight:800 !important;
+}
+.adminMobileButton{
+  background:#f1bd4b !important;
+  color:#181209 !important;
+  border:1px solid rgba(241,189,75,.6) !important;
+}
+.signOutMobileButton{
+  background:rgba(13,17,21,.92) !important;
+  color:#f7f3e8 !important;
+  border:1px solid rgba(255,255,255,.1) !important;
+}
+
+.authCard input + input{margin-top:10px;}
+
+.staffNameFix{border:1px solid #37414c;border-radius:9px;background:#0c1117;padding:2px 10px}
+.staffNameFix summary{padding:9px 0;font-size:10px;color:#e6c27a;cursor:pointer;font-weight:700;list-style:none}
+.staffNameFix summary::-webkit-details-marker{display:none}
+.staffNameFixList{display:flex;flex-direction:column;gap:7px;padding-bottom:10px}
+.staffNameFixRow{display:flex;align-items:center;gap:7px}
+.staffNameFixRow svg{color:#ff9f43;flex-shrink:0}
+.staffNameFixRow input{flex:1;margin-top:0;background:#0b0f14;border:1px solid #39424d;border-radius:7px;color:#f2f3f5;padding:8px}
+.staffNameFixRow.uncertain input{border-color:#ff9f43}
+
+/* Roster table: Day | Start | End | Time | Pay */
+.rosterTable{display:flex;flex-direction:column}
+.rosterTableHead{
+  display:grid;
+  grid-template-columns:74px 1fr 1fr 42px 58px;
+  gap:5px;
+  padding:0 4px 7px;
+  font-size:8px;
+  letter-spacing:.06em;
+  color:#7f8790;
+  text-transform:uppercase;
+  font-weight:700;
+}
+.rosterTableRow{
+  display:grid;
+  grid-template-columns:74px 1fr 1fr 42px 58px;
+  gap:5px;
+  align-items:center;
+  padding:9px 4px;
+  border-top:1px solid #242a31;
+}
+.rosterTableRow:first-of-type{border-top:0}
+.rosterTableDay{display:flex;flex-direction:column;gap:2px;min-width:0}
+.rosterTableDay small{font-size:9px;color:#a7adb4}
+.rosterTableDay span{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rosterTableTypeReadonly{font-size:8px;color:#87909a;font-style:normal;font-weight:700}
+.rosterTableDay .rosterTableType{
+  margin-top:2px;
+  min-height:22px;
+  font-size:9px;
+  padding:2px 4px;
+  border-radius:6px;
+  width:fit-content;
+}
+.rosterTableStart,.rosterTableEnd{min-width:0}
+.rosterTableStart span,.rosterTableEnd span{font-size:12px;font-weight:700}
+.rosterTableStart .time24Group,.rosterTableEnd .time24Group{gap:2px}
+.rosterTableStart .time24Select,.rosterTableEnd .time24Select{min-height:34px;padding:5px 2px;font-size:11px}
+.rosterTableTime{font-size:11px;font-weight:700;color:#e6c27a;text-align:right}
+.rosterTablePay{font-size:11px;font-weight:800;text-align:right}
+.rosterTableFlatValue{min-width:0;overflow:hidden}
+.rosterTableFlatValue b{font-size:11px}
+.rosterTableThumb{max-height:34px;border-radius:6px;border:1px solid #303a45}
+.rosterTableTotals{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid #303a45;
+  font-size:10px;
+  color:#a7adb4;
+}
+.rosterTableTotals b{font-size:14px;color:#f3efe5;margin-right:auto}
+.rosterTableTotals b:last-child{margin-right:0;color:#e6c27a}
+@media(max-width:400px){
+  .rosterTableHead,.rosterTableRow{grid-template-columns:58px 1fr 1fr 36px 50px}
+}
+
+/* Hourly Rate settings card */
+.rateCard{
+  background:#13181f;
+  border:1px solid #252c34;
+  border-radius:11px;
+  overflow:hidden;
+}
+.rateRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:13px 14px;
+  border-top:1px solid #242a31;
+  font-size:12px;
+  color:#e6e8eb;
+}
+.rateRow:first-child{border-top:0}
+.rateRowTotal{background:rgba(230,194,122,.06)}
+.rateRowTotal b{font-size:16px;color:#e6c27a}
+.rateValue{display:flex;align-items:center;gap:3px}
+.rateValue small{color:#87909a;font-size:11px}
+.rateValue input{
+  width:70px;
+  background:#0b0f14;
+  border:1px solid #2a3139;
+  color:#fff;
+  border-radius:7px;
+  padding:6px 7px;
+  font:inherit;
+  font-weight:700;
+  text-align:right;
+}
+.rateNote{
+  font-size:9px;
+  color:#7f8790;
+  line-height:1.5;
+  margin:9px 2px 0;
+}
+
+/* Deductions card: label | %input | computed $ amount */
+.rateRowDeduction{
+  display:grid;
+  grid-template-columns:1fr auto auto;
+  gap:10px;
+  align-items:center;
+}
+.rateDeductionAmount{font-size:12px;color:#e6c27a;min-width:56px;text-align:right}
+.rateRowNet{background:rgba(117,211,160,.08)}
+.rateRowNet b{font-size:16px;color:#75d3a0}
+
+/* Gold divider marking the start of each new day's shift rows */
+.rosterTableNewDay{
+  border-top:2px solid #e6c27a;
+  margin-top:4px;
+  padding-top:12px;
+}
