@@ -2717,7 +2717,7 @@ function App(){
     {tab==="dashboard"&&<main>
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
+      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><WeekRosterImages rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))||null)} dates={Array.from({length:7},(_,i)=>addDays(weekStart,i))} employeeName={myName}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
@@ -3316,6 +3316,37 @@ function totalPayForRows(rows,payRate,tier1Hours,tier1Mult,tier2Mult){
     }
   }
   return total;
+}
+
+// Dashboard-only "THIS WEEK" display. Shows the exact cropped roster-cell
+// image for each of the 7 days (Mon-Sun) for the currently selected
+// employee — never OCR-derived Start/End/Time/Pay values. Each entry
+// already carries its own sourceCell image, captured per (employeeName,
+// date) at scan time, so mapping by employee+date falls straight out of
+// looking up that day's entry — no separate image-store keying is needed.
+// This is intentionally a separate component from <Roster>, which is left
+// untouched for My Roster / Calendar / Search, per the request to change
+// the Dashboard's THIS WEEK section only.
+function WeekRosterImages({rows,dates,employeeName}){
+  return <div className="weekImageTable">
+    <div className="weekImageHead"><span>Day</span><span>Roster Hours</span></div>
+    {dates.map((date,i)=>{
+      const e=rows[i];
+      const dayLabel=fmt(date,{weekday:"short",day:"numeric",month:"short"});
+      const image=e?.sourceCell||"";
+      return <div className="weekImageRow" key={date}>
+        <div className="weekImageDay">
+          <small>{dayLabel}</small>
+          <span>{e?.name||employeeName||""}</span>
+        </div>
+        <div className="weekImageCell">
+          {image
+            ? <img src={image} alt={`${dayLabel} roster cell`} className="roster-cell-image"/>
+            : <span className="weekImageUnavailable">Roster image unavailable</span>}
+        </div>
+      </div>;
+    })}
+  </div>;
 }
 
 function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mult=2.0}){
