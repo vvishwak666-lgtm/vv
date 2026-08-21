@@ -141,12 +141,70 @@ function formatRosterCell(value){
 }
 
 function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
-// Formats a decimal hours value (e.g. 9.0, 8.5) as "9h 00m" / "8h 30m" for
-// display in the Time column and the Total Time / Week Hours summaries.
+
+// Robust OCR-text -> {start,end,minutes,isDayOff} parser. Accepts dashes of
+// any kind, colon or no-colon HH:MM, and loose spacing around the dash
+// ("0330 - 1230"). Day-off codes (RDO, OFF, and the app's other standalone
+// roster codes) short-circuit to a zero-duration, blank-time result.
+function parseShiftText(rawText){
+  if(!rawText) return null;
+
+  const cleaned=String(rawText).toUpperCase()
+    .replace(/[–—−]/g,"-")
+    .replace(/\s+/g,"")
+    .trim();
+
+  if(/\b(RDO|OFF|AL|ALV|ALLV|ALTH|HACC|SICK|SL|LEAVE)\b/.test(cleaned) && !/\d/.test(cleaned)){
+    return {start:"",end:"",minutes:0,isDayOff:true};
+  }
+
+  const match=cleaned.match(/(\d{1,2}):?(\d{2})-(\d{1,2}):?(\d{2})/);
+  if(!match) return null;
+
+  const startHour=Number(match[1]), startMinute=Number(match[2]);
+  const endHour=Number(match[3]), endMinute=Number(match[4]);
+
+  if(startHour>23||endHour>23||startMinute>59||endMinute>59) return null;
+
+  let startTotal=startHour*60+startMinute;
+  let endTotal=endHour*60+endMinute;
+  if(endTotal<startTotal) endTotal+=24*60; // shift finishes after midnight
+
+  return {
+    start:`${String(startHour).padStart(2,"0")}:${String(startMinute).padStart(2,"0")}`,
+    end:`${String(endHour).padStart(2,"0")}:${String(endMinute).padStart(2,"0")}`,
+    minutes:endTotal-startTotal,
+    isDayOff:false
+  };
+}
+
+function formatMinutes(totalMinutes){
+  const hours=Math.floor((totalMinutes||0)/60);
+  const minutes=(totalMinutes||0)%60;
+  return `${hours}h ${String(minutes).padStart(2,"0")}m`;
+}
+// Kept for existing call sites that pass decimal hours rather than minutes.
 function formatHoursMinutes(hoursDecimal){
-  const totalMinutes=Math.max(0,Math.round((hoursDecimal||0)*60));
-  const h=Math.floor(totalMinutes/60), m=totalMinutes%60;
-  return `${h}h ${String(m).padStart(2,"0")}m`;
+  return formatMinutes(Math.round((hoursDecimal||0)*60));
+}
+
+// Recovers the real AM/PM seed from wherever the OCR'd value actually lives
+// (rawShiftText, editableValue, canonicalValue, display, rawCellText, time),
+// WITHOUT bailing out just because amShift/pmShift already exist — unlike
+// deriveAmPmSeed below, this is used to repair entries that were saved with
+// amShift/pmShift hardcoded to "0000-0000" despite a real shift being read.
+function repairAmPmSeed(e){
+  const candidates=[e?.rawShiftText,e?.editableValue,e?.canonicalValue,e?.display,e?.rawCellText,e?.time].filter(Boolean);
+  for(const raw of candidates){
+    const parsed=airport24HourDuration(raw);
+    if(parsed.valid && parsed.hours>0){
+      const {start}=splitAirportRange(raw);
+      const startHour=Number(String(start||"").split(":")[0]);
+      const isAm=Number.isFinite(startHour) ? startHour<12 : true;
+      return isAm ? {am:parsed.time,pm:"0000-0000"} : {am:"0000-0000",pm:parsed.time};
+    }
+  }
+  return null;
 }
 function cropCanvas(src,x0,y0,x1,y1,scale=5){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
@@ -2314,11 +2372,26 @@ function App(){
       const literal=cleanReplicatedCellText(raw);
       const parsed=parseDisplayedRosterValue(literal);
       const thumb=review.thumbs?.[i]||"";
+      const date=addDays(review.firstDate,i);
+
+      // Robust parse of the OCR'd cell text into {start,end,minutes,isDayOff}.
+      const parsedShift=parseShiftText(literal);
+      console.log("Roster shift parsing",{date,employeeName:review.name,rawShiftText:literal,parsedShift});
+
+      // Seed the real time into the correct AM/PM slot (AM if it starts
+      // before noon, otherwise PM) instead of hardcoding both to
+      // "0000-0000" — that default silently threw away every OCR'd shift.
+      let amShift="0000-0000", pmShift="0000-0000";
+      if(parsedShift && !parsedShift.isDayOff){
+        const startHour=Number(parsedShift.start.slice(0,2));
+        const compact=`${parsedShift.start.replace(":","")}-${parsedShift.end.replace(":","")}`;
+        if(startHour<12) amShift=compact; else pmShift=compact;
+      }
 
       return {
         id:`img-${Date.now()}-${i}`,
         name:review.name,
-        date:addDays(review.firstDate,i),
+        date,
 
         // ONE source of truth: the canonical value stored when this exact cell was first read.
         time:parsed.time,
@@ -2328,12 +2401,20 @@ function App(){
 
         canonicalValue:parsed.display,
         editableValue:"0000-0000",
-        amShift:"0000-0000",
-        pmShift:"0000-0000",
+        amShift,
+        pmShift,
         amType:"RT",
         pmType:"RT",
         originalValue:parsed.display,
         rawCellText:literal,
+
+        // Explicit, directly-usable fields per the parsed shift.
+        rawShiftText:literal,
+        start:parsedShift?.start||"",
+        end:parsedShift?.end||"",
+        minutes:parsedShift?.minutes||0,
+        isDayOff:parsedShift?.isDayOff||false,
+
         sourceCell:thumb,
         source:review.fileName,
         tableIndex:review.tableIndex
@@ -2379,24 +2460,45 @@ function App(){
     setEntries(old=>{
       let changed=false;
       const next=old.map(e=>{
-        if(
-          e.amShift===undefined || e.pmShift===undefined ||
-          e.amType===undefined || e.pmType===undefined
-        ){
-          changed=true;
-          return {
-            ...e,
-            amShift:e.amShift ?? "0000-0000",
-            pmShift:e.pmShift ?? "0000-0000",
-            amType:e.amType ?? "RT",
-            pmType:e.pmType ?? "RT"
-          };
+        const missingAmPm=e.amShift===undefined || e.pmShift===undefined || e.amType===undefined || e.pmType===undefined;
+
+        // Detect the "both slots stuck at 0000-0000" bug: amShift/pmShift
+        // exist but are both the placeholder, while a real shift is still
+        // sitting in canonicalValue/rawCellText/etc. from the original OCR.
+        const amZero=!e.amShift || e.amShift==="0000-0000";
+        const pmZero=!e.pmShift || e.pmShift==="0000-0000";
+        const seed=(amZero && pmZero) ? repairAmPmSeed(e) : null;
+
+        if(!missingAmPm && !seed) return e;
+
+        changed=true;
+        const repaired={
+          ...e,
+          amShift: seed?.am ?? (e.amShift ?? "0000-0000"),
+          pmShift: seed?.pm ?? (e.pmShift ?? "0000-0000"),
+          amType:e.amType ?? "RT",
+          pmType:e.pmType ?? "RT"
+        };
+
+        if(seed){
+          const rawShiftText=e.rawShiftText||e.rawCellText||e.canonicalValue||e.display||e.time||"";
+          const parsedShift=parseShiftText(rawShiftText);
+          console.log("Roster shift parsing (repair)",{date:e.date,employeeName:e.name,rawShiftText,parsedShift});
+          if(parsedShift){
+            repaired.rawShiftText=rawShiftText;
+            repaired.start=parsedShift.start;
+            repaired.end=parsedShift.end;
+            repaired.minutes=parsedShift.minutes;
+            repaired.isDayOff=parsedShift.isDayOff;
+          }
         }
-        return e;
+
+        return repaired;
       });
       return changed?next:old;
     });
   },[]);
+
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   // Prefer an explicit "this is me" selection; fall back to the old
@@ -3097,6 +3199,12 @@ function entryOvertimeHours(e){
 }
 
 function entryRosterText(e){
+  // Standalone codes (RDO, AL, SICK, etc.) always win, regardless of
+  // whatever placeholder amShift/pmShift happen to carry — otherwise an RDO
+  // day renders as "AM 0000-0000 • PM 0000-0000" instead of "RDO".
+  if(e?.isDayOff) return e.code||"RDO";
+  if(e?.code && CODES.has(e.code)) return e.code;
+
   if(e?.amShift!==undefined || e?.pmShift!==undefined){
     const am=e?.amShift ?? "0000-0000";
     const pm=e?.pmShift ?? "0000-0000";
