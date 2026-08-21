@@ -27,6 +27,15 @@ const STORE = "vv-roster-auto-table-v4";
 const CODES = new Set(["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
 
 function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Normalizes an OCR'd employee name for comparison/dedup purposes only —
+// the raw display name is never changed. Without this, "CATTAR, Mohammed"
+// and "CATTAR. Mohammed" (both seen from the same person across different
+// scans) are treated as two different employees, which is what caused
+// duplicate date rows and My Roster missing shifts that Dashboard could
+// still find under the other spelling.
+function normalizeEmployeeName(name){
+  return String(name||"").toUpperCase().replace(/[.,]/g," ").replace(/\s+/g," ").trim();
+}
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
@@ -2422,7 +2431,7 @@ function App(){
     });
 
     setEntries(old=>[
-      ...old.filter(e=>!(e.name===review.name&&added.some(a=>a.date===e.date))),
+      ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(review.name)&&added.some(a=>a.date===e.date))),
       ...added
     ]);
 
@@ -2499,6 +2508,54 @@ function App(){
     });
   },[]);
 
+  // Merge duplicate (employee, date) rows into a single record — this is
+  // what caused the same date to appear more than once in My Roster (most
+  // often from re-scans where the OCR'd name came out slightly differently,
+  // e.g. "CATTAR, Mohammed" vs "CATTAR. Mohammed", so the earlier de-dupe-
+  // on-import filter didn't recognize them as the same person).
+  useEffect(()=>{
+    setEntries(old=>{
+      const scoreOf=e=>{
+        if(e.isDayOff) return 2;
+        const amHas=e.amShift && e.amShift!=="0000-0000";
+        const pmHas=e.pmShift && e.pmShift!=="0000-0000";
+        if(amHas||pmHas) return 2;
+        if(e.sourceCell) return 1;
+        return 0;
+      };
+      const idTime=e=>Number(String(e?.id||"").match(/\d+/)?.[0]||0);
+
+      const groups=new Map();
+      for(const e of old){
+        if(!e.date){ groups.set(`__nodate__${e.id}`,e); continue; }
+        const key=`${normalizeEmployeeName(e.name)}|${e.date}`;
+        const existing=groups.get(key);
+        if(!existing){ groups.set(key,e); continue; }
+
+        const winner = scoreOf(e)>scoreOf(existing) ? e
+          : scoreOf(existing)>scoreOf(e) ? existing
+          : (idTime(e)>=idTime(existing) ? e : existing);
+        const loser = winner===existing ? e : existing;
+        const merged = winner.sourceCell ? winner : (loser.sourceCell ? {...winner,sourceCell:loser.sourceCell} : winner);
+
+        console.log("Daily roster import",{
+          employeeId:normalizeEmployeeName(merged.name),
+          employeeName:merged.name,
+          date:merged.date,
+          rawRosterText:merged.rawShiftText||merged.canonicalValue||merged.rawCellText||"",
+          parsedShift:{start:merged.start||"",end:merged.end||"",durationMinutes:merged.minutes||0,isDayOff:!!merged.isDayOff},
+          durationMinutes:merged.minutes||0,
+          pay:Number((((merged.minutes||0)/60)*payRate).toFixed(2))
+        });
+
+        groups.set(key,merged);
+      }
+
+      const deduped=[...groups.values()];
+      return deduped.length===old.length ? old : deduped;
+    });
+  },[]);
+
 
   const names=useMemo(()=>[...new Set(entries.map(e=>e.name))].sort(),[entries]);
   // Prefer an explicit "this is me" selection; fall back to the old
@@ -2506,7 +2563,7 @@ function App(){
   // isn't safe for anyone whose name isn't Vimal/Prabhakar or first
   // alphabetically — which matters once more than one person uses the app.
   const myName=myNameOverride||names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
-  const mine=useMemo(()=>entries.filter(e=>!myName||e.name===myName).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
+  const mine=useMemo(()=>entries.filter(e=>!myName||normalizeEmployeeName(e.name)===normalizeEmployeeName(myName)).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
 
   // Needed so shift data and push subscriptions can be linked to the signed-in
   // account — evening reminders are sent server-side, which has no access to
@@ -3431,7 +3488,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
           <div className="rosterTableStart"><span>{start||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableEnd"><span>{end||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}</div>
-          <div className="rosterTablePay">${(r.pay||0).toFixed(2)}</div>
+          <div className="rosterTablePay">{payRate<=0 && (r.hours||0)>0 ? "Rate required" : `$${(r.pay||0).toFixed(2)}`}</div>
         </div>;
       }
 
@@ -3466,13 +3523,13 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
             : <span>{end||"--:--"}</span>}
         </div>
         <div className="rosterTableTime">{formatHoursMinutes(r.hours)}</div>
-        <div className="rosterTablePay">${pay.toFixed(2)}</div>
+        <div className="rosterTablePay">{payRate<=0 && r.hours>0 ? "Rate required" : `$${pay.toFixed(2)}`}</div>
       </div>;
     })}
 
     <div className="rosterTableTotals">
       <span>Total Time</span><b>{formatHoursMinutes(totalHours)}</b>
-      <span>Total Pay</span><b>${totalPay.toFixed(2)}</b>
+      <span>Total Pay</span><b>{payRate<=0 && totalHours>0 ? "Rate required" : `$${totalPay.toFixed(2)}`}</b>
     </div>
   </div>;
 }
