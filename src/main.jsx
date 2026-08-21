@@ -141,6 +141,13 @@ function formatRosterCell(value){
 }
 
 function hoursOf(v){ const x=validateShift(v); return x.ok?(x.hours||0):0; }
+// Formats a decimal hours value (e.g. 9.0, 8.5) as "9h 00m" / "8h 30m" for
+// display in the Time column and the Total Time / Week Hours summaries.
+function formatHoursMinutes(hoursDecimal){
+  const totalMinutes=Math.max(0,Math.round((hoursDecimal||0)*60));
+  const h=Math.floor(totalMinutes/60), m=totalMinutes%60;
+  return `${h}h ${String(m).padStart(2,"0")}m`;
+}
 function cropCanvas(src,x0,y0,x1,y1,scale=5){
   const sx=Math.max(0,Math.floor(x0)), sy=Math.max(0,Math.floor(y0));
   const sw=Math.max(1,Math.ceil(x1-x0)), sh=Math.max(1,Math.ceil(y1-y0));
@@ -2607,7 +2614,7 @@ function App(){
 
     {tab==="dashboard"&&<main>
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
-      <div className="stats"><Stat label="WEEK HOURS" value={weekHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
+      <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><Roster rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))).filter(Boolean)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
     </main>}
 
@@ -3269,14 +3276,22 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const dayClass=isNewDay?" rosterTableNewDay":"";
 
       if(period===null){
+        // Pull the actual Start/End clock times out of the OCR'd shift text
+        // (e.g. "0330-1230") rather than showing the cropped source image —
+        // this also correctly handles RDO (blank Start/End, 0h 00m) and
+        // overnight shifts (airport24HourDuration already rolls the finish
+        // time to the next day when it's earlier than the start time).
+        const parsed=airport24HourDuration(r.label);
+        const isRDO=parsed.code==="RDO";
+        const {start,end}=isRDO||!parsed.valid||!parsed.time
+          ? {start:"",end:""}
+          : splitAirportRange(parsed.time);
+
         return <div className={"rosterTableRow rosterTableRowFlat"+dayClass} key={e.id+"-flat-"+i}>
           <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
-          <div className="rosterTableFlatValue">
-            {r.sourceCell
-              ? <img src={r.sourceCell} alt="Original roster cell" className="rosterTableThumb"/>
-              : <b>{r.label}</b>}
-          </div>
-          <div className="rosterTableTime">{(r.hours||0).toFixed(1)}h</div>
+          <div className="rosterTableStart"><span>{start||(isRDO?"":"--:--")}</span></div>
+          <div className="rosterTableEnd"><span>{end||(isRDO?"":"--:--")}</span></div>
+          <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}</div>
           <div className="rosterTablePay">${(r.pay||0).toFixed(2)}</div>
         </div>;
       }
@@ -3311,13 +3326,13 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
             ? <Time24Wheel value={end} onChange={v=>onEdit(e.id,period,joinAirportRange(start,v))} ariaLabel={`${periodLabel} end time`}/>
             : <span>{end||"--:--"}</span>}
         </div>
-        <div className="rosterTableTime">{r.hours.toFixed(1)}h</div>
+        <div className="rosterTableTime">{formatHoursMinutes(r.hours)}</div>
         <div className="rosterTablePay">${pay.toFixed(2)}</div>
       </div>;
     })}
 
     <div className="rosterTableTotals">
-      <span>Total Time</span><b>{totalHours.toFixed(1)}h</b>
+      <span>Total Time</span><b>{formatHoursMinutes(totalHours)}</b>
       <span>Total Pay</span><b>${totalPay.toFixed(2)}</b>
     </div>
   </div>;
