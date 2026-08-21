@@ -1377,6 +1377,42 @@ nav,
 .staffNameFixRow input{flex:1;margin-top:0;background:#0b0f14;border:1px solid #39424d;border-radius:7px;color:#f2f3f5;padding:8px}
 .staffNameFixRow.uncertain input{border-color:#ff9f43}
 
+/* Dashboard "THIS WEEK" — Day | Roster Hours (raw cropped cell image only) */
+.weekImageTable{display:flex;flex-direction:column}
+.weekImageHead{
+  display:grid;
+  grid-template-columns:1fr 168px;
+  gap:5px;
+  padding:0 4px 7px;
+  font-size:8px;
+  letter-spacing:.06em;
+  color:#7f8790;
+  text-transform:uppercase;
+  font-weight:700;
+}
+.weekImageRow{
+  display:grid;
+  grid-template-columns:1fr 168px;
+  gap:5px;
+  align-items:center;
+  padding:9px 4px;
+  border-top:1px solid #242a31;
+}
+.weekImageRow:first-of-type{border-top:0}
+.weekImageDay{display:flex;flex-direction:column;gap:2px;min-width:0}
+.weekImageDay small{font-size:9px;color:#a7adb4}
+.weekImageDay span{font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.weekImageCell{display:flex;justify-content:flex-end}
+.weekImageUnavailable{font-size:10px;color:#87909a;font-style:italic;text-align:right}
+.roster-cell-image{
+  width:160px;
+  max-width:45vw;
+  height:60px;
+  object-fit:contain;
+  background:#fff;
+  border-radius:8px;
+}
+
 /* Roster table: Day | Start | End | Time | Pay */
 .rosterTable{display:flex;flex-direction:column}
 .rosterTableHead{
