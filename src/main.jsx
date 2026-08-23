@@ -2752,7 +2752,7 @@ function App(){
   },[notifyHour,notifyMinute,userId]);
 
 
-  const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
+  const weekStart=mondayOf(todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
