@@ -14,9 +14,14 @@ import "./styles.css";
 
 import { createClient } from "@supabase/supabase-js";
 
+// Register the worker from the app's base path. Using an absolute "/sw.js"
+// breaks when Vite is deployed below a path (and was also silently leaving
+// push users without a worker).
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(err => {
+    const base = import.meta.env.BASE_URL || "/";
+    const swUrl = `${base.replace(/\/?$/, "/")}sw.js`;
+    navigator.serviceWorker.register(swUrl, {scope: base}).catch(err => {
       console.warn("Service worker registration failed:", err);
     });
   });
@@ -2572,7 +2577,7 @@ function App(){
   const [reminderStatus,setReminderStatus]=useState("");
   const [notifyHour,setNotifyHour]=useState(19);
   const [notifyMinute,setNotifyMinute]=useState(0);
-  const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"
+  const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"|"local"
   const isApplyingServerValue=useRef(false);
   // Guards the auto-save effect against firing before we've even tried to
   // load the real saved value from the server. Without this, the auto-save
@@ -2593,7 +2598,13 @@ function App(){
   // "resetting" every time the app was reopened.
   useEffect(()=>{
     if(!supabase||!userId)return;
-    if(!("serviceWorker" in navigator)||!("PushManager" in window)){setSubscriptionStatus("unsupported");return;}
+    if(!("serviceWorker" in navigator)||!("PushManager" in window)){
+      // iOS Safari only exposes PushManager to an installed Home Screen
+      // web app. Keep the useful in-page notification fallback available.
+      setSubscriptionStatus("unsupported");
+      hasAttemptedServerLoad.current=true;
+      return;
+    }
     let cancelled=false;
     (async()=>{
       try{
@@ -2649,10 +2660,72 @@ function App(){
     return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));
   }
 
+  // Fallback for browsers such as Safari when the app is not installed to the
+  // Home Screen. It cannot wake a completely closed browser, but it does
+  // deliver a real OS notification while this page remains open.
+  const scheduleLocalReminder=useCallback(async()=>{
+    if(!("Notification" in window)){
+      setReminderStatus("This browser cannot show notifications. Install the app to your Home Screen or use a supported browser.");
+      return false;
+    }
+    const perm=Notification.permission==="granted"
+      ? "granted"
+      : await Notification.requestPermission();
+    if(perm!=="granted"){
+      setReminderStatus("Notification permission was not granted.");
+      return false;
+    }
+    localStorage.setItem(`${STORE}:localReminder`,JSON.stringify({
+      hour:notifyHour,minute:notifyMinute,name:myName
+    }));
+    setSubscriptionStatus("local");
+    setReminderStatus("Local reminders are enabled. Keep this app open; install it to your Home Screen for better background support.");
+    return true;
+  },[notifyHour,notifyMinute,myName]);
+
+  useEffect(()=>{
+    const saved=localStorage.getItem(`${STORE}:localReminder`);
+    if(!saved||!("Notification" in window)||Notification.permission!=="granted")return;
+    let timer;
+    const schedule=()=>{
+      try{
+        const cfg=JSON.parse(saved);
+        const now=new Date();
+        const next=new Date(now);
+        next.setHours(Number(cfg.hour)||19,Number(cfg.minute)||0,0,0);
+        if(next<=now)next.setDate(next.getDate()+1);
+        timer=setTimeout(()=>{
+          const tomorrow=addDays(todayISO(),1);
+          const shift=mine.find(e=>e.date===tomorrow);
+          new Notification("VV Duty Roster",{
+            body:shift
+              ? `Tomorrow: ${entryRosterText(shift)}`
+              : "Tomorrow: no rostered shift found.",
+            tag:"vv-evening-reminder"
+          });
+          schedule();
+        },Math.min(next.getTime()-now.getTime(),2147483647));
+      }catch{
+        localStorage.removeItem(`${STORE}:localReminder`);
+      }
+    };
+    schedule();
+    return()=>clearTimeout(timer);
+  },[notifyHour,notifyMinute,mine,subscriptionStatus]);
+
+  // Keep the local fallback in sync when the user changes the time after
+  // enabling it. This mirrors the server-side auto-save behavior below.
+  useEffect(()=>{
+    if(subscriptionStatus!=="local")return;
+    localStorage.setItem(`${STORE}:localReminder`,JSON.stringify({
+      hour:notifyHour,minute:notifyMinute,name:myName
+    }));
+  },[subscriptionStatus,notifyHour,notifyMinute,myName]);
+
   const enableEveningReminders=async()=>{
     if(!supabase||!userId){setReminderStatus("Sign in first.");return;}
     if(!("serviceWorker" in navigator)||!("PushManager" in window)){
-      setReminderStatus("This browser doesn't support push notifications.");
+      await scheduleLocalReminder();
       return;
     }
     try{
@@ -2752,7 +2825,7 @@ function App(){
   },[notifyHour,notifyMinute,userId]);
 
 
-  const weekStart=mondayOf(todayISO());
+  const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
@@ -3047,12 +3120,13 @@ function App(){
 
       <section className="panel menu"><h3>NOTIFICATIONS</h3>
         <p className="rateNote" style={{padding:"0 13px 9px",fontWeight:700,color:
-          subscriptionStatus==="active"?"#75d3a0":subscriptionStatus==="checking"?"#87909a":"#ff9f43"
+           subscriptionStatus==="active"||subscriptionStatus==="local"?"#75d3a0":subscriptionStatus==="checking"?"#87909a":"#ff9f43"
         }}>
           {subscriptionStatus==="checking"&&"Checking reminder status for this device…"}
           {subscriptionStatus==="active"&&"✓ Reminders are ON for this device."}
+           {subscriptionStatus==="local"&&"✓ Local reminders are ON while this app is open."}
           {subscriptionStatus==="inactive"&&"Reminders are OFF on this device — tap the button below to turn them on."}
-          {subscriptionStatus==="unsupported"&&"This browser doesn't support push notifications."}
+           {subscriptionStatus==="unsupported"&&"Push is unavailable in this browser; the button below enables local reminders instead."}
         </p>
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
           Notification time
@@ -3062,7 +3136,7 @@ function App(){
             ariaLabel="Evening reminder time"
           />
         </label>
-        <button onClick={enableEveningReminders}><Clock3/><span><b>Enable Evening Reminders</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
+        <button onClick={enableEveningReminders}><Clock3/><span><b>{subscriptionStatus==="unsupported"?"Enable Local Reminders":"Enable Evening Reminders"}</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
         <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already ON for this device, changing the time above saves automatically — no need to tap the button again.</p>
         {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
       </section>
