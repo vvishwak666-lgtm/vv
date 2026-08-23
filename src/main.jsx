@@ -31,7 +31,17 @@ if ("serviceWorker" in navigator) {
 const STORE = "vv-roster-auto-table-v4";
 const CODES = new Set(["RDO","TRNG","AL","ALV","ALLV","ALTH","HACC","OFF","SICK","SL","LEAVE"]);
 
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Roster dates and reminder dates are New Zealand dates, not UTC dates.
+// Using toISOString() made the app roll over early/late around midnight
+// NZT, which could make "tomorrow" point at the wrong roster row.
+function todayISO(){
+  const parts=new Intl.DateTimeFormat("en-NZ",{
+    timeZone:"Pacific/Auckland",
+    year:"numeric",month:"2-digit",day:"2-digit"
+  }).formatToParts(new Date());
+  const get=type=>parts.find(p=>p.type===type)?.value||"";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
 // Normalizes an OCR'd employee name for comparison/dedup purposes only —
 // the raw display name is never changed. Without this, "CATTAR, Mohammed"
 // and "CATTAR. Mohammed" (both seen from the same person across different
@@ -2578,7 +2588,6 @@ function App(){
   const [notifyHour,setNotifyHour]=useState(19);
   const [notifyMinute,setNotifyMinute]=useState(0);
   const [subscriptionStatus,setSubscriptionStatus]=useState("checking"); // "checking"|"active"|"inactive"|"unsupported"|"local"
-  const isApplyingServerValue=useRef(false);
   // Guards the auto-save effect against firing before we've even tried to
   // load the real saved value from the server. Without this, the auto-save
   // effect (which also depends on userId, since it needs it to write to
@@ -2618,7 +2627,6 @@ function App(){
           .select("notify_hour,notify_minute,endpoint").eq("user_id",userId).maybeSingle();
         if(cancelled)return;
         if(error||!data){setSubscriptionStatus("inactive");hasAttemptedServerLoad.current=true;return;}
-        isApplyingServerValue.current=true;
         setNotifyHour(data.notify_hour??19);
         setNotifyMinute(data.notify_minute??0);
         // If the browser's live subscription endpoint doesn't match what's
@@ -2779,7 +2787,6 @@ function App(){
   const skipInitialNotifyEffect=useRef(true);
   useEffect(()=>{
     if(skipInitialNotifyEffect.current){skipInitialNotifyEffect.current=false;return;}
-    if(isApplyingServerValue.current){isApplyingServerValue.current=false;return;}
     if(!supabase||!userId)return;
     // Never save before the server load attempt has finished — otherwise this
     // effect (which also depends on userId) can fire the instant userId
@@ -2825,7 +2832,10 @@ function App(){
   },[notifyHour,notifyMinute,userId]);
 
 
-  const weekStart=mondayOf(mine.length?mine[0].date:todayISO());
+  // The Home screen must always show the calendar week containing today.
+  // Using the first imported roster date made an old upload (for example
+  // 10–16 August) stay pinned on the Home screen even after the date changed.
+  const weekStart=mondayOf(todayISO());
   const week=mine.filter(e=>e.date>=weekStart&&e.date<addDays(weekStart,7));
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
