@@ -80,9 +80,12 @@ export default async function handler(req, res) {
   const tomorrow = new Date(nzNow);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowIso = tomorrow.toISOString().slice(0, 10);
-  const tomorrowLabel = tomorrow.toLocaleDateString("en-NZ", {
-    weekday: "short", day: "numeric", month: "short", timeZone: "Pacific/Auckland"
-  });
+  const [ty, tm, td] = tomorrowIso.split("-").map(Number);
+const tomorrowDateOnly = new Date(Date.UTC(ty, tm - 1, td));
+const tomorrowLabel = tomorrowDateOnly.toLocaleDateString("en-NZ", {
+  weekday: "short", day: "numeric", month: "short", timeZone: "UTC"
+});
+
 
   const userIds = [...new Set(due.map(s => s.user_id))];
   const { data: rosterRows, error: rosterError } = await supabase
