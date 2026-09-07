@@ -2061,7 +2061,7 @@ function AccessGate({children}){
   if(loading)return <div className="authScreen"><div className="authCard"><h2>VV Duty Roster</h2><p>Checking access…</p></div></div>;
 
   if(recoveryMode)return <div className="authScreen"><div className="authCard">
-    <div className="vv">VV</div><h2>Create New Password</h2>
+    <img src="/icon-512.png" alt="VV" style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>Create New Password</h2>
     <p>Choose a new password for your VV Duty Roster account.</p>
     <input type="password" placeholder="New password" value={newPassword}
       autoComplete="new-password" onChange={e=>setNewPassword(e.target.value)} />
@@ -2073,7 +2073,7 @@ function AccessGate({children}){
   </div></div>;
 
   if(!session)return <div className="authScreen"><div className="authCard">
-    <div className="vv">VV</div><h2>Private Access</h2>
+    <img src="/icon-512.png" alt="VV" style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>Private Access</h2>
     <p>Only approved users can use this app.</p>
     <input type="email" placeholder="Work email" value={email} autoComplete="email" onChange={e=>setEmail(e.target.value)} />
     <input type="password" placeholder="Password" value={password} autoComplete="current-password"
@@ -2901,7 +2901,7 @@ function App(){
   });
 
   return <div className="shell">
-    <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
+    <header className="top"><div><img src="/icon-512.png" alt="VV" style={{height:44,width:44,display:"block"}}/><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
       {!myName&&<section className="panel" style={{padding:"13px",background:"#3a2a12",border:"1px solid #D4AF6A"}}>
