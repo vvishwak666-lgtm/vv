@@ -52,14 +52,6 @@ function normalizeEmployeeName(name){
   return String(name||"").toUpperCase().replace(/[.,]/g," ").replace(/\s+/g," ").trim();
 }
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
-function fileToBase64(file){
-  return new Promise((resolve,reject)=>{
-    const r=new FileReader();
-    r.onload=()=>resolve(String(r.result).split(",")[1]);
-    r.onerror=()=>reject(new Error("Could not read file"));
-    r.readAsDataURL(file);
-  });
-}
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
 // Separate from fmt() above: that helper is hardcoded for plain calendar
@@ -230,10 +222,12 @@ function repairAmPmSeed(e){
   for(const raw of candidates){
     const parsed=airport24HourDuration(raw);
     if(parsed.valid && parsed.hours>0){
-      const {start}=splitAirportRange(raw);
-      const startHour=Number(String(start||"").split(":")[0]);
-      const isAm=Number.isFinite(startHour) ? startHour<12 : true;
-      return isAm ? {am:parsed.time,pm:"0000-0000"} : {am:"0000-0000",pm:parsed.time};
+      // One shift per day always goes in slot 1, regardless of start time.
+      // Slot 2 is reserved for manually-entered split shifts. (This used to
+      // route anything starting at/after noon into slot 2, which left slot 1
+      // showing 00:00 for every late shift and made "My Roster" disagree
+      // with the dashboard.)
+      return {am:parsed.time,pm:"0000-0000"};
     }
   }
   return null;
@@ -2373,60 +2367,6 @@ function App(){
     setReview(r=>r&&r.staffId===id?{...r,name:newName}:r);
   };
 
-  // Replaces the old Tesseract-based scanFullTable. Sends the whole photo
-  // plus the user's own typed name to a vision-model backend, which finds
-  // just that person's row and reads their shift for every visible day.
-  // No staff-selection step needed — the user already told us who they
-  // are in Settings > My Profile, so we skip straight to a review screen.
-  const scanFullTableVision=useCallback(async(file)=>{
-    if(!myName){
-      setError("Set your name in Settings > My Profile before uploading a roster photo — this is how VV Roster knows which row is yours.");
-      return;
-    }
-    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(10);
-    setStatus("Reading roster…");
-    try{
-      const url=URL.createObjectURL(file);
-      setPreview(url);
-      const base64=await fileToBase64(file);
-      setProgress(30);
-      const resp=await fetch("/api/parse-roster",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          imageBase64:base64,
-          mediaType:file.type||"image/png",
-          employeeName:myName,
-          referenceYear:new Date().getFullYear()
-        })
-      });
-      setProgress(80);
-      const data=await resp.json();
-      if(!resp.ok){
-        setError(data.error||"Couldn't read that roster photo. Try again with a clearer image.");
-        return;
-      }
-      if(!data.found){
-        setError(`Couldn't find "${myName}" on this roster. Check that the name in Settings > My Profile matches exactly how it's printed on the sheet.`);
-        return;
-      }
-      setReview({
-        fileName:file.name,
-        staffId:"vision",
-        name:data.matchedName||myName,
-        firstDate:data.days[0]?.date||new Date().toISOString().slice(0,10),
-        cells:data.days.map(d=>d.text||""),
-        thumbs:data.days.map(()=>null),
-        workingHours:null,
-        tableIndex:null
-      });
-    }catch(e){
-      setError("Couldn't read the roster photo. Check your connection and try again.");
-    }finally{
-      setProcessing(false);setProgress(0);setStatus("");
-    }
-  },[myName]);
-
   const upload=(files)=>{
     const file=files?.[0];if(!file)return;
     const ext=file.name.split(".").pop().toLowerCase();
@@ -3289,20 +3229,20 @@ function App(){
       <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
-    {(table||review)&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>{table?"Roster staff detected":"Review your roster"}</h2><p>{table?"Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.":"Check the extracted shifts below match your roster, then import."}</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
+      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/>{table&&<div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div>}</div>
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div></div>
         <div className="autoControls">
-          {table&&<label>Employee
+          <label>Employee
             <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
               <option value="">Select employee…</option>
               {table.staff.map(s=><option key={s.id} value={s.id}>{s.nameUncertain?"⚠ ":""}{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
-          </label>}
+          </label>
 
-          {table&&table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
+          {table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
             <summary>Fix employee names ({table.staff.filter(s=>s.nameUncertain).length} flagged)</summary>
             <div className="staffNameFixList">
               {table.staff.map(s=>(
@@ -3325,7 +3265,7 @@ function App(){
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            {review.workingHours!=null&&<div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours.toFixed(2)}</b></span></div>}
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
           </>}
         </div>
       </div>
@@ -3345,7 +3285,7 @@ function App(){
               <div className="exactRosterCell" title={cell||""}>
                 {review.thumbs[i]
                   ? <img src={review.thumbs[i]} alt={`Roster cell ${i+1}`}/>
-                  : <span>{cell||"—"}</span>}
+                  : <span>—</span>}
               </div>
             </div>
           ))}
@@ -3395,10 +3335,9 @@ function deriveAmPmSeed(e){
   for(const raw of candidates){
     const parsed=airport24HourDuration(raw);
     if(parsed.valid && parsed.hours>0){
-      const {start}=splitAirportRange(raw);
-      const startHour=Number(String(start||"").split(":")[0]);
-      const isAm=Number.isFinite(startHour) ? startHour<12 : true;
-      return isAm ? {am:parsed.time,pm:"0000-0000"} : {am:"0000-0000",pm:parsed.time};
+      // Single shift per day always lands in slot 1 — same rule as
+      // importReview and repairAmPmSeed. Slot 2 is manual-entry only.
+      return {am:parsed.time,pm:"0000-0000"};
     }
   }
   return {am:"0000-0000",pm:"0000-0000"};
