@@ -2430,7 +2430,7 @@ function App(){
   const upload=(files)=>{
     const file=files?.[0];if(!file)return;
     const ext=file.name.split(".").pop().toLowerCase();
-    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTableVision(file);return;}
+    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTable(file);return;}
     if(ext==="csv"){
       Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
         const rows=r.data.map((x,i)=>({id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
