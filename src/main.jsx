@@ -2577,8 +2577,14 @@ function App(){
   // name-matching guess only if nothing has been chosen yet. The guess alone
   // isn't safe for anyone whose name isn't Vimal/Prabhakar or first
   // alphabetically — which matters once more than one person uses the app.
-  const myName=myNameOverride||names.find(n=>/VIMAL|PRABHAKAR/i.test(n))||names[0]||"";
-  const mine=useMemo(()=>entries.filter(e=>!myName||normalizeEmployeeName(e.name)===normalizeEmployeeName(myName)).sort((a,b)=>String(a.date).localeCompare(String(b.date))),[entries,myName]);
+  // IMPORTANT: do not auto-guess an employee's identity. Previously this
+  // fell back to a regex matching the developer's own name, then to
+  // names[0] — meaning any user who hadn't yet visited Settings > My
+  // Profile silently saw someone else's shifts/hours with no indication
+  // anything was wrong. Now it's blank until the user (or onboarding flow)
+  // explicitly sets it, and the UI below prompts for it clearly.
+  const myName=myNameOverride||"";
+  const mine=useMemo(()=>myName?entries.filter(e=>normalizeEmployeeName(e.name)===normalizeEmployeeName(myName)).sort((a,b)=>String(a.date).localeCompare(String(b.date))):[],[entries,myName]);
 
   // Needed so shift data and push subscriptions can be linked to the signed-in
   // account — evening reminders are sent server-side, which has no access to
@@ -2599,6 +2605,49 @@ function App(){
     if(!supabase)return;
     supabase.auth.getUser().then(({data})=>setUserId(data?.user?.id||null));
   },[]);
+
+  // Employee-name choice is now also synced to Supabase (profiles table),
+  // keyed by the authenticated user_id — not just localStorage — so it
+  // survives a reinstall or a new device instead of resetting to blank.
+  // localStorage stays as an offline cache; Supabase wins when reachable.
+  const hasAttemptedProfileLoad=useRef(false);
+  useEffect(()=>{
+    if(!supabase||!userId)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const {data,error}=await supabase.from("profiles").select("employee_name").eq("user_id",userId).maybeSingle();
+        if(cancelled)return;
+        if(!error&&data?.employee_name){
+          // Server has a saved choice — it wins over localStorage, since
+          // Supabase is the durable source of truth across devices.
+          setMyNameOverride(data.employee_name);
+        }else if(!error&&myNameOverride){
+          // No server row yet, but this device already picked a name
+          // locally (e.g. from before this sync existed) — push it up once
+          // so it isn't lost on the next reinstall.
+          await supabase.from("profiles").upsert({user_id:userId,employee_name:myNameOverride});
+        }
+      }catch{
+        // Offline or Supabase unreachable — keep using whatever's already
+        // loaded from localStorage. Not fatal.
+      }finally{
+        if(!cancelled)hasAttemptedProfileLoad.current=true;
+      }
+    })();
+    return()=>{cancelled=true};
+  },[userId]);
+
+  // Any later manual change via the "Which name on the roster is you?"
+  // dropdown gets pushed to Supabase too — guarded so this can't fire
+  // before the load above has run and silently overwrite a real saved
+  // value with the still-default "".
+  useEffect(()=>{
+    if(!supabase||!userId||!hasAttemptedProfileLoad.current||!myNameOverride)return;
+    supabase.from("profiles").upsert({user_id:userId,employee_name:myNameOverride}).then(({error})=>{
+      if(error)console.error("Couldn't save employee name to profile:",error.message);
+    });
+  },[myNameOverride,userId]);
 
   // On open, finds out whether THIS device already has a working
   // subscription and, if so, loads the time it's actually set to — instead
@@ -2855,9 +2904,13 @@ function App(){
     <header className="top"><div><div className="vv">VV</div><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
+      {!myName&&<section className="panel" style={{padding:"13px",background:"#3a2a12",border:"1px solid #D4AF6A"}}>
+        <b style={{color:"#D4AF6A"}}>Set your name to see your roster</b>
+        <p className="rateNote" style={{marginTop:6}}>Go to Settings &gt; My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.</p>
+      </section>}
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
       <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>THIS WEEK</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,6))}</span></div><WeekRosterImages rows={Array.from({length:7},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))||null)} dates={Array.from({length:7},(_,i)=>addDays(weekStart,i))} employeeName={myName}/></section>
+      <section className="panel"><div className="sectionTitle"><b>NEXT 14 DAYS</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(weekStart,i))} employeeName={myName}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
@@ -3413,9 +3466,12 @@ const NZ_TAX_BRACKETS=[
   {upTo:180000,rate:0.33},
   {upTo:Infinity,rate:0.39}
 ];
-// ACC earner's levy, 2025–26 year: 1.67% of earnings, capped at $152,790.
-const ACC_LEVY_RATE=0.0167;
-const ACC_LEVY_CAP=152790;
+// ACC earner's levy, 2026–27 year (effective 1 April 2026): 1.75% of
+// earnings, capped at $156,641 (max levy $2,741.22). Was 1.67% / $152,790
+// for 2025–26 — update again around April 2027 when the next year's rate
+// is confirmed.
+const ACC_LEVY_RATE=0.0175;
+const ACC_LEVY_CAP=156641;
 
 const PAY_PERIODS_PER_YEAR={weekly:52,fortnightly:26,monthly:12};
 
