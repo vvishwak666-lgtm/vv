@@ -550,6 +550,29 @@ function detectRosterGridBounds(canvas,staff){
   const dayBounds=lines.slice(1,16);
   const workingBounds=[lines[15],lines[16]];
 
+  // Sanity-check the day columns: they're evenly spaced by design, so any
+  // column whose snapped width is way off from its neighbors almost
+  // certainly snapped to noise (glare, a crease in a photographed sheet,
+  // a highlighted/shaded cell) rather than a real gridline. When that
+  // happens in one part of the photo, every cell from there onward reads
+  // from the wrong x-position — this is what caused columns from a
+  // certain day onward to crop half of one cell and half of the next.
+  // Falling back to the evenly-spaced expected position for just the bad
+  // boundary fixes that day without disturbing columns that snapped fine.
+  const widths=[];
+  for(let i=0;i<14;i++) widths.push(dayBounds[i+1]-dayBounds[i]);
+  const sortedWidths=[...widths].sort((a,b)=>a-b);
+  const medianWidth=sortedWidths[Math.floor(sortedWidths.length/2)];
+  for(let i=0;i<14;i++){
+    const w=dayBounds[i+1]-dayBounds[i];
+    if(medianWidth>0 && (w<medianWidth*0.7 || w>medianWidth*1.3)){
+      // Re-snap this pair to the expected (evenly-spaced) positions
+      // instead of whatever noisy line was picked.
+      dayBounds[i]=Math.round(expected[i+1]);
+      dayBounds[i+1]=Math.round(expected[i+2]);
+    }
+  }
+
   return {lines,dayBounds,workingBounds,top,bottom};
 }
 
@@ -3250,7 +3273,7 @@ function App(){
       <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
-    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
+    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal" style={{maxHeight:"92vh",display:"flex",flexDirection:"column",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
       <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
@@ -3312,7 +3335,7 @@ function App(){
           ))}
         </div>
 
-        <div className="importFooter exactModeFooter">
+        <div className="importFooter exactModeFooter" style={{position:"sticky",bottom:0,background:"#0B0A08",paddingTop:10,paddingBottom:"env(safe-area-inset-bottom, 10px)",borderTop:"1px solid #2a251c",zIndex:2}}>
           <span className="ready">✓ Showing the original selected employee cells exactly as uploaded</span>
           <button className="primary" disabled={!allValid} onClick={importReview}>
             <Check size={16}/> Import {review.name}
