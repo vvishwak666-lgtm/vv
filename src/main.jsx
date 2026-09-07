@@ -2255,9 +2255,26 @@ function App(){
       const source={fileName:file.name,canvas,staff:allStaff,tables};
       setTable(source);
 
-      // Stop after name detection. Show the employee dropdown immediately.
-      // Detailed OCR runs only after the user explicitly selects an employee.
-      setSelectedStaff("");
+      // Auto-select whichever detected row matches the name already saved
+      // in Settings > My Profile, so returning users don't have to tap
+      // their name every single time they upload a new roster photo.
+      // Reads myName fresh via the ref below (not the closed-over myName,
+      // which would be stale since this callback has an empty dependency
+      // array) and calls readStaffRow directly with the just-built
+      // 'source' object rather than the 'table' state variable, which
+      // hasn't updated yet due to React's async state batching.
+      const currentName=myNameRef.current;
+      const myNorm=normalizeEmployeeName(currentName);
+      const autoMatch=currentName && allStaff.find(s=>normalizeEmployeeName(s.name)===myNorm);
+      if(autoMatch){
+        setSelectedStaff(autoMatch.id);
+        setStatus(`Found your row — reading ${autoMatch.name}'s shifts…`);
+        await readStaffRow(source,autoMatch.id,worker);
+      }else{
+        // Stop after name detection. Show the employee dropdown so the
+        // user can pick manually.
+        setSelectedStaff("");
+      }
     }catch(e){
       setError(e?.message||"Could not read this roster image.");
     }finally{
@@ -2590,6 +2607,8 @@ function App(){
   // anything was wrong. Now it's blank until the user (or onboarding flow)
   // explicitly sets it, and the UI below prompts for it clearly.
   const myName=myNameOverride||"";
+  const myNameRef=useRef(myName);
+  useEffect(()=>{myNameRef.current=myName;},[myName]);
   const mine=useMemo(()=>myName?entries.filter(e=>normalizeEmployeeName(e.name)===normalizeEmployeeName(myName)).sort((a,b)=>String(a.date).localeCompare(String(b.date))):[],[entries,myName]);
 
   // Needed so shift data and push subscriptions can be linked to the signed-in
@@ -3180,11 +3199,13 @@ function App(){
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
           Type your exact name as it appears on the roster
           <input type="text" value={myName} placeholder="e.g. PRABHAKAR, Vimal"
+            style={{fontSize:17,padding:"14px 13px",minHeight:52,width:"100%",boxSizing:"border-box"}}
             onChange={ev=>setMyNameOverride(ev.target.value)} />
         </label>
         {names.length>0&&<label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6,marginTop:10}}>
           Or pick from names found in your last imported roster
-          <select value={names.includes(myName)?myName:""} onChange={ev=>setMyNameOverride(ev.target.value)}>
+          <select value={names.includes(myName)?myName:""} onChange={ev=>setMyNameOverride(ev.target.value)}
+            style={{fontSize:17,padding:"14px 13px",minHeight:52,width:"100%",boxSizing:"border-box"}}>
             <option value="">— select —</option>
             {names.map(n=><option key={n} value={n}>{n}</option>)}
           </select>
