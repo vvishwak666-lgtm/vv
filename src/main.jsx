@@ -52,6 +52,14 @@ function normalizeEmployeeName(name){
   return String(name||"").toUpperCase().replace(/[.,]/g," ").replace(/\s+/g," ").trim();
 }
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function fileToBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r=new FileReader();
+    r.onload=()=>resolve(String(r.result).split(",")[1]);
+    r.onerror=()=>reject(new Error("Could not read file"));
+    r.readAsDataURL(file);
+  });
+}
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
 // Separate from fmt() above: that helper is hardcoded for plain calendar
@@ -2365,10 +2373,64 @@ function App(){
     setReview(r=>r&&r.staffId===id?{...r,name:newName}:r);
   };
 
+  // Replaces the old Tesseract-based scanFullTable. Sends the whole photo
+  // plus the user's own typed name to a vision-model backend, which finds
+  // just that person's row and reads their shift for every visible day.
+  // No staff-selection step needed — the user already told us who they
+  // are in Settings > My Profile, so we skip straight to a review screen.
+  const scanFullTableVision=useCallback(async(file)=>{
+    if(!myName){
+      setError("Set your name in Settings > My Profile before uploading a roster photo — this is how VV Roster knows which row is yours.");
+      return;
+    }
+    setError("");setReview(null);setTable(null);setProcessing(true);setProgress(10);
+    setStatus("Reading roster…");
+    try{
+      const url=URL.createObjectURL(file);
+      setPreview(url);
+      const base64=await fileToBase64(file);
+      setProgress(30);
+      const resp=await fetch("/api/parse-roster",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          imageBase64:base64,
+          mediaType:file.type||"image/png",
+          employeeName:myName,
+          referenceYear:new Date().getFullYear()
+        })
+      });
+      setProgress(80);
+      const data=await resp.json();
+      if(!resp.ok){
+        setError(data.error||"Couldn't read that roster photo. Try again with a clearer image.");
+        return;
+      }
+      if(!data.found){
+        setError(`Couldn't find "${myName}" on this roster. Check that the name in Settings > My Profile matches exactly how it's printed on the sheet.`);
+        return;
+      }
+      setReview({
+        fileName:file.name,
+        staffId:"vision",
+        name:data.matchedName||myName,
+        firstDate:data.days[0]?.date||new Date().toISOString().slice(0,10),
+        cells:data.days.map(d=>d.text||""),
+        thumbs:data.days.map(()=>null),
+        workingHours:null,
+        tableIndex:null
+      });
+    }catch(e){
+      setError("Couldn't read the roster photo. Check your connection and try again.");
+    }finally{
+      setProcessing(false);setProgress(0);setStatus("");
+    }
+  },[myName]);
+
   const upload=(files)=>{
     const file=files?.[0];if(!file)return;
     const ext=file.name.split(".").pop().toLowerCase();
-    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTable(file);return;}
+    if(["png","jpg","jpeg","webp"].includes(ext)){scanFullTableVision(file);return;}
     if(ext==="csv"){
       Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
         const rows=r.data.map((x,i)=>({id:`csv-${Date.now()}-${i}`,name:x.Name||x.name||x.Employee||x.employee||"",date:x.Date||x.date||"",time:x.Time||x.time||x.Shift||x.shift||"",code:x.Code||x.code||"",hours:+(x.Hours||x.hours||0)||hoursOf(x.Time||x.time||""),source:file.name})).filter(x=>x.name);
@@ -2402,14 +2464,18 @@ function App(){
       const parsedShift=parseShiftText(literal);
       console.log("Roster shift parsing",{date,employeeName:review.name,rawShiftText:literal,parsedShift});
 
-      // Seed the real time into the correct AM/PM slot (AM if it starts
-      // before noon, otherwise PM) instead of hardcoding both to
-      // "0000-0000" — that default silently threw away every OCR'd shift.
+      // There's always exactly one shift per day (per the 6-on/3-off
+      // pattern: 3 earlies then 3 lates) — it always belongs in slot 1,
+      // no matter what time it starts. Slot 2 is reserved only for the
+      // rare split-shift day, which the user fills in manually — OCR
+      // must never write to it automatically. (Previously this used a
+      // "before noon = AM slot" heuristic, which wrongly routed
+      // late-starting shifts like 17:00–02:00 into slot 2, leaving slot 1
+      // blank at 00:00 even though the shift was successfully read.)
       let amShift="0000-0000", pmShift="0000-0000";
       if(parsedShift && !parsedShift.isDayOff){
-        const startHour=Number(parsedShift.start.slice(0,2));
         const compact=`${parsedShift.start.replace(":","")}-${parsedShift.end.replace(":","")}`;
-        if(startHour<12) amShift=compact; else pmShift=compact;
+        amShift=compact;
       }
 
       return {
@@ -3223,20 +3289,20 @@ function App(){
       <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
     </div></div>}
 
-    {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+    {(table||review)&&!processing&&<div className="modalWrap"><div className="modal autoTableModal">
+      <div className="modalHead"><div><h2>{table?"Roster staff detected":"Review your roster"}</h2><p>{table?"Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.":"Check the extracted shifts below match your roster, then import."}</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div></div>
+        <div className="autoPreview"><img src={preview}/>{table&&<div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div>}</div>
         <div className="autoControls">
-          <label>Employee
+          {table&&<label>Employee
             <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
               <option value="">Select employee…</option>
               {table.staff.map(s=><option key={s.id} value={s.id}>{s.nameUncertain?"⚠ ":""}{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
-          </label>
+          </label>}
 
-          {table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
+          {table&&table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
             <summary>Fix employee names ({table.staff.filter(s=>s.nameUncertain).length} flagged)</summary>
             <div className="staffNameFixList">
               {table.staff.map(s=>(
@@ -3259,7 +3325,7 @@ function App(){
             <label>First date
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
+            {review.workingHours!=null&&<div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours.toFixed(2)}</b></span></div>}
           </>}
         </div>
       </div>
@@ -3279,7 +3345,7 @@ function App(){
               <div className="exactRosterCell" title={cell||""}>
                 {review.thumbs[i]
                   ? <img src={review.thumbs[i]} alt={`Roster cell ${i+1}`}/>
-                  : <span>—</span>}
+                  : <span>{cell||"—"}</span>}
               </div>
             </div>
           ))}
