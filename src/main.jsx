@@ -3172,13 +3172,18 @@ function App(){
 
       <section className="panel menu"><h3>MY PROFILE</h3>
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
-          Which name on the roster is you?
-          <select value={myName} onChange={ev=>setMyNameOverride(ev.target.value)}>
-            {names.length===0&&<option value="">No roster imported yet</option>}
+          Type your exact name as it appears on the roster
+          <input type="text" value={myName} placeholder="e.g. PRABHAKAR, Vimal"
+            onChange={ev=>setMyNameOverride(ev.target.value)} />
+        </label>
+        {names.length>0&&<label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6,marginTop:10}}>
+          Or pick from names found in your last imported roster
+          <select value={names.includes(myName)?myName:""} onChange={ev=>setMyNameOverride(ev.target.value)}>
+            <option value="">— select —</option>
             {names.map(n=><option key={n} value={n}>{n}</option>)}
           </select>
-        </label>
-        <p className="rateNote" style={{padding:"0 13px 13px"}}>"My Roster" and evening shift reminders are based on this. Get it right before enabling reminders below, or you'll be notified about someone else's shift.</p>
+        </label>}
+        <p className="rateNote" style={{padding:"0 13px 13px"}}>"My Roster" and evening shift reminders are based on this. Type it exactly as it appears on the roster sheet (e.g. "SURNAME, Firstname") so photo imports match correctly. Get it right before enabling reminders below, or you'll be notified about someone else's shift.</p>
       </section>
 
       <section className="panel menu"><h3>NOTIFICATIONS</h3>
