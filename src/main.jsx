@@ -2188,6 +2188,15 @@ function App(){
   const [otTier1Hours,setOtTier1Hours]=useState(3);
   const [otTier1Mult,setOtTier1Mult]=useState(1.5);
   const [otTier2Mult,setOtTier2Mult]=useState(2.0);
+  // Separate from OT tiering above: this applies to RT-tagged hours only,
+  // cumulative across the whole roster period (not reset per day) — e.g.
+  // once total RT hours for the period pass 70, the hours between 70-80
+  // pay at 1.5x, and anything past 80 pays at 2x. OT-tagged hours are
+  // unaffected and keep using the per-day tiering above.
+  const [rtTier1Threshold,setRtTier1Threshold]=useState(70);
+  const [rtTier2Threshold,setRtTier2Threshold]=useState(80);
+  const [rtTier1Mult,setRtTier1Mult]=useState(1.5);
+  const [rtTier2Mult,setRtTier2Mult]=useState(2.0);
   const [payFrequency,setPayFrequency]=useState("fortnightly");
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
@@ -2205,8 +2214,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"")}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"")}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -3160,16 +3169,35 @@ function App(){
               <small>×</small>
             </div>
           </div>
-          <div className="rateRow rateRowTotal">
-            <span>Total Pay</span>
-            <b>${totalPayForRows(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult).toFixed(2)}</b>
+          <div className="rateRow" style={{marginTop:8,borderTop:"1px solid #2a251c",paddingTop:12}}>
+            <span>RT hours — time-and-half from</span>
+            <div className="rateValue">
+              <input type="number" step="1" min="0" value={rtTier1Threshold} onChange={ev=>setRtTier1Threshold(+ev.target.value||0)} aria-label="RT tier 1 threshold hours"/>
+              <small>hrs</small>
+            </div>
           </div>
+          <div className="rateRow">
+            <span>RT hours — double from</span>
+            <div className="rateValue">
+              <input type="number" step="1" min="0" value={rtTier2Threshold} onChange={ev=>setRtTier2Threshold(+ev.target.value||0)} aria-label="RT tier 2 threshold hours"/>
+              <small>hrs</small>
+            </div>
+          </div>
+          {(()=>{const b=totalPayForRowsWithRtTiers(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);return(<>
+            <div className="rateRow"><span>Total RT hours this period</span><span>{b.totalRtHours.toFixed(2)}</span></div>
+            {b.tier1Hours>0&&<div className="rateRow"><span>— at {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} hrs</span></div>}
+            {b.tier2Hours>0&&<div className="rateRow"><span>— at {rtTier2Mult}× (over {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} hrs</span></div>}
+            <div className="rateRow rateRowTotal">
+              <span>Total Pay</span>
+              <b>${b.totalPay.toFixed(2)}</b>
+            </div>
+          </>)})()}
         </div>
-        <p className="rateNote">Matches a typical payslip: OT-tagged shift hours are paid at Tier 1 up to the threshold, then Tier 2 beyond it — combined across a day's AM and PM shifts, not reset per shift.</p>
+        <p className="rateNote">OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.</p>
       </section>
 
       {(()=>{
-        const totalPay=totalPayForRows(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+        const totalPay=totalPayForRowsWithRtTiers(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
         const tax=periodNzPaye(totalPay,payFrequency);
         const unionFee=totalPay*(unionPct/100);
         const kiwiSaver=totalPay*(kiwiSaverPct/100);
@@ -3567,6 +3595,41 @@ function totalPayForRows(rows,payRate,tier1Hours,tier1Mult,tier2Mult){
     }
   }
   return total;
+}
+
+// Correct version for the period "Total Pay" figure: OT-tagged hours keep
+// the existing per-day tiering (unchanged, via dayShiftPays), but RT-tagged
+// hours are pooled across the WHOLE roster period first, then split into
+// tiers by total — e.g. hours 71-80 across the period pay at 1.5x, hours
+// beyond 80 pay at 2x — rather than every RT hour paying flat rate 1x as
+// totalPayForRows above does. Split shifts, stay-backs, and early starts
+// are just RT-tagged rows like any other, so they're included the same way.
+function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult){
+  let otPay=0,totalRtHours=0;
+  for(const e of rows){
+    const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
+    if(!isDualSource){
+      // Legacy single-value entries have no RT/OT tag — treat as RT hours.
+      totalRtHours+=effectiveEntryHours(e);
+      continue;
+    }
+    const am=e.amShift ?? "0000-0000", pm=e.pmShift ?? "0000-0000";
+    const amParsed=airport24HourDuration(am), pmParsed=airport24HourDuration(pm);
+    const amHours=amParsed.valid?amParsed.hours:0, pmHours=pmParsed.valid?pmParsed.hours:0;
+    const amType=e.amType??"RT", pmType=e.pmType??"RT";
+    let otSoFarToday=0;
+    if(amType==="OT"){ otPay+=tieredOtPay(otSoFarToday,amHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=amHours; }
+    else totalRtHours+=amHours;
+    if(pmType==="OT"){ otPay+=tieredOtPay(otSoFarToday,pmHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=pmHours; }
+    else totalRtHours+=pmHours;
+  }
+
+  const straightHours=Math.min(totalRtHours,rtTier1Threshold);
+  const tier1Hours=Math.max(0,Math.min(totalRtHours,rtTier2Threshold)-rtTier1Threshold);
+  const tier2Hours=Math.max(0,totalRtHours-rtTier2Threshold);
+  const rtPay=straightHours*payRate + tier1Hours*payRate*rtTier1Mult + tier2Hours*payRate*rtTier2Mult;
+
+  return {totalPay:rtPay+otPay,totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay};
 }
 
 // Dashboard-only "THIS WEEK" display. Shows the exact cropped roster-cell
