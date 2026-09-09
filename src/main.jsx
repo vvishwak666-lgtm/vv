@@ -53,6 +53,40 @@ function normalizeEmployeeName(name){
 }
 function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+
+// Groups one person's imported dates into consecutive, non-overlapping
+// 14-day roster periods (Monday-Sunday-Monday-Sunday), anchored to the
+// Monday of their EARLIEST imported date. This is what makes period
+// boundaries land on the same Mondays the airline actually rosters on,
+// instead of guessing from "today". Only periods that contain at least one
+// imported day are returned. Each uploaded 14-day timesheet should land
+// inside exactly one of these blocks; uploading a second/third timesheet
+// just adds another block (or fills a gap) — it never merges into the
+// same total as an unrelated period.
+function computePeriods(rows,effectiveEntryHoursFn){
+  const dated=rows.filter(e=>e.date).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  if(!dated.length) return [];
+  const today=todayISO();
+  const lastDate=dated[dated.length-1].date;
+  const endBoundary=lastDate>today?lastDate:today;
+  const periods=[];
+  let periodStart=mondayOf(dated[0].date);
+  while(periodStart<=endBoundary){
+    const periodEnd=addDays(periodStart,13);
+    const periodRows=dated.filter(e=>e.date>=periodStart&&e.date<=periodEnd);
+    if(periodRows.length){
+      periods.push({
+        start:periodStart,
+        end:periodEnd,
+        rows:periodRows,
+        hours:periodRows.reduce((s,e)=>s+effectiveEntryHoursFn(e),0),
+        isCurrent:today>=periodStart&&today<=periodEnd
+      });
+    }
+    periodStart=addDays(periodStart,14);
+  }
+  return periods;
+}
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
 // Separate from fmt() above: that helper is hardcoded for plain calendar
 // dates like "2026-08-18" and always appends "T12:00:00" before parsing.
@@ -2946,8 +2980,17 @@ function App(){
   const month=mine.filter(e=>e.date?.startsWith(calendarMonth.slice(0,7)));
   const weekHours=week.reduce((s,e)=>s+effectiveEntryHours(e),0);
   const monthHours=month.reduce((s,e)=>s+effectiveEntryHours(e),0);
-  const rosterTotalHours=mine.reduce((s,e)=>s+effectiveEntryHours(e),0);
-  const rosterOvertimeHours=mine.reduce((s,e)=>s+entryOvertimeHours(e),0);
+
+  // "Rosters uploaded" — every consecutive 14-day block that has at least
+  // one imported day for this person, oldest first. currentPeriod is
+  // whichever block contains today; only ITS hours count toward the
+  // dashboard/roster totals below. Uploading another 14-day timesheet
+  // never adds its hours into an already-finished period's total.
+  const periods=useMemo(()=>computePeriods(mine,effectiveEntryHours),[mine]);
+  const currentPeriod=periods.find(p=>p.isCurrent)||null;
+  const minePeriod=currentPeriod?currentPeriod.rows:[];
+  const rosterTotalHours=currentPeriod?currentPeriod.hours:0;
+  const rosterOvertimeHours=minePeriod.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
   const filtered=entries.filter(e=>{
     if(!searchDay) return true;
@@ -2982,6 +3025,31 @@ function App(){
         <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
         <Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/>
       </div>
+      {currentPeriod&&<div className="sectionTitle" style={{marginBottom:8}}>
+        <span style={{opacity:.7}}>Current period {fmt(currentPeriod.start)} – {fmt(currentPeriod.end)}</span>
+      </div>}
+      <section className="panel">
+        <div className="sectionTitle">
+          <b>ROSTERS UPLOADED</b>
+          <span>{periods.length} period{periods.length===1?"":"s"}</span>
+        </div>
+        {periods.length===0
+          ?<p className="rateNote">No rosters imported yet.</p>
+          :<div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {periods.slice().reverse().map(p=>
+              <div key={p.start} style={{
+                display:"flex",justifyContent:"space-between",alignItems:"center",
+                padding:"9px 12px",borderRadius:8,
+                background:p.isCurrent?"rgba(212,175,106,0.12)":"transparent",
+                border:p.isCurrent?"1px solid #D4AF6A":"1px solid transparent"
+              }}>
+                <span>{fmt(p.start)} – {fmt(p.end)}{p.isCurrent?" · current":""}</span>
+                <b>{formatHoursMinutes(p.hours)}</b>
+              </div>
+            )}
+          </div>
+        }
+      </section>
       <section className="panel">
         <div className="sectionTitle">
           <div>
@@ -3135,7 +3203,7 @@ function App(){
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3>
-        <button onClick={()=>exportRosterPhoto(mine)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
+        <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
       </section>
 
       <section className="panel">
@@ -3183,7 +3251,7 @@ function App(){
               <small>hrs</small>
             </div>
           </div>
-          {(()=>{const b=totalPayForRowsWithRtTiers(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);return(<>
+          {(()=>{const b=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);return(<>
             <div className="rateRow"><span>Total RT hours this period</span><span>{b.totalRtHours.toFixed(2)}</span></div>
             {b.tier1Hours>0&&<div className="rateRow"><span>— at {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} hrs</span></div>}
             {b.tier2Hours>0&&<div className="rateRow"><span>— at {rtTier2Mult}× (over {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} hrs</span></div>}
@@ -3197,7 +3265,7 @@ function App(){
       </section>
 
       {(()=>{
-        const totalPay=totalPayForRowsWithRtTiers(mine,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
+        const totalPay=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
         const tax=periodNzPaye(totalPay,payFrequency);
         const unionFee=totalPay*(unionPct/100);
         const kiwiSaver=totalPay*(kiwiSaverPct/100);
