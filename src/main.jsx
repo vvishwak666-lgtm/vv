@@ -51,8 +51,15 @@ function todayISO(){
 function normalizeEmployeeName(name){
   return String(name||"").toUpperCase().replace(/[.,]/g," ").replace(/\s+/g," ").trim();
 }
-function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
-function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function pad2(n){ return String(n).padStart(2,"0"); }
+// Formats a Date using its LOCAL calendar fields (year/month/day), never
+// going through toISOString(). toISOString() converts to UTC first, which
+// silently rolls the date back by one once NZ daylight saving starts
+// (27 Sep 2026, UTC+13) — noon local minus 13 hours crosses midnight. Every
+// date helper below must build its result this way, not via toISOString().
+function ymd(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
+function addDays(iso,n){ const d=new Date(`${iso}T12:00:00`); d.setDate(d.getDate()+n); return ymd(d); }
+function mondayOf(iso){ const d=new Date(`${iso}T12:00:00`); const n=(d.getDay()+6)%7; d.setDate(d.getDate()-n); return ymd(d); }
 
 // Groups one person's imported dates into consecutive, non-overlapping
 // 14-day roster periods (Monday-Sunday-Monday-Sunday), anchored to the
@@ -390,11 +397,11 @@ function inferFirstDate(text){
   const s=String(text||"");
   const months="Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec";
   const m=s.match(new RegExp(`\\b(\\d{1,2})\\s+(${months})[a-z]*\\s+(\\d{4})\\b`,"i"));
-  if(m){const d=Date.parse(`${m[1]} ${m[2]} ${m[3]}`);if(!isNaN(d))return new Date(d).toISOString().slice(0,10);}
+  if(m){const d=new Date(`${m[1]} ${m[2]} ${m[3]} 12:00:00`);if(!isNaN(d.getTime()))return ymd(d);}
   const dm=s.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\b/);
   if(dm){
     const day=+dm[1],month=+dm[2],year=+dm[3];
-    if(day<=31&&month<=12)return new Date(year,month-1,day,12).toISOString().slice(0,10);
+    if(day<=31&&month<=12)return ymd(new Date(year,month-1,day,12));
   }
   return todayISO();
 }
@@ -3056,9 +3063,9 @@ function App(){
             <b>MY ROSTER</b>
             <small className="editorHint">Edit any shift below. Hours and totals update automatically.</small>
           </div>
-          <span>{mine.length} days imported</span>
+          <span>{minePeriod.length} days this period</span>
         </div>
-        <Roster rows={mine} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
+        <Roster rows={minePeriod} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
       </section>
     </main>}
 
@@ -3858,8 +3865,8 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
     </div>
   </div>;
 }
-function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(d.toISOString().slice(0,7)+"-01")};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
-function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=new Date(d.getFullYear(),d.getMonth(),n,12).toISOString().slice(0,10),r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(`${d.getFullYear()}-${pad2(d.getMonth()+1)}-01`)};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
+function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(n)}`,r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
 
 function exportRosterPhoto(rows=[]){
   try{
