@@ -3216,17 +3216,19 @@ function App(){
           :<div style={{display:"flex",flexDirection:"column",gap:6}}>
             {periods.slice().reverse().map(p=>{
               const isViewed=viewedPeriod&&p.start===viewedPeriod.start;
-              return <button key={p.start}
+              return <div key={p.start}
+                role="button" tabIndex={0}
                 onClick={()=>setSelectedPeriodStart(p.start)}
+                onKeyDown={ev=>{if(ev.key==="Enter"||ev.key===" "){ev.preventDefault();setSelectedPeriodStart(p.start);}}}
                 style={{
                   display:"flex",justifyContent:"space-between",alignItems:"center",
-                  width:"100%",textAlign:"left",padding:"9px 12px",borderRadius:8,
+                  padding:"9px 12px",borderRadius:8,cursor:"pointer",
                   background:isViewed?"rgba(212,175,106,0.12)":"transparent",
                   border:isViewed?"1px solid #D4AF6A":"1px solid transparent"
                 }}>
                 <span>{fmt(p.start)} – {fmt(p.end)}{p.isCurrent?" · current":""}</span>
                 <b>{formatHoursMinutes(p.hours)}</b>
-              </button>;
+              </div>;
             })}
           </div>
         }
@@ -3240,7 +3242,7 @@ function App(){
           </div>
           <span>{viewedPeriodRows.length} days this period</span>
         </div>
-        <Roster rows={viewedPeriodRows} onEdit={viewedPeriod&&viewedPeriod.isCurrent?updateEntryValue:undefined} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
+        <Roster rows={viewedPeriodRows} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
       </section>
     </main>}
 
