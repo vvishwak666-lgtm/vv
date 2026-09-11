@@ -3498,7 +3498,8 @@ function App(){
       </section>
 
       {(()=>{
-        const wagesPay=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
+        const wagesResult=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);
+        const wagesPay=wagesResult.totalPay;
         const allowancesPay=totalAllowancesForRows(minePeriod,payRate,isSchedule1).total;
         const totalPay=wagesPay+allowancesPay;
         const tax=periodNzPaye(totalPay,payFrequency);
@@ -3510,6 +3511,7 @@ function App(){
           <div className="sectionTitle"><b>DEDUCTIONS</b></div>
           <div className="rateCard">
             <div className="rateRow"><span>Wages</span><span>${wagesPay.toFixed(2)}</span></div>
+            {wagesResult.breakDeduction>0&&<div className="rateRow" style={{opacity:.7}}><span>— unpaid meal breaks (ERA s69ZD)</span><span>-${wagesResult.breakDeduction.toFixed(2)}</span></div>}
             <div className="rateRow"><span>Allowances</span><span>${allowancesPay.toFixed(2)}</span></div>
             <div className="rateRow rateRowTotal"><span>Gross Pay</span><b>${totalPay.toFixed(2)}</b></div>
             <div className="rateRow rateRowDeduction">
@@ -3803,6 +3805,24 @@ function entryRosterText(e){
 // hours already happened earlier in the SAME day — so a day with 2h OT in
 // the AM and 2h OT in the PM sees 3h at tier1 and 1h at tier2 (combined),
 // not 2h+2h both mistakenly landing entirely inside tier1.
+// Statutory unpaid meal-break minutes for one continuous work period, per
+// Employment Relations Act 2000 s69ZD (Employment NZ's published table):
+// within each 8-hour block, a period of more than 4 hours gets one 30-min
+// unpaid meal break; 4 hours or less gets none. The entitlement restarts
+// for the "subsequent period" beyond each 8-hour mark, so e.g. a 13-hour
+// shift gets two 30-min meal breaks, not one. The paid 10-minute rest
+// breaks in the same table never reduce pay, so they're not modelled here
+// — only the unpaid meal break affects what's paid out.
+function unpaidMealBreakMinutes(hours){
+  let remaining=Number(hours)||0, minutes=0;
+  while(remaining>0){
+    const block=Math.min(remaining,8);
+    if(block>4) minutes+=30;
+    remaining-=8;
+  }
+  return minutes;
+}
+
 function tieredOtPay(hoursAlreadyOtToday,hoursThisShift,payRate,tier1Hours,tier1Mult,tier2Mult){
   const h=hoursThisShift||0;
   const tier1Remaining=Math.max(tier1Hours-hoursAlreadyOtToday,0);
@@ -4034,12 +4054,14 @@ function totalPayForRows(rows,payRate,tier1Hours,tier1Mult,tier2Mult){
 // totalPayForRows above does. Split shifts, stay-backs, and early starts
 // are just RT-tagged rows like any other, so they're included the same way.
 function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult){
-  let otPay=0,totalRtHours=0;
+  let otPay=0,totalRtHours=0,breakDeduction=0;
   for(const e of rows){
     const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
     if(!isDualSource){
       // Legacy single-value entries have no RT/OT tag — treat as RT hours.
-      totalRtHours+=effectiveEntryHours(e);
+      const h=effectiveEntryHours(e);
+      totalRtHours+=h;
+      breakDeduction+=(unpaidMealBreakMinutes(h)/60)*payRate;
       continue;
     }
     const am=e.amShift ?? "0000-0000", pm=e.pmShift ?? "0000-0000";
@@ -4049,16 +4071,19 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
     let otSoFarToday=0;
     if(amType==="OT"){ otPay+=tieredOtPay(otSoFarToday,amHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=amHours; }
     else totalRtHours+=amHours;
+    if(amHours>0) breakDeduction+=(unpaidMealBreakMinutes(amHours)/60)*payRate;
     if(pmType==="OT"){ otPay+=tieredOtPay(otSoFarToday,pmHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=pmHours; }
     else totalRtHours+=pmHours;
+    if(pmHours>0) breakDeduction+=(unpaidMealBreakMinutes(pmHours)/60)*payRate;
   }
 
   const straightHours=Math.min(totalRtHours,rtTier1Threshold);
   const tier1Hours=Math.max(0,Math.min(totalRtHours,rtTier2Threshold)-rtTier1Threshold);
   const tier2Hours=Math.max(0,totalRtHours-rtTier2Threshold);
   const rtPay=straightHours*payRate + tier1Hours*payRate*rtTier1Mult + tier2Hours*payRate*rtTier2Mult;
+  breakDeduction=Math.round(breakDeduction*100)/100;
 
-  return {totalPay:rtPay+otPay,totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay};
+  return {totalPay:Math.max(0,rtPay+otPay-breakDeduction),totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay,breakDeduction};
 }
 
 // Dashboard-only "THIS WEEK" display. Shows the exact cropped roster-cell
@@ -4095,12 +4120,27 @@ function WeekRosterImages({rows,dates,employeeName}){
 function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mult=2.0}){
   if(!rows.length)return <div className="empty">No shifts found.</div>;
 
+  // Tracks which day-off rows (RDO/AL/SICK/etc.) the person has explicitly
+  // chosen to turn into an editable shift, by entry id. Until a day is in
+  // this set, it renders as a flat "RDO" (etc.) row instead of the AM/PM
+  // time wheels — otherwise every day-off silently became two blank
+  // 00:00-00:00 RT rows in edit mode, with no sign it was ever a day off.
+  const [expandedCodeIds,setExpandedCodeIds]=useState(()=>new Set());
+
   // Every row in the table is one Start–End period (AM or PM), matching the
   // requested Day/Start/End/Time/Pay layout. RDO or unparseable entries fall
   // back to a single flat row, same as before.
   const shiftRows=[];
   for(const e of rows){
     const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
+    // A day still carrying its original RDO/AL/SICK/etc. code, never split
+    // into real AM/PM shift data, and not yet expanded for editing.
+    const isUnexpandedCode=!isDualSource && (e.isDayOff || (e.code && CODES.has(e.code))) && !expandedCodeIds.has(e.id);
+
+    if(onEdit && isUnexpandedCode){
+      shiftRows.push({e,period:null,code:true,label:entryRosterText(e),hours:0,pay:0,breakMinutes:0});
+      continue;
+    }
 
     if(onEdit){
       // Editable rows always expose AM + PM, even if currently blank/RDO,
@@ -4112,8 +4152,9 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const pm=seed.pm;
       const seededEntry=(e.amShift!==undefined || e.pmShift!==undefined) ? e : {...e,amShift:am,pmShift:pm};
       const {amHours,pmHours,amPay,pmPay}=dayShiftPays(seededEntry,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
-      shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay});
-      shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay});
+      const amBreak=unpaidMealBreakMinutes(amHours), pmBreak=unpaidMealBreakMinutes(pmHours);
+      shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:Math.max(0,amPay-(amBreak/60)*payRate),breakMinutes:amBreak});
+      shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:Math.max(0,pmPay-(pmBreak/60)*payRate),breakMinutes:pmBreak});
       continue;
     }
 
@@ -4125,18 +4166,20 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const amHas=amParsed.valid && amParsed.hours>0;
       const pmHas=pmParsed.valid && pmParsed.hours>0;
       if(!amHas && !pmHas){
-        shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours:0,pay:0});
+        shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours:0,pay:0,breakMinutes:0});
       }else{
         const {amHours,pmHours,amPay,pmPay}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
-        if(amHas)shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay});
-        if(pmHas)shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay});
+        const amBreak=unpaidMealBreakMinutes(amHours), pmBreak=unpaidMealBreakMinutes(pmHours);
+        if(amHas)shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:Math.max(0,amPay-(amBreak/60)*payRate),breakMinutes:amBreak});
+        if(pmHas)shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:Math.max(0,pmPay-(pmBreak/60)*payRate),breakMinutes:pmBreak});
       }
       continue;
     }
 
     {
       const hours=effectiveEntryHours(e);
-      shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours,pay:hours*payRate});
+      const breakMinutes=unpaidMealBreakMinutes(hours);
+      shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours,pay:Math.max(0,hours*payRate-(breakMinutes/60)*payRate),breakMinutes});
     }
   }
 
@@ -4157,6 +4200,21 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const isNewDay=i===0||shiftRows[i-1].e.id!==e.id;
       const dayClass=isNewDay?" rosterTableNewDay":"";
 
+      if(r.code){
+        // Day-off row in edit mode: shows the actual code (RDO, AL, SICK,
+        // etc.) instead of blank 00:00-00:00, with an explicit "Edit" to
+        // turn it into a real shift only if the person chooses to.
+        return <div className={"rosterTableRow rosterTableRowFlat"+dayClass} key={e.id+"-code-"+i}>
+          <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
+          <div className="rosterTableStart"><span>{r.label}</span></div>
+          <div className="rosterTableEnd"><span>—</span></div>
+          <div className="rosterTableTime">{formatHoursMinutes(0)}</div>
+          <div className="rosterTablePay">
+            <button onClick={()=>setExpandedCodeIds(prev=>new Set(prev).add(e.id))}>Edit</button>
+          </div>
+        </div>;
+      }
+
       if(period===null){
         // Pull the actual Start/End clock times out of the OCR'd shift text
         // (e.g. "0330-1230") rather than showing the cropped source image —
@@ -4173,7 +4231,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
           <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
           <div className="rosterTableStart"><span>{start||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableEnd"><span>{end||(isRDO?"":"--:--")}</span></div>
-          <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}</div>
+          <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}m break</small>}</div>
           <div className="rosterTablePay">{payRate<=0 && (r.hours||0)>0 ? "Rate required" : `$${(r.pay||0).toFixed(2)}`}</div>
         </div>;
       }
@@ -4208,7 +4266,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
             ? <Time24Wheel value={end} onChange={v=>onEdit(e.id,period,joinAirportRange(start,v))} ariaLabel={`${periodLabel} end time`}/>
             : <span>{end||"--:--"}</span>}
         </div>
-        <div className="rosterTableTime">{formatHoursMinutes(r.hours)}</div>
+        <div className="rosterTableTime">{formatHoursMinutes(r.hours)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}m break</small>}</div>
         <div className="rosterTablePay">{payRate<=0 && r.hours>0 ? "Rate required" : `$${pay.toFixed(2)}`}</div>
       </div>;
     })}
@@ -4217,6 +4275,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       <span>Total Time</span><b>{formatHoursMinutes(totalHours)}</b>
       <span>Total Pay</span><b>{payRate<=0 && totalHours>0 ? "Rate required" : `$${totalPay.toFixed(2)}`}</b>
     </div>
+    {shiftRows.some(r=>r.breakMinutes>0)&&<p className="rateNote" style={{marginTop:8}}>Pay above already deducts unpaid meal breaks under the Employment Relations Act 2000 (s69ZD) — a shift of more than 4 hours in an 8-hour block loses a 30-min unpaid break; the paid 10-min rest breaks in the same law don't reduce pay.</p>}
   </div>;
 }
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(`${d.getFullYear()}-${pad2(d.getMonth()+1)}-01`)};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
