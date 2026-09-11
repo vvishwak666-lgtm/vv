@@ -2239,6 +2239,9 @@ function App(){
   const [rtTier1Mult,setRtTier1Mult]=useState(1.5);
   const [rtTier2Mult,setRtTier2Mult]=useState(2.0);
   const [payFrequency,setPayFrequency]=useState("fortnightly");
+  // Clause 16.1 Penal Rate Allowance only applies to Schedule 1 employees —
+  // everyone else leaves this off and sees no weekend penal in Allowances.
+  const [isSchedule1,setIsSchedule1]=useState(false);
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
   const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
@@ -2255,8 +2258,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"")}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -3271,8 +3274,29 @@ function App(){
         <p className="rateNote">OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.</p>
       </section>
 
+      <section className="panel">
+        <div className="sectionTitle"><b>ALLOWANCES (CLAUSE 16)</b></div>
+        <div className="rateCard">
+          <div className="rateRow">
+            <span>Schedule 1 employee</span>
+            <input type="checkbox" checked={isSchedule1} onChange={ev=>setIsSchedule1(ev.target.checked)} aria-label="Schedule 1 employee"/>
+          </div>
+          {(()=>{const a=totalAllowancesForRows(minePeriod,payRate,isSchedule1);return(<>
+            <div className="rateRow"><span>Shift allowance (16.2)</span><span>${a.shiftAllowance.toFixed(2)}</span></div>
+            <div className="rateRow"><span>Weekend penal (16.1){!isSchedule1?" \u2014 Schedule 1 only":""}</span><span>${a.weekendPenal.toFixed(2)}</span></div>
+            <div className="rateRow rateRowTotal">
+              <span>Total allowances</span>
+              <b>${a.total.toFixed(2)}</b>
+            </div>
+          </>)})()}
+        </div>
+        <p className="rateNote">Shift allowance pays pro rata for hours worked 2200\u20132359, 0000\u20130159 and 0200\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.</p>
+      </section>
+
       {(()=>{
-        const totalPay=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
+        const wagesPay=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult).totalPay;
+        const allowancesPay=totalAllowancesForRows(minePeriod,payRate,isSchedule1).total;
+        const totalPay=wagesPay+allowancesPay;
         const tax=periodNzPaye(totalPay,payFrequency);
         const unionFee=totalPay*(unionPct/100);
         const kiwiSaver=totalPay*(kiwiSaverPct/100);
@@ -3281,6 +3305,9 @@ function App(){
         return <section className="panel">
           <div className="sectionTitle"><b>DEDUCTIONS</b></div>
           <div className="rateCard">
+            <div className="rateRow"><span>Wages</span><span>${wagesPay.toFixed(2)}</span></div>
+            <div className="rateRow"><span>Allowances</span><span>${allowancesPay.toFixed(2)}</span></div>
+            <div className="rateRow rateRowTotal"><span>Gross Pay</span><b>${totalPay.toFixed(2)}</b></div>
             <div className="rateRow rateRowDeduction">
               <span>Tax (NZ PAYE + ACC)</span>
               <div className="rateValue">
@@ -3317,7 +3344,7 @@ function App(){
               <b>${netPay.toFixed(2)}</b>
             </div>
           </div>
-          <p className="rateNote">Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Net Pay = Total Pay − (Tax + Union Fee + KiwiSaver).</p>
+          <p className="rateNote">Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Gross Pay = Wages + Allowances. Net Pay = Gross Pay − (Tax + Union Fee + KiwiSaver).</p>
         </section>;
       })()}
 
@@ -3610,6 +3637,129 @@ function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
 
   return {amHours,pmHours,amPay,pmPay,amType,pmType};
 }
+
+// ---- Clause 16 Allowances -------------------------------------------------
+// 16.2 Shift Allowance: date-banded cents-per-hour rates for hours worked
+// 2200-2359, 0000-0159 and 0200-0600, paid pro rata and NEVER paid on
+// overtime-tagged shifts (see note under the clause). 16.1 Penal Rate
+// Allowance: half the ordinary hourly rate for ordinary (RT) time worked on
+// a Saturday or Sunday, Schedule 1 employees only.
+const SHIFT_ALLOWANCE_RATES=[
+  {from:"2025-04-04",to:"2026-03-08",late:3.96,mid:6.60,early:9.26},
+  {from:"2026-03-09",to:"2027-03-07",late:4.04,mid:6.75,early:9.47},
+  {from:"2027-03-08",to:"2028-03-05",late:4.50,mid:7.50,early:10.30},
+];
+const SHIFT_ALLOWANCE_BANDS=[
+  {key:"late",label:"2200\u20132359",start:22*60,end:24*60},
+  {key:"mid",label:"0000\u20130159",start:0,end:2*60},
+  {key:"early",label:"0200\u20130600",start:2*60,end:6*60},
+];
+const WEEKEND_PENAL_FRACTION=0.5;
+
+function shiftAllowanceRatesFor(iso){
+  return SHIFT_ALLOWANCE_RATES.find(r=>iso>=r.from && iso<=r.to)||null;
+}
+// Sat/Sun check on the same local-noon-anchored Date construction used by
+// every other date helper in this file (ymd/addDays/mondayOf/fmt), so it
+// never drifts a day around DST like toISOString() would.
+function isWeekendIso(iso){
+  const d=new Date(`${iso}T12:00:00`).getDay();
+  return d===0 || d===6;
+}
+
+// Splits one HHMM-HHMM shift (already the app's internal time format) into
+// per-calendar-day, per-band minute overlaps, and prices each band against
+// whichever Clause 16.2 rate period the segment's date falls in. Handles
+// shifts crossing midnight by carrying the remainder onto the next day.
+function shiftAllowanceForSegment(iso,startHHMM,endHHMM){
+  const sh=Number(startHHMM.slice(0,2)), sm=Number(startHHMM.slice(2,4));
+  const eh=Number(endHHMM.slice(0,2)), em=Number(endHHMM.slice(2,4));
+  let s=sh*60+sm, e=eh*60+em;
+  if(e<=s) e+=1440;
+
+  const segs=[{date:iso,s,e:Math.min(e,1440)}];
+  if(e>1440) segs.push({date:addDays(iso,1),s:0,e:e-1440});
+
+  let total=0; const lines=[];
+  for(const seg of segs){
+    const rates=shiftAllowanceRatesFor(seg.date);
+    if(!rates) continue;
+    for(const band of SHIFT_ALLOWANCE_BANDS){
+      const minutes=Math.max(0,Math.min(seg.e,band.end)-Math.max(seg.s,band.start));
+      if(minutes<=0) continue;
+      const rate=rates[band.key];
+      const amount=(minutes/60)*rate;
+      total+=amount;
+      lines.push({date:seg.date,band:band.key,label:band.label,minutes,rate,amount});
+    }
+  }
+  return {total,lines};
+}
+
+// Shift allowance for one roster entry. Only RT-tagged portions count —
+// OT-tagged AM/PM slots are skipped entirely, matching "nor is it paid when
+// overtime is worked".
+function entryShiftAllowance(e){
+  if(!e?.date) return {total:0,lines:[]};
+  const isDualSource=e?.amShift!==undefined || e?.pmShift!==undefined;
+  let total=0; const lines=[];
+
+  const addSeg=(timeStr,period)=>{
+    const [s,en]=timeStr.split("-");
+    if(!s||!en) return;
+    const r=shiftAllowanceForSegment(e.date,s,en);
+    total+=r.total;
+    for(const l of r.lines) lines.push({...l,period});
+  };
+
+  if(isDualSource){
+    const amType=e?.amType??"RT", pmType=e?.pmType??"RT";
+    const amP=airport24HourDuration(e?.amShift ?? "0000-0000");
+    const pmP=airport24HourDuration(e?.pmShift ?? "0000-0000");
+    if(amP.valid && amP.hours>0 && amType!=="OT") addSeg(amP.time,"am");
+    if(pmP.valid && pmP.hours>0 && pmType!=="OT") addSeg(pmP.time,"pm");
+  }else{
+    const candidates=[e?.editableValue,e?.canonicalValue,e?.display,e?.rawCellText,e?.time].filter(Boolean);
+    for(const v of candidates){
+      const p=airport24HourDuration(v);
+      if(p.valid && p.hours>0){ addSeg(p.time,"rt"); break; }
+    }
+  }
+  return {total,lines:lines.map(l=>({...l,amount:Math.round(l.amount*100)/100})),total:Math.round(total*100)/100};
+}
+
+// Weekend penal for one roster entry: half the ordinary rate on all RT
+// (ordinary-time) hours worked on a Saturday or Sunday. OT-tagged hours and
+// non-Schedule-1 employees never get this.
+function entryWeekendPenal(e,payRate,isSchedule1){
+  if(!isSchedule1 || !(payRate>0) || !e?.date || !isWeekendIso(e.date)) return 0;
+  const isDualSource=e?.amShift!==undefined || e?.pmShift!==undefined;
+  let rtHours=0;
+  if(isDualSource){
+    const amType=e?.amType??"RT", pmType=e?.pmType??"RT";
+    const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+    const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+    if(amType!=="OT" && am.valid) rtHours+=am.hours;
+    if(pmType!=="OT" && pm.valid) rtHours+=pm.hours;
+  }else{
+    rtHours=effectiveEntryHours(e);
+  }
+  return Math.round(rtHours*payRate*WEEKEND_PENAL_FRACTION*100)/100;
+}
+
+// Combined Clause 16 total for a set of rows (a roster period), for the
+// Settings "ALLOWANCES" summary.
+function totalAllowancesForRows(rows,payRate,isSchedule1){
+  let shiftAllowance=0, weekendPenal=0;
+  for(const e of rows){
+    shiftAllowance+=entryShiftAllowance(e).total;
+    weekendPenal+=entryWeekendPenal(e,payRate,isSchedule1);
+  }
+  shiftAllowance=Math.round(shiftAllowance*100)/100;
+  weekendPenal=Math.round(weekendPenal*100)/100;
+  return {shiftAllowance,weekendPenal,total:Math.round((shiftAllowance+weekendPenal)*100)/100};
+}
+// ---------------------------------------------------------------------------
 
 // Sums Pay across a set of entries the same way the Roster table computes
 // it per row, for the Settings "Total Pay" summary.
