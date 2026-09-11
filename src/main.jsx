@@ -3723,16 +3723,27 @@ function deriveAmPmSeed(e){
   return {am:"0000-0000",pm:"0000-0000"};
 }
 
+// Subtracts the statutory unpaid meal break (see unpaidMealBreakMinutes,
+// defined below — hoisted, so the forward reference is safe) from one
+// segment's raw shift length, so every hours total in the app — Dashboard,
+// Calendar, My Roster, period lists — matches what the roster's own
+// "Working Hours" column already reports (which is paid time, not raw
+// shift span).
+function netSegmentHours(grossHours){
+  const g=grossHours||0;
+  return Math.max(0,g-unpaidMealBreakMinutes(g)/60);
+}
+
 function effectiveEntryHours(e){
   if(e?.amShift!==undefined || e?.pmShift!==undefined){
     const am=airport24HourDuration(e?.amShift ?? "0000-0000");
     const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
-    return (am.valid?am.hours:0) + (pm.valid?pm.hours:0);
+    return netSegmentHours(am.valid?am.hours:0) + netSegmentHours(pm.valid?pm.hours:0);
   }
 
   if(e?.editableValue!==undefined && e?.editableValue!==null){
     const edited=airport24HourDuration(e.editableValue);
-    return edited.valid ? edited.hours : 0;
+    return edited.valid ? netSegmentHours(edited.hours) : 0;
   }
 
   const candidates=[
@@ -3744,12 +3755,12 @@ function effectiveEntryHours(e){
 
   for(const value of candidates){
     const airport=airport24HourDuration(value);
-    if(airport.valid) return airport.hours;
+    if(airport.valid) return netSegmentHours(airport.hours);
   }
 
   if(e?.code==="RDO") return 0;
   const stored=Number(e?.hours);
-  return Number.isFinite(stored) ? stored : 0;
+  return Number.isFinite(stored) ? netSegmentHours(stored) : 0;
 }
 
 
@@ -3776,8 +3787,8 @@ function entryOvertimeHours(e){
   const am=airport24HourDuration(e?.amShift ?? "0000-0000");
   const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
 
-  if((e?.amType ?? "RT")==="OT" && am.valid) total+=am.hours;
-  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=pm.hours;
+  if((e?.amType ?? "RT")==="OT" && am.valid) total+=netSegmentHours(am.hours);
+  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=netSegmentHours(pm.hours);
 
   return total;
 }
@@ -3832,14 +3843,22 @@ function tieredOtPay(hoursAlreadyOtToday,hoursThisShift,payRate,tier1Hours,tier1
 }
 
 // Computes AM and PM pay for one day together (not independently), so OT
-// tiering correctly accumulates across both shifts of that day.
+// tiering correctly accumulates across both shifts of that day. Pay (and
+// the OT-tier accumulation) is based on NET hours — the shift's raw span
+// minus its statutory unpaid meal break — since that's the paid time the
+// person actually earns for. Gross hours are also returned so callers can
+// show the raw shift span / break note if they want to.
 function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
   const am=e.amShift ?? "0000-0000";
   const pm=e.pmShift ?? "0000-0000";
   const amParsed=airport24HourDuration(am);
   const pmParsed=airport24HourDuration(pm);
-  const amHours=amParsed.valid?amParsed.hours:0;
-  const pmHours=pmParsed.valid?pmParsed.hours:0;
+  const amGrossHours=amParsed.valid?amParsed.hours:0;
+  const pmGrossHours=pmParsed.valid?pmParsed.hours:0;
+  const amBreakMinutes=unpaidMealBreakMinutes(amGrossHours);
+  const pmBreakMinutes=unpaidMealBreakMinutes(pmGrossHours);
+  const amHours=netSegmentHours(amGrossHours);
+  const pmHours=netSegmentHours(pmGrossHours);
   const amType=e.amType??"RT";
   const pmType=e.pmType??"RT";
 
@@ -3859,7 +3878,7 @@ function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
     pmPay=pmHours*payRate;
   }
 
-  return {amHours,pmHours,amPay,pmPay,amType,pmType};
+  return {amHours,pmHours,amGrossHours,pmGrossHours,amBreakMinutes,pmBreakMinutes,amPay,pmPay,amType,pmType};
 }
 
 // ---- Clause 16 Allowances -------------------------------------------------
@@ -4059,22 +4078,27 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
     const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
     if(!isDualSource){
       // Legacy single-value entries have no RT/OT tag — treat as RT hours.
-      const h=effectiveEntryHours(e);
-      totalRtHours+=h;
-      breakDeduction+=(unpaidMealBreakMinutes(h)/60)*payRate;
+      // effectiveEntryHours already nets out the unpaid meal break; recover
+      // the gross span from originalRosterHours just to report how much
+      // was deducted (for the Deductions panel's transparency line).
+      const netH=effectiveEntryHours(e);
+      const grossH=originalRosterHours(e)||netH;
+      totalRtHours+=netH;
+      breakDeduction+=(grossH-netH)*payRate;
       continue;
     }
     const am=e.amShift ?? "0000-0000", pm=e.pmShift ?? "0000-0000";
     const amParsed=airport24HourDuration(am), pmParsed=airport24HourDuration(pm);
-    const amHours=amParsed.valid?amParsed.hours:0, pmHours=pmParsed.valid?pmParsed.hours:0;
+    const amGross=amParsed.valid?amParsed.hours:0, pmGross=pmParsed.valid?pmParsed.hours:0;
+    const amHours=netSegmentHours(amGross), pmHours=netSegmentHours(pmGross);
     const amType=e.amType??"RT", pmType=e.pmType??"RT";
     let otSoFarToday=0;
     if(amType==="OT"){ otPay+=tieredOtPay(otSoFarToday,amHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=amHours; }
     else totalRtHours+=amHours;
-    if(amHours>0) breakDeduction+=(unpaidMealBreakMinutes(amHours)/60)*payRate;
+    breakDeduction+=(amGross-amHours)*payRate;
     if(pmType==="OT"){ otPay+=tieredOtPay(otSoFarToday,pmHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=pmHours; }
     else totalRtHours+=pmHours;
-    if(pmHours>0) breakDeduction+=(unpaidMealBreakMinutes(pmHours)/60)*payRate;
+    breakDeduction+=(pmGross-pmHours)*payRate;
   }
 
   const straightHours=Math.min(totalRtHours,rtTier1Threshold);
@@ -4083,7 +4107,7 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
   const rtPay=straightHours*payRate + tier1Hours*payRate*rtTier1Mult + tier2Hours*payRate*rtTier2Mult;
   breakDeduction=Math.round(breakDeduction*100)/100;
 
-  return {totalPay:Math.max(0,rtPay+otPay-breakDeduction),totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay,breakDeduction};
+  return {totalPay:Math.max(0,rtPay+otPay),totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay,breakDeduction};
 }
 
 // Dashboard-only "THIS WEEK" display. Shows the exact cropped roster-cell
@@ -4151,10 +4175,9 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const am=seed.am;
       const pm=seed.pm;
       const seededEntry=(e.amShift!==undefined || e.pmShift!==undefined) ? e : {...e,amShift:am,pmShift:pm};
-      const {amHours,pmHours,amPay,pmPay}=dayShiftPays(seededEntry,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
-      const amBreak=unpaidMealBreakMinutes(amHours), pmBreak=unpaidMealBreakMinutes(pmHours);
-      shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:Math.max(0,amPay-(amBreak/60)*payRate),breakMinutes:amBreak});
-      shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:Math.max(0,pmPay-(pmBreak/60)*payRate),breakMinutes:pmBreak});
+      const {amHours,pmHours,amPay,pmPay,amBreakMinutes,pmBreakMinutes}=dayShiftPays(seededEntry,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+      shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay,breakMinutes:amBreakMinutes});
+      shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay,breakMinutes:pmBreakMinutes});
       continue;
     }
 
@@ -4168,18 +4191,18 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       if(!amHas && !pmHas){
         shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours:0,pay:0,breakMinutes:0});
       }else{
-        const {amHours,pmHours,amPay,pmPay}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
-        const amBreak=unpaidMealBreakMinutes(amHours), pmBreak=unpaidMealBreakMinutes(pmHours);
-        if(amHas)shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:Math.max(0,amPay-(amBreak/60)*payRate),breakMinutes:amBreak});
-        if(pmHas)shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:Math.max(0,pmPay-(pmBreak/60)*payRate),breakMinutes:pmBreak});
+        const {amHours,pmHours,amPay,pmPay,amBreakMinutes,pmBreakMinutes}=dayShiftPays(e,payRate,otTier1Hours,otTier1Mult,otTier2Mult);
+        if(amHas)shiftRows.push({e,period:"am",value:am,type:e.amType??"RT",hours:amHours,pay:amPay,breakMinutes:amBreakMinutes});
+        if(pmHas)shiftRows.push({e,period:"pm",value:pm,type:e.pmType??"RT",hours:pmHours,pay:pmPay,breakMinutes:pmBreakMinutes});
       }
       continue;
     }
 
     {
-      const hours=effectiveEntryHours(e);
-      const breakMinutes=unpaidMealBreakMinutes(hours);
-      shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours,pay:Math.max(0,hours*payRate-(breakMinutes/60)*payRate),breakMinutes});
+      const hours=effectiveEntryHours(e); // already net of unpaid break
+      const grossHours=originalRosterHours(e)||hours;
+      const breakMinutes=unpaidMealBreakMinutes(grossHours);
+      shiftRows.push({e,period:null,sourceCell:e.sourceCell,label:entryRosterText(e),hours,pay:hours*payRate,breakMinutes});
     }
   }
 
