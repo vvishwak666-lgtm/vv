@@ -125,6 +125,11 @@ function computeAlarmClock(shiftDateISO,startHHMM,leadMinutes){
   if(total<0){ total+=1440; date=addDays(shiftDateISO,-1); }
   return {date,hour:Math.floor(total/60),minute:total%60};
 }
+// Fixed cap on how many 14-day roster periods are kept per employee — not
+// user-configurable. New uploads auto-trim to this many periods, oldest
+// first, so a roster that's had many periods uploaded ahead of time never
+// grows without bound.
+const MAX_ROSTER_PERIODS=4;
 // Keeps only the most recent `maxPeriods` 14-day blocks (per computePeriods,
 // oldest-first) for one employee's rows, dropping older blocks entirely —
 // used to auto-trim a roster that's had many periods uploaded ahead of
@@ -2294,14 +2299,10 @@ function App(){
   // Clause 16.1 Penal Rate Allowance only applies to Schedule 1 employees —
   // everyone else leaves this off and sees no weekend penal in Allowances.
   const [isSchedule1,setIsSchedule1]=useState(false);
-  // How many 14-day roster periods to keep per employee. When a new roster
-  // import pushes an employee's period count above this, the oldest periods
-  // are dropped automatically — 0 means never prune.
-  const [maxPeriods,setMaxPeriods]=useState(6);
-  // Default lead time for the Dashboard's "set an alarm" prompt — how many
-  // minutes before the next upcoming shift's start the suggested alarm
-  // fires. Adjustable per-shift on the prompt itself; this is just the
-  // starting value.
+  // Default lead time for the "set an alarm" prompt — how many minutes
+  // before the next upcoming shift's start the suggested alarm fires.
+  // Adjustable per-shift on the prompt itself; this is just the starting
+  // value.
   const [alarmLeadMinutes,setAlarmLeadMinutes]=useState(600);
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
@@ -2319,8 +2320,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false);setMaxPeriods(x.maxPeriods??6);setAlarmLeadMinutes(x.alarmLeadMinutes??600)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,maxPeriods,alarmLeadMinutes}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,maxPeriods,alarmLeadMinutes]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false);setAlarmLeadMinutes(x.alarmLeadMinutes??600)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -2610,7 +2611,7 @@ function App(){
         ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(review.name)&&added.some(a=>a.date===e.date))),
         ...added
       ];
-      return prunedEntriesKeepingRecentPeriods(merged,review.name,maxPeriods);
+      return prunedEntriesKeepingRecentPeriods(merged,review.name,MAX_ROSTER_PERIODS);
     });
 
     setSelectedDate(review.firstDate);
@@ -3195,28 +3196,6 @@ function App(){
           <b>ROSTERS UPLOADED</b>
           <span>{periods.length} period{periods.length===1?"":"s"}</span>
         </div>
-        <div style={{
-          display:"flex",justifyContent:"space-between",alignItems:"center",
-          gap:8,padding:"9px 12px",marginBottom:6,
-          background:"rgba(255,255,255,0.03)",borderRadius:8
-        }}>
-          <span style={{opacity:.7}}>Keep at most</span>
-          <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <input
-              type="number" min="0" step="1" value={maxPeriods}
-              onChange={ev=>setMaxPeriods(Math.max(0,+ev.target.value||0))}
-              aria-label="Maximum roster periods to keep"
-              style={{width:52}}
-            />
-            <span style={{opacity:.7}}>periods{maxPeriods===0?" (unlimited)":""}</span>
-            <button
-              onClick={()=>setEntries(old=>prunedEntriesKeepingRecentPeriods(old,myName,maxPeriods))}
-              disabled={!myName||maxPeriods<=0||periods.length<=maxPeriods}
-            >
-              Apply now
-            </button>
-          </div>
-        </div>
         {periods.length===0
           ?<p className="rateNote">No rosters imported yet.</p>
           :<div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -3233,7 +3212,7 @@ function App(){
             )}
           </div>
         }
-        <p className="rateNote">New roster uploads auto-trim to this many periods per employee, oldest first. Set to 0 to keep everything. "Apply now" trims your own roster immediately to this limit.</p>
+        <p className="rateNote">New roster uploads auto-trim to the most recent {MAX_ROSTER_PERIODS} periods per employee, oldest first.</p>
       </section>
       <section className="panel">
         <div className="sectionTitle">
