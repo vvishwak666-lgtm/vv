@@ -95,6 +95,58 @@ function computePeriods(rows,effectiveEntryHoursFn){
   return periods;
 }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+// Finds the earliest real shift start in a day (as "HHMM"), checking both
+// AM/PM slots for dual-source entries so a rare split shift still alarms
+// off whichever half starts earlier, not just whichever happens to be
+// listed first. Returns null for RDO/leave days or unparseable entries.
+function entryEarliestShiftStart(e){
+  const isDualSource=e?.amShift!==undefined || e?.pmShift!==undefined;
+  const starts=[];
+  if(isDualSource){
+    const amP=airport24HourDuration(e?.amShift ?? "0000-0000");
+    const pmP=airport24HourDuration(e?.pmShift ?? "0000-0000");
+    if(amP.valid && amP.hours>0) starts.push(amP.time.slice(0,4));
+    if(pmP.valid && pmP.hours>0) starts.push(pmP.time.slice(0,4));
+  }else{
+    const t=airport24HourDuration(entryRosterText(e)).time;
+    if(t) starts.push(t.slice(0,4));
+  }
+  if(!starts.length) return null;
+  starts.sort((a,b)=>Number(a)-Number(b));
+  return starts[0];
+}
+// Subtracts leadMinutes from a shift's HHMM start, rolling back to the
+// previous calendar day when the result goes before midnight — e.g. a
+// 00:30 shift with a 120-minute lead alarms at 22:30 the night before.
+function computeAlarmClock(shiftDateISO,startHHMM,leadMinutes){
+  const sh=Number(startHHMM.slice(0,2)), sm=Number(startHHMM.slice(2,4));
+  let total=sh*60+sm-(Number(leadMinutes)||0);
+  let date=shiftDateISO;
+  if(total<0){ total+=1440; date=addDays(shiftDateISO,-1); }
+  return {date,hour:Math.floor(total/60),minute:total%60};
+}
+// Keeps only the most recent `maxPeriods` 14-day blocks (per computePeriods,
+// oldest-first) for one employee's rows, dropping older blocks entirely —
+// used to auto-trim a roster that's had many periods uploaded ahead of
+// time. maxPeriods of 0 (or no name) disables pruning and returns the
+// input untouched. Rows belonging to any OTHER employee are always kept,
+// since pruning is scoped to a single import at a time.
+function prunedEntriesKeepingRecentPeriods(allEntries,name,maxPeriods){
+  if(!name || !maxPeriods || maxPeriods<=0) return allEntries;
+  const norm=normalizeEmployeeName(name);
+  const theirRows=allEntries.filter(e=>normalizeEmployeeName(e.name)===norm);
+  const periods=computePeriods(theirRows,effectiveEntryHours);
+  if(periods.length<=maxPeriods) return allEntries;
+
+  const keep=new Set();
+  for(const p of periods.slice(-maxPeriods)){
+    for(const r of p.rows) keep.add(`${r.date}|${norm}`);
+  }
+  return allEntries.filter(e=>{
+    if(normalizeEmployeeName(e.name)!==norm) return true;
+    return keep.has(`${e.date}|${norm}`);
+  });
+}
 // Separate from fmt() above: that helper is hardcoded for plain calendar
 // dates like "2026-08-18" and always appends "T12:00:00" before parsing.
 // Flight times (and other full timestamps) are already complete ISO
@@ -2242,6 +2294,15 @@ function App(){
   // Clause 16.1 Penal Rate Allowance only applies to Schedule 1 employees —
   // everyone else leaves this off and sees no weekend penal in Allowances.
   const [isSchedule1,setIsSchedule1]=useState(false);
+  // How many 14-day roster periods to keep per employee. When a new roster
+  // import pushes an employee's period count above this, the oldest periods
+  // are dropped automatically — 0 means never prune.
+  const [maxPeriods,setMaxPeriods]=useState(6);
+  // Default lead time for the Dashboard's "set an alarm" prompt — how many
+  // minutes before the next upcoming shift's start the suggested alarm
+  // fires. Adjustable per-shift on the prompt itself; this is just the
+  // starting value.
+  const [alarmLeadMinutes,setAlarmLeadMinutes]=useState(600);
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
   const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
@@ -2258,8 +2319,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false);setMaxPeriods(x.maxPeriods??6);setAlarmLeadMinutes(x.alarmLeadMinutes??600)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,maxPeriods,alarmLeadMinutes}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,maxPeriods,alarmLeadMinutes]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -2544,10 +2605,13 @@ function App(){
       };
     });
 
-    setEntries(old=>[
-      ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(review.name)&&added.some(a=>a.date===e.date))),
-      ...added
-    ]);
+    setEntries(old=>{
+      const merged=[
+        ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(review.name)&&added.some(a=>a.date===e.date))),
+        ...added
+      ];
+      return prunedEntriesKeepingRecentPeriods(merged,review.name,maxPeriods);
+    });
 
     setSelectedDate(review.firstDate);
     setCalendarMonth(review.firstDate.slice(0,7)+"-01");
@@ -2880,6 +2944,88 @@ function App(){
     }));
   },[subscriptionStatus,notifyHour,notifyMinute,myName]);
 
+  // Dashboard "set an alarm" prompt for the next upcoming shift. Separate
+  // from the evening-reminder system above: this is a one-shot alarm tied
+  // to a specific shift's start time minus a lead time, not a recurring
+  // daily notification. Persisted under its own key so it survives a
+  // reload, same pattern as :localReminder.
+  const [shiftAlarm,setShiftAlarm]=useState(null); // {shiftDate,shiftStart,alarmDate,alarmHour,alarmMinute,leadMinutes}
+  const [shiftAlarmStatus,setShiftAlarmStatus]=useState("");
+
+  useEffect(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem(`${STORE}:shiftAlarm`)||"null");
+      if(saved) setShiftAlarm(saved);
+    }catch{}
+  },[]);
+
+  const setShiftAlarmNow=useCallback(async(shiftDate,shiftStart,leadMinutes)=>{
+    if(!("Notification" in window)){
+      setShiftAlarmStatus("This browser can't show alarm notifications. Install the app to your Home Screen or use a supported browser.");
+      return;
+    }
+    const perm=Notification.permission==="granted"
+      ? "granted"
+      : await Notification.requestPermission();
+    if(perm!=="granted"){
+      setShiftAlarmStatus("Notification permission was not granted.");
+      return;
+    }
+    const alarm=computeAlarmClock(shiftDate,shiftStart,leadMinutes);
+    const record={
+      shiftDate,shiftStart,
+      alarmDate:alarm.date,alarmHour:alarm.hour,alarmMinute:alarm.minute,
+      leadMinutes
+    };
+    setShiftAlarm(record);
+    try{localStorage.setItem(`${STORE}:shiftAlarm`,JSON.stringify(record));}catch{}
+    setShiftAlarmStatus(`Alarm set for ${pad2(alarm.hour)}:${pad2(alarm.minute)} on ${fmt(alarm.date)} — ${leadMinutes} min before your ${shiftStart.slice(0,2)}:${shiftStart.slice(2)} shift. Keep this app open, or install it to your Home Screen for better background support.`);
+  },[]);
+
+  const cancelShiftAlarm=useCallback(()=>{
+    setShiftAlarm(null);
+    try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
+    setShiftAlarmStatus("Alarm cancelled.");
+  },[]);
+
+  // The notification above is best-effort — it can't survive the app being
+  // fully closed, and it won't override silent mode the way a real phone
+  // alarm does. This copies the computed time to the clipboard so it's a
+  // two-second paste into the phone's actual Clock app as a reliable backup.
+  const copyAlarmTime=useCallback(async(hour,minute)=>{
+    const text=`${pad2(hour)}:${pad2(minute)}`;
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(text);
+        setShiftAlarmStatus(`Copied ${text} — paste it into your phone's Clock app for a real alarm.`);
+      }else{
+        setShiftAlarmStatus(`Alarm time: ${text}. Copying isn't supported in this browser — set it in your phone's Clock app manually.`);
+      }
+    }catch{
+      setShiftAlarmStatus(`Alarm time: ${text}. Copy failed — set it in your phone's Clock app manually.`);
+    }
+  },[]);
+
+  // Fires the armed alarm at its exact moment, same setTimeout-to-target
+  // pattern as the evening reminder above, but one-shot: once it fires (or
+  // its time has already passed, e.g. the app was closed through it) the
+  // alarm clears itself rather than rescheduling daily.
+  useEffect(()=>{
+    if(!shiftAlarm || !("Notification" in window) || Notification.permission!=="granted") return;
+    const target=new Date(`${shiftAlarm.alarmDate}T${pad2(shiftAlarm.alarmHour)}:${pad2(shiftAlarm.alarmMinute)}:00`);
+    const ms=target.getTime()-Date.now();
+    if(ms<=0) return;
+    const timer=setTimeout(()=>{
+      new Notification("VV Duty Roster — shift alarm",{
+        body:`Your shift starts at ${shiftAlarm.shiftStart.slice(0,2)}:${shiftAlarm.shiftStart.slice(2)} — time to get up.`,
+        tag:"vv-shift-alarm"
+      });
+      setShiftAlarm(null);
+      try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
+    },Math.min(ms,2147483647));
+    return()=>clearTimeout(timer);
+  },[shiftAlarm]);
+
   const enableEveningReminders=async()=>{
     if(!supabase||!userId){setReminderStatus("Sign in first.");return;}
     if(!("serviceWorker" in navigator)||!("PushManager" in window)){
@@ -3002,6 +3148,11 @@ function App(){
   const rosterTotalHours=currentPeriod?currentPeriod.hours:0;
   const rosterOvertimeHours=minePeriod.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
+  // Only prompts for a real dated shift with a genuine start time today or
+  // later — never for a past shift, an RDO, or when nothing's rostered.
+  const upcomingShiftStart=(upcoming && upcoming.date>=todayISO()) ? entryEarliestShiftStart(upcoming) : null;
+  const upcomingAlarmMatch=!!(shiftAlarm && upcoming && shiftAlarm.shiftDate===upcoming.date && shiftAlarm.shiftStart===upcomingShiftStart);
+  const suggestedAlarm=upcomingShiftStart ? computeAlarmClock(upcoming.date,upcomingShiftStart,alarmLeadMinutes) : null;
   const filtered=entries.filter(e=>{
     if(!searchDay) return true;
     if(!e.date) return false;
@@ -3019,6 +3170,7 @@ function App(){
         <p className="rateNote" style={{marginTop:6}}>Go to Settings &gt; My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.</p>
       </section>}
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+
       <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>NEXT 14 DAYS</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(weekStart,i))} employeeName={myName}/></section>
     </main>}
@@ -3043,6 +3195,28 @@ function App(){
           <b>ROSTERS UPLOADED</b>
           <span>{periods.length} period{periods.length===1?"":"s"}</span>
         </div>
+        <div style={{
+          display:"flex",justifyContent:"space-between",alignItems:"center",
+          gap:8,padding:"9px 12px",marginBottom:6,
+          background:"rgba(255,255,255,0.03)",borderRadius:8
+        }}>
+          <span style={{opacity:.7}}>Keep at most</span>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <input
+              type="number" min="0" step="1" value={maxPeriods}
+              onChange={ev=>setMaxPeriods(Math.max(0,+ev.target.value||0))}
+              aria-label="Maximum roster periods to keep"
+              style={{width:52}}
+            />
+            <span style={{opacity:.7}}>periods{maxPeriods===0?" (unlimited)":""}</span>
+            <button
+              onClick={()=>setEntries(old=>prunedEntriesKeepingRecentPeriods(old,myName,maxPeriods))}
+              disabled={!myName||maxPeriods<=0||periods.length<=maxPeriods}
+            >
+              Apply now
+            </button>
+          </div>
+        </div>
         {periods.length===0
           ?<p className="rateNote">No rosters imported yet.</p>
           :<div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -3059,6 +3233,7 @@ function App(){
             )}
           </div>
         }
+        <p className="rateNote">New roster uploads auto-trim to this many periods per employee, oldest first. Set to 0 to keep everything. "Apply now" trims your own roster immediately to this limit.</p>
       </section>
       <section className="panel">
         <div className="sectionTitle">
@@ -3073,6 +3248,36 @@ function App(){
     </main>}
 
     {tab==="search"&&<main>
+      {upcomingShiftStart&&<section className="panel" style={{padding:13}}>
+        {upcomingAlarmMatch
+          ? <>
+              <div className="sectionTitle"><b>ALARM SET</b></div>
+              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(shiftAlarm.alarmHour)}:{pad2(shiftAlarm.alarmMinute)}</div>
+              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(shiftAlarm.alarmDate)} — {shiftAlarm.leadMinutes} min before your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>copyAlarmTime(shiftAlarm.alarmHour,shiftAlarm.alarmMinute)}>Copy time</button>
+                <button onClick={cancelShiftAlarm}>Cancel alarm</button>
+              </div>
+            </>
+          : <>
+              <div className="sectionTitle"><b>SET AN ALARM?</b></div>
+              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(suggestedAlarm.hour)}:{pad2(suggestedAlarm.minute)}</div>
+              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(suggestedAlarm.date)}, for your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                <span style={{opacity:.7}}>Lead time</span>
+                <input type="number" min="0" step="5" value={alarmLeadMinutes}
+                  onChange={ev=>setAlarmLeadMinutes(Math.max(0,+ev.target.value||0))}
+                  style={{width:60}} aria-label="Alarm lead time in minutes"/>
+                <span style={{opacity:.7}}>min before shift</span>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>copyAlarmTime(suggestedAlarm.hour,suggestedAlarm.minute)}>Copy time</button>
+                <button onClick={()=>setShiftAlarmNow(upcoming.date,upcomingShiftStart,alarmLeadMinutes)}>Set alarm</button>
+              </div>
+            </>
+        }
+        <p className="rateNote" style={{marginTop:8}}>{shiftAlarmStatus||"This in-app alarm needs the app open (or installed to your Home Screen) to fire — for a reliable wake-up, copy the time into your phone's real Clock app too."}</p>
+      </section>}
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Search size={17}/>
