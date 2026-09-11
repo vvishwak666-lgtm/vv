@@ -3738,7 +3738,12 @@ function effectiveEntryHours(e){
   if(e?.amShift!==undefined || e?.pmShift!==undefined){
     const am=airport24HourDuration(e?.amShift ?? "0000-0000");
     const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
-    return netSegmentHours(am.valid?am.hours:0) + netSegmentHours(pm.valid?pm.hours:0);
+    const amGross=am.valid?am.hours:0, pmGross=pm.valid?pm.hours:0;
+    // The unpaid meal break only comes off RT time — an OT-tagged segment
+    // is paid in full for every hour worked, so it's never netted here.
+    const amNet=(e?.amType??"RT")==="OT" ? amGross : netSegmentHours(amGross);
+    const pmNet=(e?.pmType??"RT")==="OT" ? pmGross : netSegmentHours(pmGross);
+    return amNet+pmNet;
   }
 
   if(e?.editableValue!==undefined && e?.editableValue!==null){
@@ -3781,14 +3786,16 @@ function originalRosterHours(e){
   return 0;
 }
 
+// OT hours are reported in full (gross) — the unpaid meal break exemption
+// for OT-tagged time means there's nothing to net off here.
 function entryOvertimeHours(e){
   let total=0;
 
   const am=airport24HourDuration(e?.amShift ?? "0000-0000");
   const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
 
-  if((e?.amType ?? "RT")==="OT" && am.valid) total+=netSegmentHours(am.hours);
-  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=netSegmentHours(pm.hours);
+  if((e?.amType ?? "RT")==="OT" && am.valid) total+=am.hours;
+  if((e?.pmType ?? "RT")==="OT" && pm.valid) total+=pm.hours;
 
   return total;
 }
@@ -3843,11 +3850,9 @@ function tieredOtPay(hoursAlreadyOtToday,hoursThisShift,payRate,tier1Hours,tier1
 }
 
 // Computes AM and PM pay for one day together (not independently), so OT
-// tiering correctly accumulates across both shifts of that day. Pay (and
-// the OT-tier accumulation) is based on NET hours — the shift's raw span
-// minus its statutory unpaid meal break — since that's the paid time the
-// person actually earns for. Gross hours are also returned so callers can
-// show the raw shift span / break note if they want to.
+// tiering correctly accumulates across both shifts of that day. The unpaid
+// meal break only applies to RT-tagged time — an OT-tagged segment is paid
+// in full for its whole span, gross hours in and gross hours out.
 function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
   const am=e.amShift ?? "0000-0000";
   const pm=e.pmShift ?? "0000-0000";
@@ -3855,12 +3860,12 @@ function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
   const pmParsed=airport24HourDuration(pm);
   const amGrossHours=amParsed.valid?amParsed.hours:0;
   const pmGrossHours=pmParsed.valid?pmParsed.hours:0;
-  const amBreakMinutes=unpaidMealBreakMinutes(amGrossHours);
-  const pmBreakMinutes=unpaidMealBreakMinutes(pmGrossHours);
-  const amHours=netSegmentHours(amGrossHours);
-  const pmHours=netSegmentHours(pmGrossHours);
   const amType=e.amType??"RT";
   const pmType=e.pmType??"RT";
+  const amBreakMinutes=amType==="OT" ? 0 : unpaidMealBreakMinutes(amGrossHours);
+  const pmBreakMinutes=pmType==="OT" ? 0 : unpaidMealBreakMinutes(pmGrossHours);
+  const amHours=amType==="OT" ? amGrossHours : netSegmentHours(amGrossHours);
+  const pmHours=pmType==="OT" ? pmGrossHours : netSegmentHours(pmGrossHours);
 
   let otSoFar=0,amPay,pmPay;
 
@@ -4090,15 +4095,16 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
     const am=e.amShift ?? "0000-0000", pm=e.pmShift ?? "0000-0000";
     const amParsed=airport24HourDuration(am), pmParsed=airport24HourDuration(pm);
     const amGross=amParsed.valid?amParsed.hours:0, pmGross=pmParsed.valid?pmParsed.hours:0;
-    const amHours=netSegmentHours(amGross), pmHours=netSegmentHours(pmGross);
     const amType=e.amType??"RT", pmType=e.pmType??"RT";
+    // OT-tagged time is exempt from the unpaid meal break — paid gross,
+    // hour for hour. Only RT segments get netted.
+    const amHours=amType==="OT" ? amGross : netSegmentHours(amGross);
+    const pmHours=pmType==="OT" ? pmGross : netSegmentHours(pmGross);
     let otSoFarToday=0;
     if(amType==="OT"){ otPay+=tieredOtPay(otSoFarToday,amHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=amHours; }
-    else totalRtHours+=amHours;
-    breakDeduction+=(amGross-amHours)*payRate;
+    else { totalRtHours+=amHours; breakDeduction+=(amGross-amHours)*payRate; }
     if(pmType==="OT"){ otPay+=tieredOtPay(otSoFarToday,pmHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=pmHours; }
-    else totalRtHours+=pmHours;
-    breakDeduction+=(pmGross-pmHours)*payRate;
+    else { totalRtHours+=pmHours; breakDeduction+=(pmGross-pmHours)*payRate; }
   }
 
   const straightHours=Math.min(totalRtHours,rtTier1Threshold);
