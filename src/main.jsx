@@ -2231,6 +2231,10 @@ function AccessGate({children}){
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
+  // Which 14-day period's shifts the My Roster tab shows. null means "follow
+  // the current period" (today's block) — tapping a different row under
+  // Rosters Uploaded pins the view to that period instead.
+  const [selectedPeriodStart,setSelectedPeriodStart]=useState(null);
   const [searchDay,setSearchDay]=useState("");
   const [flights,setFlights]=useState(null); // null = not yet loaded
   const [flightsLoading,setFlightsLoading]=useState(false);
@@ -3148,6 +3152,17 @@ function App(){
   const minePeriod=currentPeriod?currentPeriod.rows:[];
   const rosterTotalHours=currentPeriod?currentPeriod.hours:0;
   const rosterOvertimeHours=minePeriod.reduce((s,e)=>s+entryOvertimeHours(e),0);
+  // The period the My Roster tab actually displays — the one the person
+  // tapped under Rosters Uploaded, falling back to the current period (or
+  // the most recent period if there's no current one) when nothing's been
+  // tapped yet. Kept separate from currentPeriod/minePeriod above so
+  // Dashboard and Calendar always show today's period regardless of what's
+  // being browsed on My Roster.
+  const viewedPeriod=(selectedPeriodStart&&periods.find(p=>p.start===selectedPeriodStart))
+    || currentPeriod
+    || (periods.length?periods[periods.length-1]:null);
+  const viewedPeriodRows=viewedPeriod?viewedPeriod.rows:[];
+  const viewedPeriodOvertimeHours=viewedPeriodRows.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
   // Only prompts for a real dated shift with a genuine start time today or
   // later — never for a past shift, an RDO, or when nothing's rostered.
@@ -3185,11 +3200,11 @@ function App(){
 
     {tab==="roster"&&<main>
       <div className="stats rosterSummary">
-        <Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/>
-        <Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/>
+        <Stat label="TOTAL HOURS" value={(viewedPeriod?viewedPeriod.hours:0).toFixed(2)}/>
+        <Stat label="OVERTIME" value={viewedPeriodOvertimeHours.toFixed(2)}/>
       </div>
-      {currentPeriod&&<div className="sectionTitle" style={{marginBottom:8}}>
-        <span style={{opacity:.7}}>Current period {fmt(currentPeriod.start)} – {fmt(currentPeriod.end)}</span>
+      {viewedPeriod&&<div className="sectionTitle" style={{marginBottom:8}}>
+        <span style={{opacity:.7}}>{viewedPeriod.isCurrent?"Current period":"Viewing period"} {fmt(viewedPeriod.start)} – {fmt(viewedPeriod.end)}</span>
       </div>}
       <section className="panel">
         <div className="sectionTitle">
@@ -3199,20 +3214,23 @@ function App(){
         {periods.length===0
           ?<p className="rateNote">No rosters imported yet.</p>
           :<div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {periods.slice().reverse().map(p=>
-              <div key={p.start} style={{
-                display:"flex",justifyContent:"space-between",alignItems:"center",
-                padding:"9px 12px",borderRadius:8,
-                background:p.isCurrent?"rgba(212,175,106,0.12)":"transparent",
-                border:p.isCurrent?"1px solid #D4AF6A":"1px solid transparent"
-              }}>
+            {periods.slice().reverse().map(p=>{
+              const isViewed=viewedPeriod&&p.start===viewedPeriod.start;
+              return <button key={p.start}
+                onClick={()=>setSelectedPeriodStart(p.start)}
+                style={{
+                  display:"flex",justifyContent:"space-between",alignItems:"center",
+                  width:"100%",textAlign:"left",padding:"9px 12px",borderRadius:8,
+                  background:isViewed?"rgba(212,175,106,0.12)":"transparent",
+                  border:isViewed?"1px solid #D4AF6A":"1px solid transparent"
+                }}>
                 <span>{fmt(p.start)} – {fmt(p.end)}{p.isCurrent?" · current":""}</span>
                 <b>{formatHoursMinutes(p.hours)}</b>
-              </div>
-            )}
+              </button>;
+            })}
           </div>
         }
-        <p className="rateNote">New roster uploads auto-trim to the most recent {MAX_ROSTER_PERIODS} periods per employee, oldest first.</p>
+        <p className="rateNote">New roster uploads auto-trim to the most recent {MAX_ROSTER_PERIODS} periods per employee, oldest first. Tap a period above to view its 14 days below.</p>
       </section>
       <section className="panel">
         <div className="sectionTitle">
@@ -3220,9 +3238,9 @@ function App(){
             <b>MY ROSTER</b>
             <small className="editorHint">Edit any shift below. Hours and totals update automatically.</small>
           </div>
-          <span>{minePeriod.length} days this period</span>
+          <span>{viewedPeriodRows.length} days this period</span>
         </div>
-        <Roster rows={minePeriod} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
+        <Roster rows={viewedPeriodRows} onEdit={viewedPeriod&&viewedPeriod.isCurrent?updateEntryValue:undefined} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
       </section>
     </main>}
 
