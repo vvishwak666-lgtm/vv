@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import {
   Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
   Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
-  Users, Clock3, Plane, RefreshCw
+  Users, Clock3, Plane, RefreshCw, Mic
 } from "lucide-react";
 import "./styles.css";
 
@@ -95,6 +95,86 @@ function computePeriods(rows,effectiveEntryHoursFn){
   return periods;
 }
 function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+// Full weekday name for a roster date, used only to prompt/confirm voice
+// entry against the row it's bound to (e.g. "Tuesday" for a Tue 16 Sep row).
+function fullDayName(iso){
+  return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString("en-NZ",{weekday:"long"}) : "";
+}
+
+const VOICE_DAY_NAMES=["sunday","monday","tuesday","wednesday","thursday","friday","saturday"];
+const VOICE_NUMBER_WORDS={
+  zero:"0",oh:"0",o:"0",one:"1",two:"2",three:"3",four:"4",five:"5",six:"6",seven:"7",eight:"8",nine:"9",
+  ten:"10",eleven:"11",twelve:"12",thirteen:"13",fourteen:"14",fifteen:"15",sixteen:"16",seventeen:"17",
+  eighteen:"18",nineteen:"19",twenty:"20",thirty:"30",forty:"40",fifty:"50"
+};
+
+// Converts one spoken time fragment ("oh five oh five", "one three hundred",
+// "1300", "13:00") into a 24-hour "HH:MM" clock string (the same format
+// Time24Wheel already edits), or null if it can't be made sense of.
+function parseSpokenClockTime(fragment){
+  const cleaned=String(fragment||"").trim().toLowerCase();
+  if(!cleaned) return null;
+
+  const digitsOnly=cleaned.replace(/[^0-9:]/g,"");
+  if(digitsOnly){
+    let hh,mm;
+    if(digitsOnly.includes(":")){
+      const [h,m]=digitsOnly.split(":");
+      hh=(h||"0").padStart(2,"0");mm=(m||"00").padStart(2,"0");
+    }else{
+      const d=digitsOnly.padStart(4,"0").slice(-4);
+      hh=d.slice(0,2);mm=d.slice(2,4);
+    }
+    if(Number(hh)<24 && Number(mm)<60) return `${hh}:${mm}`;
+  }
+
+  const words=cleaned.split(/\s+/).filter(Boolean);
+  let hasHundred=false;
+  const digits=[];
+  for(const w of words){
+    if(w==="hundred"){hasHundred=true;continue;}
+    if(w in VOICE_NUMBER_WORDS) digits.push(VOICE_NUMBER_WORDS[w]);
+  }
+  if(!digits.length) return null;
+
+  let joined=digits.join("");
+  if(hasHundred) joined=joined.padStart(2,"0")+"00";
+  joined=joined.padStart(4,"0").slice(-4);
+
+  const hh=joined.slice(0,2), mm=joined.slice(2,4);
+  return (Number(hh)<24 && Number(mm)<60) ? `${hh}:${mm}` : null;
+}
+
+// Parses a full spoken roster phrase, e.g.
+// "Tuesday, oh five oh five to one three hundred, RT" into
+// { ok, day, start, end, type }. `day` is only used to warn if it doesn't
+// match the row the mic is attached to — it never blocks applying the times,
+// since the mic button is already bound to one specific day's row.
+function parseVoiceShiftPhrase(transcript){
+  const text=String(transcript||"").toLowerCase();
+
+  const type=/\bovertime\b|\bot\b/.test(text) ? "OT" : "RT";
+  const day=VOICE_DAY_NAMES.find(d=>text.includes(d)) || null;
+
+  const timeSection=text
+    .replace(/\bovertime\b/g," ")
+    .replace(/\brt\b|\bot\b/g," ")
+    .replace(day||""," ");
+
+  const parts=timeSection
+    .split(/\bto\b|\btill\b|\buntil\b|-/)
+    .map(s=>s.trim())
+    .filter(Boolean);
+
+  if(parts.length<2) return {ok:false,reason:"Didn't catch a start and end time."};
+
+  const start=parseSpokenClockTime(parts[0]);
+  const end=parseSpokenClockTime(parts[parts.length-1]);
+
+  if(!start||!end) return {ok:false,reason:"Couldn't work out the times said."};
+
+  return {ok:true,day,start,end,type};
+}
 // Finds the earliest real shift start in a day (as "HHMM"), checking both
 // AM/PM slots for dual-source entries so a rare split shift still alarms
 // off whichever half starts earlier, not just whichever happens to be
@@ -1966,6 +2046,74 @@ function Time24Wheel({value,onChange,ariaLabel}){
   </div>;
 }
 
+// Mic button bound to one specific day's shift row. Speaks into the Web
+// Speech API, parses the result with parseVoiceShiftPhrase, and hands the
+// (start, end, type) it heard back to the row — the row decides what to do
+// with them (same onEdit path as the wheels and RT/OT select use already).
+function VoiceShiftMic({dayName,onApply}){
+  const [listening,setListening]=useState(false);
+  const [message,setMessage]=useState("");
+
+  const supported=typeof window!=="undefined" && (window.SpeechRecognition||window.webkitSpeechRecognition);
+
+  const start=()=>{
+    if(!supported){
+      setMessage("Voice entry isn't supported in this browser.");
+      return;
+    }
+    const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+    const recognition=new SpeechRecognition();
+    recognition.lang="en-NZ";
+    recognition.interimResults=false;
+    recognition.maxAlternatives=1;
+
+    recognition.onstart=()=>{setListening(true);setMessage("");};
+
+    recognition.onresult=(event)=>{
+      const said=event.results[0][0].transcript;
+      const parsed=parseVoiceShiftPhrase(said);
+
+      if(!parsed.ok){
+        setMessage(`${parsed.reason} Try: "${dayName||"Tuesday"}, oh five oh five to one three hundred, RT"`);
+        return;
+      }
+
+      if(parsed.day && dayName && parsed.day!==dayName.toLowerCase()){
+        setMessage(`Heard "${said}" — check this against ${dayName} before saving.`);
+      }else{
+        setMessage(`Set ${parsed.start}\u2013${parsed.end} ${parsed.type} from voice.`);
+      }
+      onApply(parsed.start,parsed.end,parsed.type);
+    };
+
+    recognition.onerror=(event)=>{
+      setMessage(event.error==="not-allowed"
+        ? "Mic permission was denied."
+        : "Didn't catch that \u2014 try again.");
+    };
+
+    recognition.onend=()=>{setListening(false);};
+
+    recognition.start();
+  };
+
+  return <span style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:6}}>
+    <button
+      type="button"
+      onClick={start}
+      disabled={listening}
+      aria-label={`Fill ${dayName||"this"} shift by voice`}
+      style={{
+        width:26,height:26,borderRadius:"50%",padding:0,
+        display:"inline-flex",alignItems:"center",justifyContent:"center",
+        background:listening?"rgba(212,175,106,0.25)":"rgba(212,175,106,0.12)",
+        border:"1px solid #D4AF6A",flexShrink:0
+      }}
+    ><Mic size={12} color="#D4AF6A"/></button>
+    {message&&<small style={{fontSize:11,opacity:.75,maxWidth:160}}>{message}</small>}
+  </span>;
+}
+
 function airport24HourDuration(value){
   const raw=String(value||"").toUpperCase().trim()
     .replace(/[–—]/g,"-")
@@ -3238,9 +3386,17 @@ function App(){
         <div className="sectionTitle">
           <div>
             <b>MY ROSTER</b>
-            <small className="editorHint">Edit any shift below. Hours and totals update automatically.</small>
+            <small className="editorHint">Edit any shift below, or tap the mic to fill one in by voice.</small>
           </div>
           <span>{viewedPeriodRows.length} days this period</span>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"flex-start",background:"#16130d",border:"1px solid #2a251c",borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+          <Mic size={14} color="#D4AF6A" style={{marginTop:2,flexShrink:0}}/>
+          <div>
+            <div style={{fontSize:12,fontWeight:600}}>Voice entry format</div>
+            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Day, start to end, RT or OT</div>
+            <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>"Tuesday, oh five oh five to one three hundred, RT"</div>
+          </div>
         </div>
         <Roster rows={viewedPeriodRows} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
       </section>
@@ -4284,6 +4440,14 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
                 <option value="OT">OT</option>
               </select>
             : <em className="rosterTableTypeReadonly">{r.type}</em>}
+          {onEdit &&
+            <VoiceShiftMic
+              dayName={fullDayName(e.date)}
+              onApply={(startClock,endClock,type)=>{
+                onEdit(e.id,period,joinAirportRange(startClock,endClock));
+                onEdit(e.id,period,type,"type");
+              }}
+            />}
         </div>
         <div className="rosterTableStart">
           {onEdit
