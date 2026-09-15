@@ -166,6 +166,27 @@ function parseVoiceShiftPhrase(transcript){
     .map(s=>s.trim())
     .filter(Boolean);
 
+  if(parts.length>=2){
+    const start=parseSpokenClockTime(parts[0]);
+    const end=parseSpokenClockTime(parts[parts.length-1]);
+    if(start&&end) return {ok:true,day,start,end,type};
+  }
+
+  // Fallback: iOS dictation often hears a spoken "to" between two numbers
+  // as the digit "2" instead of the word (a "to"/"two" homophone), gluing
+  // everything into one run of digits with no separator at all, e.g.
+  // "0500" + "to" + "1000" becomes "050021000". If a plain to/till/until
+  // split didn't work, look for an embedded "2" that splits the digits
+  // into two valid times.
+  const digitsOnly=timeSection.replace(/[^0-9]/g,"");
+  for(let i=0;i<digitsOnly.length;i++){
+    if(digitsOnly[i]!=="2") continue;
+    const left=digitsOnly.slice(0,i), right=digitsOnly.slice(i+1);
+    if(!left||!right) continue;
+    const start=parseSpokenClockTime(left), end=parseSpokenClockTime(right);
+    if(start&&end) return {ok:true,day,start,end,type};
+  }
+
   if(parts.length<2) return {ok:false,reason:"Didn't catch a start and end time."};
 
   const start=parseSpokenClockTime(parts[0]);
@@ -2065,7 +2086,7 @@ function VoiceShiftMic({dayName,onApply}){
     const parsed=parseVoiceShiftPhrase(text);
 
     if(!parsed.ok){
-      setMessage(`${parsed.reason} Try: "${dayName||"Tuesday"}, oh five oh five to one three hundred, RT"`);
+      setMessage(`${parsed.reason} Try: "${dayName||"Tuesday"}, oh five oh five till one three hundred, RT"`);
       return;
     }
 
@@ -3387,8 +3408,8 @@ function App(){
           <div>
             <div style={{fontSize:12,fontWeight:600}}>Voice entry format</div>
             <div style={{fontSize:12,opacity:.75,marginTop:2}}>Tap a shift's field, then use your keyboard's dictation mic</div>
-            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Day, start to end, RT or OT</div>
-            <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>"Tuesday, oh five oh five to one three hundred, RT"</div>
+            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Day, start <u>till</u> end, RT or OT — say "till", not "to" (dictation hears "to" as the number 2)</div>
+            <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>"Tuesday, oh five oh five till one three hundred, RT"</div>
           </div>
         </div>
         <Roster rows={viewedPeriodRows} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
