@@ -2078,7 +2078,7 @@ function VoiceShiftMic({dayName,onApply}){
     setText("");
   };
 
-  return <span style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:6,marginLeft:6,rowGap:4,width:"100%"}}>
+  return <span style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:6,rowGap:4,width:"100%"}}>
     <span style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:140}}>
       <input
         type="text"
@@ -4418,7 +4418,8 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       const {start,end}=splitAirportRange(r.value);
       const pay=r.pay||0;
 
-      return <div className={"rosterTableRow"+dayClass} key={e.id+"-"+period}>
+      return <React.Fragment key={e.id+"-"+period}>
+      <div className={"rosterTableRow"+dayClass}>
         <div className="rosterTableDay">
           <small>{dayLabel}</small>
           <span>{e.name} · {periodLabel}</span>
@@ -4433,14 +4434,6 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
                 <option value="OT">OT</option>
               </select>
             : <em className="rosterTableTypeReadonly">{r.type}</em>}
-          {onEdit &&
-            <VoiceShiftMic
-              dayName={fullDayName(e.date)}
-              onApply={(startClock,endClock,type)=>{
-                onEdit(e.id,period,joinAirportRange(startClock,endClock));
-                onEdit(e.id,period,type,"type");
-              }}
-            />}
         </div>
         <div className="rosterTableStart">
           {onEdit
@@ -4454,7 +4447,18 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
         </div>
         <div className="rosterTableTime">{formatHoursMinutes(r.hours)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}m break</small>}</div>
         <div className="rosterTablePay">{payRate<=0 && r.hours>0 ? "Rate required" : `$${pay.toFixed(2)}`}</div>
-      </div>;
+      </div>
+      {onEdit &&
+        <div style={{width:"100%",boxSizing:"border-box",padding:"0 4px 10px"}}>
+          <VoiceShiftMic
+            dayName={fullDayName(e.date)}
+            onApply={(startClock,endClock,type)=>{
+              onEdit(e.id,period,joinAirportRange(startClock,endClock));
+              onEdit(e.id,period,type,"type");
+            }}
+          />
+        </div>}
+      </React.Fragment>;
     })}
 
     <div className="rosterTableTotals">
