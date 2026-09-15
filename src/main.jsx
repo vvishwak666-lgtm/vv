@@ -2046,71 +2046,63 @@ function Time24Wheel({value,onChange,ariaLabel}){
   </div>;
 }
 
-// Mic button bound to one specific day's shift row. Speaks into the Web
-// Speech API, parses the result with parseVoiceShiftPhrase, and hands the
-// (start, end, type) it heard back to the row — the row decides what to do
-// with them (same onEdit path as the wheels and RT/OT select use already).
+// Text field bound to one specific day's shift row, filled using the
+// phone's own keyboard dictation (the mic icon already on iOS/Android
+// keyboards) rather than the browser's JS SpeechRecognition API — which
+// Safari on iPhone does not support reliably. The user taps the field,
+// dictates or types the phrase, then taps Fill; parseVoiceShiftPhrase
+// turns it into (start, end, type) and hands them back to the row (same
+// onEdit path the wheels and RT/OT select use already).
 function VoiceShiftMic({dayName,onApply}){
-  const [listening,setListening]=useState(false);
+  const [text,setText]=useState("");
   const [message,setMessage]=useState("");
 
-  const supported=typeof window!=="undefined" && (window.SpeechRecognition||window.webkitSpeechRecognition);
-
-  const start=()=>{
-    if(!supported){
-      setMessage("Voice entry isn't supported in this browser.");
+  const apply=()=>{
+    if(!text.trim()){
+      setMessage("Type or dictate a phrase first.");
       return;
     }
-    const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-    const recognition=new SpeechRecognition();
-    recognition.lang="en-NZ";
-    recognition.interimResults=false;
-    recognition.maxAlternatives=1;
+    const parsed=parseVoiceShiftPhrase(text);
 
-    recognition.onstart=()=>{setListening(true);setMessage("");};
+    if(!parsed.ok){
+      setMessage(`${parsed.reason} Try: "${dayName||"Tuesday"}, oh five oh five to one three hundred, RT"`);
+      return;
+    }
 
-    recognition.onresult=(event)=>{
-      const said=event.results[0][0].transcript;
-      const parsed=parseVoiceShiftPhrase(said);
-
-      if(!parsed.ok){
-        setMessage(`${parsed.reason} Try: "${dayName||"Tuesday"}, oh five oh five to one three hundred, RT"`);
-        return;
-      }
-
-      if(parsed.day && dayName && parsed.day!==dayName.toLowerCase()){
-        setMessage(`Heard "${said}" — check this against ${dayName} before saving.`);
-      }else{
-        setMessage(`Set ${parsed.start}\u2013${parsed.end} ${parsed.type} from voice.`);
-      }
-      onApply(parsed.start,parsed.end,parsed.type);
-    };
-
-    recognition.onerror=(event)=>{
-      setMessage(event.error==="not-allowed"
-        ? "Mic permission was denied."
-        : "Didn't catch that \u2014 try again.");
-    };
-
-    recognition.onend=()=>{setListening(false);};
-
-    recognition.start();
+    if(parsed.day && dayName && parsed.day!==dayName.toLowerCase()){
+      setMessage(`Heard "${text}" — check this against ${dayName} before saving.`);
+    }else{
+      setMessage(`Set ${parsed.start}\u2013${parsed.end} ${parsed.type} from voice.`);
+    }
+    onApply(parsed.start,parsed.end,parsed.type);
+    setText("");
   };
 
-  return <span style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:6}}>
-    <button
-      type="button"
-      onClick={start}
-      disabled={listening}
-      aria-label={`Fill ${dayName||"this"} shift by voice`}
-      style={{
-        width:26,height:26,borderRadius:"50%",padding:0,
-        display:"inline-flex",alignItems:"center",justifyContent:"center",
-        background:listening?"rgba(212,175,106,0.25)":"rgba(212,175,106,0.12)",
-        border:"1px solid #D4AF6A",flexShrink:0
-      }}
-    ><Mic size={12} color="#D4AF6A"/></button>
-    {message&&<small style={{fontSize:11,opacity:.75,maxWidth:160}}>{message}</small>}
+  return <span style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:6,marginLeft:6,rowGap:4,width:"100%"}}>
+    <span style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:140}}>
+      <input
+        type="text"
+        value={text}
+        onChange={ev=>setText(ev.target.value)}
+        onKeyDown={ev=>{if(ev.key==="Enter"){ev.preventDefault();apply();}}}
+        placeholder={`Tap, then use your keyboard mic to say: "${dayName||"Tuesday"}, ..."`}
+        aria-label={`Fill ${dayName||"this"} shift by voice or text`}
+        style={{
+          flex:1,minWidth:0,fontSize:12,padding:"5px 8px",borderRadius:8,
+          background:"rgba(212,175,106,0.08)",border:"1px solid #D4AF6A",color:"inherit"
+        }}
+      />
+      <button
+        type="button"
+        onClick={apply}
+        aria-label={`Apply voice entry for ${dayName||"this"} shift`}
+        style={{
+          fontSize:11,padding:"5px 10px",borderRadius:8,flexShrink:0,
+          background:"rgba(212,175,106,0.15)",border:"1px solid #D4AF6A",color:"#D4AF6A"
+        }}
+      >Fill</button>
+    </span>
+    {message&&<small style={{fontSize:11,opacity:.75,flexBasis:"100%",whiteSpace:"normal",lineHeight:1.4}}>{message}</small>}
   </span>;
 }
 
@@ -3386,7 +3378,7 @@ function App(){
         <div className="sectionTitle">
           <div>
             <b>MY ROSTER</b>
-            <small className="editorHint">Edit any shift below, or tap the mic to fill one in by voice.</small>
+            <small className="editorHint">Edit any shift below, or tap a shift's field and dictate it in.</small>
           </div>
           <span>{viewedPeriodRows.length} days this period</span>
         </div>
@@ -3394,6 +3386,7 @@ function App(){
           <Mic size={14} color="#D4AF6A" style={{marginTop:2,flexShrink:0}}/>
           <div>
             <div style={{fontSize:12,fontWeight:600}}>Voice entry format</div>
+            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Tap a shift's field, then use your keyboard's dictation mic</div>
             <div style={{fontSize:12,opacity:.75,marginTop:2}}>Day, start to end, RT or OT</div>
             <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>"Tuesday, oh five oh five to one three hundred, RT"</div>
           </div>
