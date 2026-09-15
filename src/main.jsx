@@ -3313,6 +3313,13 @@ function App(){
   const minePeriod=currentPeriod?currentPeriod.rows:[];
   const rosterTotalHours=currentPeriod?currentPeriod.hours:0;
   const rosterOvertimeHours=minePeriod.reduce((s,e)=>s+entryOvertimeHours(e),0);
+  // The Next 14 Days section on the dashboard should mirror exactly what
+  // was uploaded for the current roster period (e.g. Mon 7 Sep – Sun 20
+  // Sep), not a rolling calendar week — otherwise it can straddle two
+  // uploaded periods and show a boundary that doesn't match any real
+  // upload. Falls back to the calendar week only if no period covers
+  // today at all (nothing uploaded yet).
+  const dashboardPeriodStart=currentPeriod?currentPeriod.start:weekStart;
   // The period the My Roster tab actually displays — the one the person
   // tapped under Rosters Uploaded, falling back to the current period (or
   // the most recent period if there's no current one) when nothing's been
@@ -3349,7 +3356,7 @@ function App(){
       <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
 
       <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>NEXT 14 DAYS</b><span>{fmt(weekStart)} – {fmt(addDays(weekStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(weekStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(weekStart,i))} employeeName={myName}/></section>
+      <section className="panel"><div className="sectionTitle"><b>NEXT 14 DAYS</b><span>{fmt(dashboardPeriodStart)} – {fmt(addDays(dashboardPeriodStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(dashboardPeriodStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(dashboardPeriodStart,i))} employeeName={myName}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
