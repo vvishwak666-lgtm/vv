@@ -10,6 +10,9 @@ import {
   Users, Clock3, Plane, RefreshCw, Mic
 } from "lucide-react";
 import "./styles.css";
+import {SetupModal,AiScanModal,RestBanner,AdminScans,downloadIcs} from "./VVExtras.jsx";
+import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
+import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
 
 
 import { createClient } from "@supabase/supabase-js";
@@ -94,7 +97,7 @@ function computePeriods(rows,effectiveEntryHoursFn){
   }
   return periods;
 }
-function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined,opts) : ""; }
+function fmt(iso,opts={weekday:"short",day:"numeric",month:"short"}){ return iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(dateLocales(),opts) : ""; }
 // Full weekday name for a roster date, used only to prompt/confirm voice
 // entry against the row it's bound to (e.g. "Tuesday" for a Tue 16 Sep row).
 function fullDayName(iso){
@@ -197,8 +200,8 @@ function parseVoiceShiftPhrase(transcript){
   return {ok:true,day,start,end,type};
 }
 // Finds the earliest real shift start in a day (as "HHMM"), checking both
-// AM/PM slots for dual-source entries so a rare split shift still alarms
-// off whichever half starts earlier, not just whichever happens to be
+// AM/PM slots for dual-source entries so a rare split shift still uses
+// whichever half starts earlier, not just whichever happens to be
 // listed first. Returns null for RDO/leave days or unparseable entries.
 function entryEarliestShiftStart(e){
   const isDualSource=e?.amShift!==undefined || e?.pmShift!==undefined;
@@ -215,16 +218,6 @@ function entryEarliestShiftStart(e){
   if(!starts.length) return null;
   starts.sort((a,b)=>Number(a)-Number(b));
   return starts[0];
-}
-// Subtracts leadMinutes from a shift's HHMM start, rolling back to the
-// previous calendar day when the result goes before midnight — e.g. a
-// 00:30 shift with a 120-minute lead alarms at 22:30 the night before.
-function computeAlarmClock(shiftDateISO,startHHMM,leadMinutes){
-  const sh=Number(startHHMM.slice(0,2)), sm=Number(startHHMM.slice(2,4));
-  let total=sh*60+sm-(Number(leadMinutes)||0);
-  let date=shiftDateISO;
-  if(total<0){ total+=1440; date=addDays(shiftDateISO,-1); }
-  return {date,hour:Math.floor(total/60),minute:total%60};
 }
 // Fixed cap on how many 14-day roster periods are kept per employee — not
 // user-configurable. New uploads auto-trim to this many periods, oldest
@@ -268,6 +261,12 @@ function fmtTime(iso){
 // AKL connects to outside this set is treated as international. Not
 // exhaustive of every tiny NZ airstrip, but covers all scheduled Air NZ
 // domestic routes out of Auckland.
+// Airlines offered in the Live Flights tab. Air New Zealand uses the original /api/flights
+// endpoint; every other airline uses /api/flights-all (one AviationStack request each).
+const FLIGHT_AIRLINES=[
+  {code:"NZ",name:"Air New Zealand"},{code:"SB",name:"Aircalin"},
+  {code:"CZ",name:"China Southern"},{code:"EK",name:"Emirates"}
+];
 const NZ_DOMESTIC_IATA=new Set([
   "WLG","CHC","ZQN","DUD","NPE","NSN","ROT","TUO","PMR","WHK","HLZ",
   "GIS","NPL","IVC","BHE","WKA","KKE","TRG","WRE","KAT","GMN","PPQ",
@@ -2080,7 +2079,7 @@ function VoiceShiftMic({dayName,onApply}){
 
   const apply=()=>{
     if(!text.trim()){
-      setMessage("Type or dictate a phrase first.");
+      setMessage(T("Type or dictate a phrase first."));
       return;
     }
     const parsed=parseVoiceShiftPhrase(text);
@@ -2121,7 +2120,7 @@ function VoiceShiftMic({dayName,onApply}){
           fontSize:11,padding:"5px 10px",borderRadius:8,flexShrink:0,
           background:"rgba(212,175,106,0.15)",border:"1px solid #D4AF6A",color:"#D4AF6A"
         }}
-      >Fill</button>
+      >{T("Fill")}</button>
     </span>
     {message&&<small style={{fontSize:11,opacity:.75,flexBasis:"100%",whiteSpace:"normal",lineHeight:1.4}}>{message}</small>}
   </span>;
@@ -2222,6 +2221,28 @@ const supabase=(supabaseUrl&&supabaseKey)
     })
   : null;
 
+// ---- VV general-roster settings (company type, language, minimum rest) ----------
+// Existing users (anyone who already has roster data or a saved name on this device)
+// are treated as Air NZ and are never shown the new welcome screen.
+const VV_SETTINGS_KEY="vv-general-settings-v1";
+function loadVvSettings(){
+  const defaults={rosterType:"airnz",language:detectLang(),minRestHours:0,shiftTypes:{},setupDone:false};
+  try{
+    const saved=JSON.parse(localStorage.getItem(VV_SETTINGS_KEY)||"null");
+    if(saved&&typeof saved==="object")return {...defaults,...saved};
+    const old=JSON.parse(localStorage.getItem(STORE)||"{}");
+    if((old.entries&&old.entries.length)||old.myNameOverride)return {...defaults,setupDone:true};
+  }catch{}
+  return defaults;
+}
+
+setActiveLang(loadVvSettings().language);
+// Used by the language picker on the sign-in screen. Keeps existing users marked as set up.
+function saveLanguageChoice(code){
+  setActiveLang(code);
+  try{localStorage.setItem(VV_SETTINGS_KEY,JSON.stringify({...loadVvSettings(),language:code}))}catch{}
+}
+
 function AccessGate({children}){
   const [session,setSession]=useState(null);
   const [approved,setApproved]=useState(false);
@@ -2232,6 +2253,7 @@ function AccessGate({children}){
     const [newPassword,setNewPassword]=useState("");
     const [confirmPassword,setConfirmPassword]=useState("");
   const [msg,setMsg]=useState("");
+  const [,setLangTick]=useState(0);
   const [adminOpen,setAdminOpen]=useState(false);
   const [users,setUsers]=useState([]);
   const [newEmail,setNewEmail]=useState("");
@@ -2274,8 +2296,8 @@ function AccessGate({children}){
 
   const sendPasswordRecovery=async()=>{
     const em=email.trim().toLowerCase();
-    if(!em){setMsg("Enter your email first.");return;}
-    setMsg("Sending password reset email…");
+    if(!em){setMsg(T("Enter your email first."));return;}
+    setMsg(T("Sending password reset email…"));
     // Always return recovery links to the production VV app. Using an
     // uploaded Vercel preview here can create a redirect mismatch.
     const redirectTo="https://vv-sigma-one.vercel.app/?recovery=1";
@@ -2293,7 +2315,7 @@ function AccessGate({children}){
   const signIn=async()=>{
     const em=email.trim().toLowerCase();
     if(!em||!password)return;
-    setMsg("Signing in…");
+    setMsg(T("Signing in…"));
     const {error}=await supabase.auth.signInWithPassword({
       email:em,
       password
@@ -2303,20 +2325,20 @@ function AccessGate({children}){
 
   const saveNewPassword=async()=>{
     if(!newPassword||newPassword.length<8){
-      setMsg("Password must be at least 8 characters.");
+      setMsg(T("Password must be at least 8 characters."));
       return;
     }
     if(newPassword!==confirmPassword){
-      setMsg("Passwords do not match.");
+      setMsg(T("Passwords do not match."));
       return;
     }
-    setMsg("Saving new password…");
+    setMsg(T("Saving new password…"));
     const {error}=await supabase.auth.updateUser({password:newPassword});
     if(error){
       setMsg(error.message);
       return;
     }
-    setMsg("Password updated successfully.");
+    setMsg(T("Password updated successfully."));
     setRecoveryMode(false);
     setNewPassword("");
     setConfirmPassword("");
@@ -2342,49 +2364,53 @@ function AccessGate({children}){
     await loadUsers();
   };
 
-  if(loading)return <div className="authScreen"><div className="authCard"><h2>VV Duty Roster</h2><p>Checking access…</p></div></div>;
+  if(loading)return <div className="authScreen"><div className="authCard"><h2>{T("VV Duty Roster")}</h2><p>{T("Checking access…")}</p></div></div>;
 
   if(recoveryMode)return <div className="authScreen"><div className="authCard">
-    <img src="/icon-512.png" alt="VV" style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>Create New Password</h2>
-    <p>Choose a new password for your VV Duty Roster account.</p>
-    <input type="password" placeholder="New password" value={newPassword}
+    <img src="/icon-512.png" alt={T("VV")} style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>{T("Create New Password")}</h2>
+    <p>{T("Choose a new password for your VV Duty Roster account.")}</p>
+    <input type="password" placeholder={T("New password")} value={newPassword}
       autoComplete="new-password" onChange={e=>setNewPassword(e.target.value)} />
-    <input type="password" placeholder="Confirm new password" value={confirmPassword}
+    <input type="password" placeholder={T("Confirm new password")} value={confirmPassword}
       autoComplete="new-password" onChange={e=>setConfirmPassword(e.target.value)}
       onKeyDown={e=>{if(e.key==="Enter")saveNewPassword();}} />
-    <button className="primary authFull" onClick={saveNewPassword}>Save password</button>
+    <button className="primary authFull" onClick={saveNewPassword}>{T("Save password")}</button>
     {msg&&<small>{msg}</small>}
   </div></div>;
 
   if(!session)return <div className="authScreen"><div className="authCard">
-    <img src="/icon-512.png" alt="VV" style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>Private Access</h2>
-    <p>Only approved users can use this app.</p>
-    <input type="email" placeholder="Work email" value={email} autoComplete="email" onChange={e=>setEmail(e.target.value)} />
-    <input type="password" placeholder="Password" value={password} autoComplete="current-password"
+    <img src="/icon-512.png" alt={T("VV")} style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>{T("Private Access")}</h2>
+    <p>{T("Only approved users can use this app.")}</p>
+    <input type="email" placeholder={T("Work email")} value={email} autoComplete="email" onChange={e=>setEmail(e.target.value)} />
+    <input type="password" placeholder={T("Password")} value={password} autoComplete="current-password"
       onChange={e=>setPassword(e.target.value)}
       onKeyDown={e=>{if(e.key==="Enter")signIn();}} />
-    <button className="primary authFull" onClick={signIn}>Sign in</button>
-    <button className="ghost authFull" onClick={sendPasswordRecovery}>Forgot password?</button>
+    <button className="primary authFull" onClick={signIn}>{T("Sign in")}</button>
+    <button className="ghost authFull" onClick={sendPasswordRecovery}>{T("Forgot password?")}</button>
+    <select aria-label="Language" value={getActiveLang()} onChange={e=>{saveLanguageChoice(e.target.value);setLangTick(n=>n+1)}} style={{width:"100%",marginTop:10}}>
+      {LANGUAGES.map(l=><option key={l.id} value={l.id}>{l.label}</option>)}
+    </select>
     {msg&&<small>{msg}</small>}
   </div></div>;
 
   if(!approved)return <div className="authScreen"><div className="authCard">
-    <h2>Access not approved</h2><p>{current}</p>
-    <button className="ghost authFull" onClick={()=>supabase.auth.signOut()}>Sign out</button>
+    <h2>{T("Access not approved")}</h2><p>{current}</p>
+    <button className="ghost authFull" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
   </div></div>;
 
   return <>
     {children}
     <div className="accessBar">
-      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{setAdminOpen(true);await loadUsers();}}>Admin</button>}
-      <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>Sign out</button>
+      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{setAdminOpen(true);await loadUsers();}}>{T("Admin")}</button>}
+      <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
     </div>
     {adminOpen&&<div className="modalWrap"><div className="modal adminAccess">
-      <div className="modalHead"><div><h2>Approved Users</h2><p>Approve once; revoke any time.</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
-      <div className="approveRow"><input type="email" placeholder="user@example.com" value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>Approve</button></div>
+      <div className="modalHead"><div><h2>{T("Approved Users")}</h2><p>{T("Approve once; revoke any time.")}</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
+      <div className="approveRow"><input type="email" placeholder={T("user@example.com")} value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>{T("Approve")}</button></div>
       <div className="approvedList">
-        {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?"Access ON":"Access OFF"}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?"Revoke":"Restore"}</button></div>)}
+        {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?T("Access ON"):T("Access OFF")}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?T("Revoke"):T("Restore")}</button></div>)}
       </div>
+      <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||10)}/>
     </div></div>}
   </>;
 }
@@ -2403,6 +2429,7 @@ function App(){
   const [flightsUpdatedAt,setFlightsUpdatedAt]=useState(null);
   const [flightsDirection,setFlightsDirection]=useState("departures"); // "departures"|"arrivals"
   const [flightsScope,setFlightsScope]=useState("all"); // "all"|"domestic"|"international"
+  const [flightsAirline,setFlightsAirline]=useState("NZ"); // airline IATA code
   // Keeps the list focused on flights actually relevant right now — from
   // about an hour ago (so recently-landed/departed flights don't vanish
   // instantly) through the next several hours. Adjust the two numbers below
@@ -2427,11 +2454,11 @@ function App(){
     return list.sort((a,b)=>new Date(a.scheduledTime)-new Date(b.scheduledTime));
   },[flights,flightsScope]);
 
-  async function fetchFlights(direction=flightsDirection){
+  async function fetchFlights(direction=flightsDirection,airline=flightsAirline){
     setFlightsLoading(true);
     setFlightsError(null);
     try{
-      const res=await fetch(`/api/flights?direction=${direction}`);
+      const res=await fetch(airline==="NZ"?`/api/flights?direction=${direction}`:`/api/flights-all?direction=${direction}&airline=${airline}`);
       const data=await res.json();
       if(!res.ok||data.error)throw new Error(data.error||"Couldn't load flight status.");
       setFlights(data.flights||[]);
@@ -2444,6 +2471,7 @@ function App(){
   }
 
   useEffect(()=>{
+    if(tab==="flights"&&!airNz){setTab("dashboard");return;}
     if(tab==="flights"&&flights===null)fetchFlights(flightsDirection);
   },[tab]);
   const [threshold,setThreshold]=useState(38);
@@ -2464,11 +2492,6 @@ function App(){
   // Clause 16.1 Penal Rate Allowance only applies to Schedule 1 employees —
   // everyone else leaves this off and sees no weekend penal in Allowances.
   const [isSchedule1,setIsSchedule1]=useState(false);
-  // Default lead time for the "set an alarm" prompt — how many minutes
-  // before the next upcoming shift's start the suggested alarm fires.
-  // Adjustable per-shift on the prompt itself; this is just the starting
-  // value.
-  const [alarmLeadMinutes,setAlarmLeadMinutes]=useState(600);
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
   const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
@@ -2485,12 +2508,12 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false);setAlarmLeadMinutes(x.alarmLeadMinutes??600)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
-    setStatus("Detecting roster tables…");
+    setStatus(T("Detecting roster tables…"));
     let worker;
     try{
       const canvas=await imageToCanvas(file);
@@ -2706,7 +2729,7 @@ function App(){
       };
       fr.readAsArrayBuffer(file);return;
     }
-    setError("Use a roster screenshot, CSV, XLS or XLSX file.");
+    setError(T("Use a roster screenshot, CSV, XLS or XLSX file."));
   };
 
   const updateCell=(i,v)=>setReview(r=>({...r,cells:r.cells.map((x,j)=>j===i?v:x)}));
@@ -2969,6 +2992,116 @@ function App(){
     return()=>{cancelled=true};
   },[userId]);
 
+  // ---- General roster: settings, AI scan, spreadsheet import, rest warnings -----
+  const [vv,setVv]=useState(loadVvSettings);
+  const [profileChecked,setProfileChecked]=useState(!supabase);
+  const [setupOpen,setSetupOpen]=useState(false);
+  const [aiScanOpen,setAiScanOpen]=useState(false);
+  const [sheetResult,setSheetResult]=useState(null);
+  const [sheetPick,setSheetPick]=useState(null);
+  const sheetRef=useRef(null);
+  const lang=vv.language||"en";
+  setActiveLang(lang);
+  const airNz=isAirNz(vv.rosterType);
+  const needsSetup=!vv.setupDone&&profileChecked;
+
+  useEffect(()=>{try{localStorage.setItem(VV_SETTINGS_KEY,JSON.stringify(vv))}catch{}},[vv]);
+
+  // Settings follow the account across devices. If the new profile columns don't
+  // exist yet (migration not run) this fails quietly and local settings are used.
+  useEffect(()=>{
+    if(!supabase||!userId)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const {data,error}=await supabase.from("profiles").select("roster_type,language,min_rest_hours,pay_cycle,setup_done").eq("user_id",userId).maybeSingle();
+        if(!cancelled&&!error&&data?.setup_done){
+          setVv(v=>({...v,rosterType:data.roster_type||"airnz",language:data.language||"en",minRestHours:Number(data.min_rest_hours)||0,setupDone:true}));
+        }
+      }catch{}
+      finally{if(!cancelled)setProfileChecked(true);}
+    })();
+    return()=>{cancelled=true};
+  },[userId]);
+
+  useEffect(()=>{
+    if(!supabase||!userId||!vv.setupDone||!profileChecked)return;
+    const row={user_id:userId,roster_type:vv.rosterType,language:vv.language,min_rest_hours:vv.minRestHours,pay_cycle:payFrequency,setup_done:true};
+    if(myNameOverride)row.employee_name=myNameOverride;
+    supabase.from("profiles").upsert(row).then(({error})=>{if(error)console.warn("profile settings sync failed:",error.message)});
+  },[userId,profileChecked,vv.rosterType,vv.language,vv.minRestHours,payFrequency,vv.setupDone,myNameOverride]);
+
+  const saveSetup=(st)=>{
+    setVv(v=>({...v,language:st.language,rosterType:st.rosterType,minRestHours:st.minRestHours,shiftTypes:st.shiftTypes,setupDone:true}));
+    if(st.payCycle)setPayFrequency(st.payCycle);
+    setMyNameOverride(st.name);
+    setSetupOpen(false);
+  };
+
+  // Rechecked automatically whenever shifts change — manual edits, new uploads, roster changes.
+  const restWarnings=useMemo(()=>findRestWarnings(mine,vv.minRestHours||0),[mine,vv.minRestHours]);
+
+  // Saves ONLY the signed-in user's own shifts (from an AI scan or a spreadsheet).
+  const importShifts=(shifts,source)=>{
+    const name=myName;
+    if(!name||!shifts?.length)return;
+    const stamp=Date.now();
+    const added=shifts.map((sh,i)=>{
+      const hasTimes=!!(sh.start&&sh.end);
+      const literal=hasTimes?`${sh.start}-${sh.end}`:(sh.code||"");
+      const parsed=parseDisplayedRosterValue(literal);
+      const ps=parseShiftText(literal);
+      const amShift=(ps&&!ps.isDayOff)?`${ps.start.replace(":","")}-${ps.end.replace(":","")}`:"0000-0000";
+      return {
+        id:`ai-${stamp}-${i}`,name,date:sh.date,
+        time:parsed.time,code:hasTimes?parsed.code:(sh.code||parsed.code),hours:parsed.hours,display:parsed.display,
+        canonicalValue:parsed.display,editableValue:"0000-0000",
+        amShift,pmShift:"0000-0000",amType:"RT",pmType:"RT",
+        originalValue:parsed.display,rawCellText:literal,rawShiftText:literal,
+        start:ps?.start||"",end:ps?.end||"",minutes:ps?.minutes||0,
+        isDayOff:!hasTimes,
+        source
+      };
+    });
+    setEntries(old=>{
+      const merged=[
+        ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(name)&&added.some(a=>a.date===e.date))),
+        ...added
+      ];
+      return prunedEntriesKeepingRecentPeriods(merged,name,MAX_ROSTER_PERIODS);
+    });
+    const first=added.map(a=>a.date).sort()[0];
+    setSelectedDate(first);
+    setCalendarMonth(first.slice(0,7)+"-01");
+    setAiScanOpen(false);setSheetResult(null);setSheetPick(null);setTab("dashboard");
+  };
+
+  // Spreadsheets are read on the device. Only the matching row is kept; nothing is uploaded.
+  const importSheet=async(file,pickRow=null,pickSheet=null)=>{
+    if(!myName){setSetupOpen(true);return;}
+    try{
+      const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+      const hintYear=Number(ymd(new Date()).slice(0,4));
+      const opts={hintYear,shiftTypes:vv.shiftTypes||{}};
+      let amb=null,noDates=false;
+      const names=pickSheet?[pickSheet]:wb.SheetNames;
+      for(const sn of names){
+        const grid=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:"",raw:true});
+        const r=extractMyRowFromGrid(grid,myName,{...opts,pickRow});
+        if(r.status==="ok"){
+          setSheetResult({found:true,shifts:r.shifts,matchedName:r.matchedName,notes:""});
+          return;
+        }
+        if(r.status==="ambiguous"&&!amb)amb={file,sheet:sn,candidates:r.candidates};
+        if(r.status==="no_dates")noDates=true;
+      }
+      if(amb){setSheetPick(amb);return;}
+      alert(noDates?"We found your name but couldn't read the dates in this spreadsheet. Try scanning a photo of it instead.":tr(lang,"notFound"));
+    }catch{
+      alert(T("Couldn't read that spreadsheet. Check the file and try again."));
+    }
+  };
+
   // Any later manual change via the "Which name on the roster is you?"
   // dropdown gets pushed to Supabase too — guarded so this can't fire
   // before the load above has run and silently overwrite a real saved
@@ -3053,21 +3186,21 @@ function App(){
   // deliver a real OS notification while this page remains open.
   const scheduleLocalReminder=useCallback(async()=>{
     if(!("Notification" in window)){
-      setReminderStatus("This browser cannot show notifications. Install the app to your Home Screen or use a supported browser.");
+      setReminderStatus(T("This browser cannot show notifications. Install the app to your Home Screen or use a supported browser."));
       return false;
     }
     const perm=Notification.permission==="granted"
       ? "granted"
       : await Notification.requestPermission();
     if(perm!=="granted"){
-      setReminderStatus("Notification permission was not granted.");
+      setReminderStatus(T("Notification permission was not granted."));
       return false;
     }
     localStorage.setItem(`${STORE}:localReminder`,JSON.stringify({
       hour:notifyHour,minute:notifyMinute,name:myName
     }));
     setSubscriptionStatus("local");
-    setReminderStatus("Local reminders are enabled. Keep this app open; install it to your Home Screen for better background support.");
+    setReminderStatus(T("Local reminders are enabled. Keep this app open; install it to your Home Screen for better background support."));
     return true;
   },[notifyHour,notifyMinute,myName]);
 
@@ -3110,99 +3243,21 @@ function App(){
     }));
   },[subscriptionStatus,notifyHour,notifyMinute,myName]);
 
-  // Dashboard "set an alarm" prompt for the next upcoming shift. Separate
-  // from the evening-reminder system above: this is a one-shot alarm tied
-  // to a specific shift's start time minus a lead time, not a recurring
-  // daily notification. Persisted under its own key so it survives a
-  // reload, same pattern as :localReminder.
-  const [shiftAlarm,setShiftAlarm]=useState(null); // {shiftDate,shiftStart,alarmDate,alarmHour,alarmMinute,leadMinutes}
-  const [shiftAlarmStatus,setShiftAlarmStatus]=useState("");
+  // The old in-app shift alarm was removed; clear any saved alarm left on this device.
+  useEffect(()=>{try{localStorage.removeItem(`${STORE}:shiftAlarm`)}catch{}},[]);
 
-  useEffect(()=>{
-    try{
-      const saved=JSON.parse(localStorage.getItem(`${STORE}:shiftAlarm`)||"null");
-      if(saved) setShiftAlarm(saved);
-    }catch{}
-  },[]);
-
-  const setShiftAlarmNow=useCallback(async(shiftDate,shiftStart,leadMinutes)=>{
-    if(!("Notification" in window)){
-      setShiftAlarmStatus("This browser can't show alarm notifications. Install the app to your Home Screen or use a supported browser.");
-      return;
-    }
-    const perm=Notification.permission==="granted"
-      ? "granted"
-      : await Notification.requestPermission();
-    if(perm!=="granted"){
-      setShiftAlarmStatus("Notification permission was not granted.");
-      return;
-    }
-    const alarm=computeAlarmClock(shiftDate,shiftStart,leadMinutes);
-    const record={
-      shiftDate,shiftStart,
-      alarmDate:alarm.date,alarmHour:alarm.hour,alarmMinute:alarm.minute,
-      leadMinutes
-    };
-    setShiftAlarm(record);
-    try{localStorage.setItem(`${STORE}:shiftAlarm`,JSON.stringify(record));}catch{}
-    setShiftAlarmStatus(`Alarm set for ${pad2(alarm.hour)}:${pad2(alarm.minute)} on ${fmt(alarm.date)} — ${leadMinutes} min before your ${shiftStart.slice(0,2)}:${shiftStart.slice(2)} shift. Keep this app open, or install it to your Home Screen for better background support.`);
-  },[]);
-
-  const cancelShiftAlarm=useCallback(()=>{
-    setShiftAlarm(null);
-    try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
-    setShiftAlarmStatus("Alarm cancelled.");
-  },[]);
-
-  // The notification above is best-effort — it can't survive the app being
-  // fully closed, and it won't override silent mode the way a real phone
-  // alarm does. This copies the computed time to the clipboard so it's a
-  // two-second paste into the phone's actual Clock app as a reliable backup.
-  const copyAlarmTime=useCallback(async(hour,minute)=>{
-    const text=`${pad2(hour)}:${pad2(minute)}`;
-    try{
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        await navigator.clipboard.writeText(text);
-        setShiftAlarmStatus(`Copied ${text} — paste it into your phone's Clock app for a real alarm.`);
-      }else{
-        setShiftAlarmStatus(`Alarm time: ${text}. Copying isn't supported in this browser — set it in your phone's Clock app manually.`);
-      }
-    }catch{
-      setShiftAlarmStatus(`Alarm time: ${text}. Copy failed — set it in your phone's Clock app manually.`);
-    }
-  },[]);
-
-  // Fires the armed alarm at its exact moment, same setTimeout-to-target
-  // pattern as the evening reminder above, but one-shot: once it fires (or
-  // its time has already passed, e.g. the app was closed through it) the
-  // alarm clears itself rather than rescheduling daily.
-  useEffect(()=>{
-    if(!shiftAlarm || !("Notification" in window) || Notification.permission!=="granted") return;
-    const target=new Date(`${shiftAlarm.alarmDate}T${pad2(shiftAlarm.alarmHour)}:${pad2(shiftAlarm.alarmMinute)}:00`);
-    const ms=target.getTime()-Date.now();
-    if(ms<=0) return;
-    const timer=setTimeout(()=>{
-      new Notification("VV Duty Roster — shift alarm",{
-        body:`Your shift starts at ${shiftAlarm.shiftStart.slice(0,2)}:${shiftAlarm.shiftStart.slice(2)} — time to get up.`,
-        tag:"vv-shift-alarm"
-      });
-      setShiftAlarm(null);
-      try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
-    },Math.min(ms,2147483647));
-    return()=>clearTimeout(timer);
-  },[shiftAlarm]);
 
   const enableEveningReminders=async()=>{
-    if(!supabase||!userId){setReminderStatus("Sign in first.");return;}
+    if(!supabase||!userId){setReminderStatus(T("Sign in first."));return;}
     if(!("serviceWorker" in navigator)||!("PushManager" in window)){
       await scheduleLocalReminder();
       return;
     }
     try{
       const perm=await Notification.requestPermission();
-      if(perm!=="granted"){setReminderStatus("Notification permission was not granted.");return;}
+      if(perm!=="granted"){setReminderStatus(T("Notification permission was not granted."));return;}
       const vapidPublicKey=import.meta.env.VITE_VAPID_PUBLIC_KEY;
-      if(!vapidPublicKey){setReminderStatus("Missing VAPID key — set VITE_VAPID_PUBLIC_KEY and redeploy.");return;}
+      if(!vapidPublicKey){setReminderStatus(T("Missing VAPID key — set VITE_VAPID_PUBLIC_KEY and redeploy."));return;}
       const reg=await navigator.serviceWorker.ready;
       // The browser refuses subscribe() with a different applicationServerKey
       // while an old subscription still exists on the device (throws
@@ -3231,12 +3286,12 @@ function App(){
         notify_minute:notifyMinute,
         last_sent_date:null // changing the time should apply tonight, not wait until tomorrow
       },{onConflict:"user_id"});
-      if(error){setReminderStatus("Saved locally but failed to sync: "+error.message);return;}
+      if(error){setReminderStatus(T("Saved locally but failed to sync: ")+error.message);return;}
       const hh=String(notifyHour).padStart(2,"0"),mm=String(notifyMinute).padStart(2,"0");
       setReminderStatus(`Evening reminders enabled — you'll get a notification at ${hh}:${mm} NZT with tomorrow's shift.`);
       setSubscriptionStatus("active");
     }catch(err){
-      setReminderStatus("Couldn't enable reminders: "+(err?.message||String(err)));
+      setReminderStatus(T("Couldn't enable reminders: ")+(err?.message||String(err)));
     }
   };
 
@@ -3262,7 +3317,7 @@ function App(){
         const reg=await navigator.serviceWorker.ready;
         const existing=await reg.pushManager.getSubscription();
         if(!existing){
-          if(!cancelled)setReminderStatus("Reminders aren't enabled on this device yet — tap \"Enable Evening Reminders\" below first.");
+          if(!cancelled)setReminderStatus(T("Reminders aren't enabled on this device yet — tap \"Enable Evening Reminders\" below first."));
           return;
         }
         if(cancelled)return;
@@ -3277,9 +3332,9 @@ function App(){
           last_sent_date:null // a time change should apply tonight, not wait until tomorrow
         }).eq("user_id",userId).select();
         if(cancelled)return;
-        if(error){setReminderStatus("Couldn't save the new time: "+error.message);return;}
+        if(error){setReminderStatus(T("Couldn't save the new time: ")+error.message);return;}
         if(!data||!data.length){
-          setReminderStatus("Couldn't save the new time — no saved subscription found for this account. Tap \"Enable Evening Reminders\" again to fix this.");
+          setReminderStatus(T("Couldn't save the new time — no saved subscription found for this account. Tap \"Enable Evening Reminders\" again to fix this."));
           setSubscriptionStatus("inactive");
           return;
         }
@@ -3287,7 +3342,7 @@ function App(){
         setReminderStatus(`Reminder time updated to ${hh}:${mm} NZT.`);
         setSubscriptionStatus("active");
       }catch(err){
-        if(!cancelled)setReminderStatus("Couldn't save the new time: "+(err?.message||String(err)));
+        if(!cancelled)setReminderStatus(T("Couldn't save the new time: ")+(err?.message||String(err)));
       }
     })();
     return()=>{cancelled=true};
@@ -3320,6 +3375,12 @@ function App(){
   // upload. Falls back to the calendar week only if no period covers
   // today at all (nothing uploaded yet).
   const dashboardPeriodStart=currentPeriod?currentPeriod.start:weekStart;
+  // Dashboard follows the pay cycle: weekly -> the current Mon–Sun week, otherwise the current 14-day period.
+  // Uses the "Pay frequency" setting (also asked at first sign-in). Monthly keeps the 14-day view.
+  const dashWeekly=payFrequency==="weekly";
+  const dashDays=dashWeekly?7:14;
+  const dashStart=dashWeekly?weekStart:dashboardPeriodStart;
+  const dashOvertime=dashWeekly?week.reduce((s,e)=>s+entryOvertimeHours(e),0):rosterOvertimeHours;
   // The period the My Roster tab actually displays — the one the person
   // tapped under Rosters Uploaded, falling back to the current period (or
   // the most recent period if there's no current one) when nothing's been
@@ -3332,11 +3393,6 @@ function App(){
   const viewedPeriodRows=viewedPeriod?viewedPeriod.rows:[];
   const viewedPeriodOvertimeHours=viewedPeriodRows.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
-  // Only prompts for a real dated shift with a genuine start time today or
-  // later — never for a past shift, an RDO, or when nothing's rostered.
-  const upcomingShiftStart=(upcoming && upcoming.date>=todayISO()) ? entryEarliestShiftStart(upcoming) : null;
-  const upcomingAlarmMatch=!!(shiftAlarm && upcoming && shiftAlarm.shiftDate===upcoming.date && shiftAlarm.shiftStart===upcomingShiftStart);
-  const suggestedAlarm=upcomingShiftStart ? computeAlarmClock(upcoming.date,upcomingShiftStart,alarmLeadMinutes) : null;
   const filtered=entries.filter(e=>{
     if(!searchDay) return true;
     if(!e.date) return false;
@@ -3346,41 +3402,43 @@ function App(){
   });
 
   return <div className="shell">
-    <header className="top"><div><img src="/icon-512.png" alt="VV" style={{height:44,width:44,display:"block"}}/><div className="sub">DUTY ROSTER</div></div></header>
+    <header className="top"><div><img src="/icon-512.png" alt={T("VV")} style={{height:44,width:44,display:"block"}}/><div className="sub">{T("DUTY ROSTER")}</div></div></header>
 
     {tab==="dashboard"&&<main>
+      <RestBanner warnings={restWarnings} lang={lang}/>
       {!myName&&<section className="panel" style={{padding:"13px",background:"#3a2a12",border:"1px solid #D4AF6A"}}>
-        <b style={{color:"#D4AF6A"}}>Set your name to see your roster</b>
-        <p className="rateNote" style={{marginTop:6}}>Go to Settings &gt; My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.</p>
+        <b style={{color:"#D4AF6A"}}>{T("Set your name to see your roster")}</b>
+        <p className="rateNote" style={{marginTop:6}}>{T("Go to Settings > My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.")}</p>
       </section>}
-      <section className="hero"><small>UPCOMING SHIFT</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||"See roster cell"}</h1>}<p>{upcoming.name}</p></>:<h2>No upcoming shift</h2>}</section>
+      <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
 
-      <div className="stats"><Stat label="WEEK HOURS" value={formatHoursMinutes(weekHours)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>NEXT 14 DAYS</b><span>{fmt(dashboardPeriodStart)} – {fmt(addDays(dashboardPeriodStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(dashboardPeriodStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(dashboardPeriodStart,i))} employeeName={myName}/></section>
+      <div className="stats"><Stat label={T("WEEK HOURS")} value={formatHoursMinutes(weekHours)}/><Stat label={T("OVERTIME")} value={dashOvertime.toFixed(2)}/></div>
+      <section className="panel"><div className="sectionTitle"><b>{dashWeekly?T("THIS WEEK"):T("NEXT 14 DAYS")}</b><span>{fmt(dashStart)} – {fmt(addDays(dashStart,dashDays-1))}</span></div><WeekRosterImages rows={Array.from({length:dashDays},(_,i)=>mine.find(e=>e.date===addDays(dashStart,i))||null)} dates={Array.from({length:dashDays},(_,i)=>addDays(dashStart,i))} employeeName={myName}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
       <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
       <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
       <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
-      <div className="stats calendarTotals"><Stat label="TOTAL HOURS" value={rosterTotalHours.toFixed(2)}/><Stat label="OVERTIME" value={rosterOvertimeHours.toFixed(2)}/></div>
+      <div className="stats calendarTotals"><Stat label={T("TOTAL HOURS")} value={rosterTotalHours.toFixed(2)}/><Stat label={T("OVERTIME")} value={rosterOvertimeHours.toFixed(2)}/></div>
     </main>}
 
     {tab==="roster"&&<main>
+      <RestBanner warnings={restWarnings} lang={lang}/>
       <div className="stats rosterSummary">
-        <Stat label="TOTAL HOURS" value={(viewedPeriod?viewedPeriod.hours:0).toFixed(2)}/>
-        <Stat label="OVERTIME" value={viewedPeriodOvertimeHours.toFixed(2)}/>
+        <Stat label={T("TOTAL HOURS")} value={(viewedPeriod?viewedPeriod.hours:0).toFixed(2)}/>
+        <Stat label={T("OVERTIME")} value={viewedPeriodOvertimeHours.toFixed(2)}/>
       </div>
       {viewedPeriod&&<div className="sectionTitle" style={{marginBottom:8}}>
-        <span style={{opacity:.7}}>{viewedPeriod.isCurrent?"Current period":"Viewing period"} {fmt(viewedPeriod.start)} – {fmt(viewedPeriod.end)}</span>
+        <span style={{opacity:.7}}>{viewedPeriod.isCurrent?T("Current period"):T("Viewing period")} {fmt(viewedPeriod.start)} – {fmt(viewedPeriod.end)}</span>
       </div>}
       <section className="panel">
         <div className="sectionTitle">
-          <b>ROSTERS UPLOADED</b>
-          <span>{periods.length} period{periods.length===1?"":"s"}</span>
+          <b>{T("ROSTERS UPLOADED")}</b>
+          <span>{periods.length} {T("period")}{getActiveLang()==="en"&&periods.length!==1?"s":""}</span>
         </div>
         {periods.length===0
-          ?<p className="rateNote">No rosters imported yet.</p>
+          ?<p className="rateNote">{T("No rosters imported yet.")}</p>
           :<div style={{display:"flex",flexDirection:"column",gap:6}}>
             {periods.slice().reverse().map(p=>{
               const isViewed=viewedPeriod&&p.start===viewedPeriod.start;
@@ -3394,29 +3452,29 @@ function App(){
                   background:isViewed?"rgba(212,175,106,0.12)":"transparent",
                   border:isViewed?"1px solid #D4AF6A":"1px solid transparent"
                 }}>
-                <span>{fmt(p.start)} – {fmt(p.end)}{p.isCurrent?" · current":""}</span>
+                <span>{fmt(p.start)} – {fmt(p.end)}{p.isCurrent?T(" · current"):""}</span>
                 <b>{formatHoursMinutes(p.hours)}</b>
               </div>;
             })}
           </div>
         }
-        <p className="rateNote">New roster uploads auto-trim to the most recent {MAX_ROSTER_PERIODS} periods per employee, oldest first. Tap a period above to view its 14 days below.</p>
+        <p className="rateNote">{T("New roster uploads auto-trim to the most recent")} {MAX_ROSTER_PERIODS} {T("periods per employee, oldest first. Tap a period above to view its 14 days below.")}</p>
       </section>
       <section className="panel">
         <div className="sectionTitle">
           <div>
-            <b>MY ROSTER</b>
-            <small className="editorHint">Edit any shift below, or tap a shift's field and dictate it in.</small>
+            <b>{T("MY ROSTER")}</b>
+            <small className="editorHint">{T("Edit any shift below, or tap a shift's field and dictate it in.")}</small>
           </div>
-          <span>{viewedPeriodRows.length} days this period</span>
+          <span>{viewedPeriodRows.length} {T("days this period")}</span>
         </div>
         <div style={{display:"flex",gap:10,alignItems:"flex-start",background:"#16130d",border:"1px solid #2a251c",borderRadius:10,padding:"10px 12px",marginBottom:10}}>
           <Mic size={14} color="#D4AF6A" style={{marginTop:2,flexShrink:0}}/>
           <div>
-            <div style={{fontSize:12,fontWeight:600}}>Voice entry format</div>
-            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Tap a shift's field, then use your keyboard's dictation mic</div>
-            <div style={{fontSize:12,opacity:.75,marginTop:2}}>Day, start <u>till</u> end, RT or OT — say "till", not "to" (dictation hears "to" as the number 2)</div>
-            <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>"Tuesday, oh five oh five till one three hundred, RT"</div>
+            <div style={{fontSize:12,fontWeight:600}}>{T("Voice entry format")}</div>
+            <div style={{fontSize:12,opacity:.75,marginTop:2}}>{T("Tap a shift's field, then use your keyboard's dictation mic")}</div>
+            <div style={{fontSize:12,opacity:.75,marginTop:2}}>{T("Day, start")} <u>{T("till")}</u> {T("end, RT or OT — say \"till\", not \"to\" (dictation hears \"to\" as the number 2)")}</div>
+            <div style={{fontSize:11,opacity:.6,marginTop:3,fontStyle:"italic"}}>{T("\"Tuesday, oh five oh five till one three hundred, RT\"")}</div>
           </div>
         </div>
         <Roster rows={viewedPeriodRows} onEdit={updateEntryValue} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
@@ -3424,63 +3482,33 @@ function App(){
     </main>}
 
     {tab==="search"&&<main>
-      {upcomingShiftStart&&<section className="panel" style={{padding:13}}>
-        {upcomingAlarmMatch
-          ? <>
-              <div className="sectionTitle"><b>ALARM SET</b></div>
-              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(shiftAlarm.alarmHour)}:{pad2(shiftAlarm.alarmMinute)}</div>
-              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(shiftAlarm.alarmDate)} — {shiftAlarm.leadMinutes} min before your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>copyAlarmTime(shiftAlarm.alarmHour,shiftAlarm.alarmMinute)}>Copy time</button>
-                <button onClick={cancelShiftAlarm}>Cancel alarm</button>
-              </div>
-            </>
-          : <>
-              <div className="sectionTitle"><b>SET AN ALARM?</b></div>
-              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(suggestedAlarm.hour)}:{pad2(suggestedAlarm.minute)}</div>
-              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(suggestedAlarm.date)}, for your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                <span style={{opacity:.7}}>Lead time</span>
-                <input type="number" min="0" step="5" value={alarmLeadMinutes}
-                  onChange={ev=>setAlarmLeadMinutes(Math.max(0,+ev.target.value||0))}
-                  style={{width:60}} aria-label="Alarm lead time in minutes"/>
-                <span style={{opacity:.7}}>min before shift</span>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>copyAlarmTime(suggestedAlarm.hour,suggestedAlarm.minute)}>Copy time</button>
-                <button onClick={()=>setShiftAlarmNow(upcoming.date,upcomingShiftStart,alarmLeadMinutes)}>Set alarm</button>
-              </div>
-            </>
-        }
-        <p className="rateNote" style={{marginTop:8}}>{shiftAlarmStatus||"This in-app alarm needs the app open (or installed to your Home Screen) to fire — for a reliable wake-up, copy the time into your phone's real Clock app too."}</p>
-      </section>}
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Search size={17}/>
-          <span>SEARCH BY DAY</span>
+          <span>{T("SEARCH BY DAY")}</span>
         </div>
 
         <div className="daySearchControl">
           <select
             value={searchDay}
             onChange={e=>setSearchDay(e.target.value)}
-            aria-label="Search roster by day"
+            aria-label={T("Search roster by day")}
           >
-            <option value="">Select day</option>
-            <option value="Monday">Monday</option>
-            <option value="Tuesday">Tuesday</option>
-            <option value="Wednesday">Wednesday</option>
-            <option value="Thursday">Thursday</option>
-            <option value="Friday">Friday</option>
-            <option value="Saturday">Saturday</option>
-            <option value="Sunday">Sunday</option>
+            <option value="">{T("Select day")}</option>
+            <option value="Monday">{T("Monday")}</option>
+            <option value="Tuesday">{T("Tuesday")}</option>
+            <option value="Wednesday">{T("Wednesday")}</option>
+            <option value="Thursday">{T("Thursday")}</option>
+            <option value="Friday">{T("Friday")}</option>
+            <option value="Saturday">{T("Saturday")}</option>
+            <option value="Sunday">{T("Sunday")}</option>
           </select>
 
           {searchDay&&
             <button
               className="dayClear"
               onClick={()=>setSearchDay("")}
-              aria-label="Clear day"
+              aria-label={T("Clear day")}
             >
               <X size={14}/>
             </button>}
@@ -3499,40 +3527,49 @@ function App(){
             ? <Roster rows={filtered.slice(0,50)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/>
             : <div className="emptySearch">
                 <Search size={25}/>
-                <b>No roster found</b>
-                <span>No roster entries are saved for {searchDay}.</span>
+                <b>{T("No roster found")}</b>
+                <span>{T("No roster entries are saved for")} {searchDay}.</span>
               </div>
           : <div className="emptySearch">
               <Search size={25}/>
-              <b>Select a day</b>
-              <span>Choose Monday to Sunday to view matching roster entries.</span>
+              <b>{T("Select a day")}</b>
+              <span>{T("Choose Monday to Sunday to view matching roster entries.")}</span>
             </div>}
       </section>
     </main>}
 
-    {tab==="flights"&&<main>
+    {tab==="flights"&&airNz&&<main>
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Plane size={17}/>
-          <span>AKL · AIR NEW ZEALAND · NEXT {FLIGHT_WINDOW_HOURS_FORWARD}H</span>
+          <span>{flightsAirline==="NZ"?T("AKL · AIR NEW ZEALAND · NEXT"):`AKL · ${(FLIGHT_AIRLINES.find(a=>a.code===flightsAirline)||{name:flightsAirline}).name.toUpperCase()} · ${T("NEXT")}`} {FLIGHT_WINDOW_HOURS_FORWARD}H</span>
         </div>
         <div className="daySearchControl">
           <select
             value={flightsDirection}
             onChange={e=>{const d=e.target.value;setFlightsDirection(d);fetchFlights(d);}}
-            aria-label="Departures or arrivals"
+            aria-label={T("Departures or arrivals")}
           >
-            <option value="departures">Departures</option>
-            <option value="arrivals">Arrivals</option>
+            <option value="departures">{T("Departures")}</option>
+            <option value="arrivals">{T("Arrivals")}</option>
           </select>
           <button
             className="dayClear"
             onClick={()=>fetchFlights(flightsDirection)}
-            aria-label="Refresh flight status"
+            aria-label={T("Refresh flight status")}
             disabled={flightsLoading}
           >
             <RefreshCw size={14} className={flightsLoading?"spin":""}/>
           </button>
+        </div>
+        <div className="daySearchControl" style={{marginTop:8}}>
+          <select
+            value={flightsAirline}
+            onChange={e=>{const a=e.target.value;setFlightsAirline(a);setFlights(null);fetchFlights(flightsDirection,a);}}
+            aria-label={T("Airline")}
+          >
+            {FLIGHT_AIRLINES.map(a=><option key={a.code} value={a.code}>{a.name}</option>)}
+          </select>
         </div>
       </div>
 
@@ -3542,21 +3579,21 @@ function App(){
             key={s}
             className={flightsScope===s?"on":""}
             onClick={()=>setFlightsScope(s)}
-          >{s==="all"?"All":s==="domestic"?"Domestic":"International"}</button>
+          >{s==="all"?T("All"):s==="domestic"?T("Domestic"):T("International")}</button>
         )}
       </div>
 
       {flightsError&&
         <div className="emptySearch">
           <AlertTriangle size={25}/>
-          <b>Couldn't load flights</b>
+          <b>{T("Couldn't load flights")}</b>
           <span>{flightsError}</span>
         </div>}
 
       {!flightsError&&
         <section className="panel searchResults">
           {flightsLoading&&!flights
-            ? <div className="emptySearch"><Plane size={25}/><b>Loading flights…</b></div>
+            ? <div className="emptySearch"><Plane size={25}/><b>{T("Loading flights…")}</b></div>
             : visibleFlights.length
               ? <div className="flightsList">
                   {visibleFlights.map(f=>
@@ -3568,110 +3605,117 @@ function App(){
                       <div className="flightTimes">
                         <span>{fmtTime(f.scheduledTime)}</span>
                         {f.estimatedTime!==f.scheduledTime&&
-                          <small>est. {fmtTime(f.estimatedTime)}</small>}
+                          <small>{T("est.")} {fmtTime(f.estimatedTime)}</small>}
                       </div>
-                      {f.gate&&<div className="flightGate">Gate {f.gate}</div>}
+                      {f.gate&&<div className="flightGate">{T("Gate")} {f.gate}</div>}
+                      {flightsDirection==="arrivals"&&(f.bagClaim||f.baggage||f.carousel)&&<div className="flightGate">{T("Bag claim")} {f.bagClaim||f.baggage||f.carousel}</div>}
                       <div className={`flightStatus status-${f.status.toLowerCase().replace(/\s+/g,"-")}`}>{f.status}</div>
                     </div>
                   )}
                 </div>
               : <div className="emptySearch">
                   <Plane size={25}/>
-                  <b>No flights found</b>
-                  <span>No {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} in the next {FLIGHT_WINDOW_HOURS_FORWARD} hours.</span>
+                  <b>{T("No flights found")}</b>
+                  <span>{T("No")} {flightsScope==="all"?"":flightsScope+" "}{flightsDirection} {T("in the next")} {FLIGHT_WINDOW_HOURS_FORWARD} {T("hours.")}</span>
                 </div>}
         </section>}
 
       {flightsUpdatedAt&&
-        <small className="flightsUpdatedAt">Updated {fmtTime(flightsUpdatedAt)}</small>}
+        <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
     {tab==="more"&&<main>
-      <section className="panel menu"><h3>LIVE FLIGHTS</h3>
-        <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Live departures &amp; arrivals</small></span></button>
+      {airNz&&<section className="panel menu"><h3>{T("LIVE FLIGHTS")}</h3>
+        <button onClick={()=>setTab("flights")}><Plane/><span><b>{T("AKL · Air New Zealand status")}</b><small>{T("Live departures & arrivals")}</small></span></button>
+      </section>}
+      <section className="panel menu"><h3>{T("IMPORT")}</h3>
+        <button onClick={()=>{if(!myName){setSetupOpen(true);return;}setAiScanOpen(true);}}><Camera/><span><b>{tr(lang,"scanTitle")} {T("(AI)")}</b><small>{T("Photo or screenshot — only your own row is read and saved")}</small></span></button>
+        <button onClick={()=>{if(!myName){setSetupOpen(true);return;}sheetRef.current?.click();}}><FileSpreadsheet/><span><b>{T("Upload spreadsheet")}</b><small>{T(".xlsx, .xls or .csv — read on your device, only your row is kept")}</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>{T("Photo scan (basic, backup)")}</b><small>{T("Older offline reader — use only if AI scan is unavailable")}</small></span></button>
       </section>
-      <section className="panel menu"><h3>IMPORT</h3>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
+      <section className="panel menu"><h3>{T("EXPORT")}</h3>
+        <button onClick={()=>downloadIcs(mine,{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||"Pacific/Auckland",title:"Work shift",lang})}><CalendarDays/><span><b>{tr(lang,"calendarDownload")}</b><small>{tr(lang,"calendarHint")}</small></span></button>
+        <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>{T("Export 14-Day Roster as JPEG")}</b><small>{T("Name, Date, RT, OT & Hours")}</small></span></button>
       </section>
-      <section className="panel menu"><h3>EXPORT</h3>
-        <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
+      <section className="panel menu"><h3>{T("SETUP")}</h3>
+        <button onClick={()=>setSetupOpen(true)}><Users/><span><b>{tr(lang,"language")}, {tr(lang,"company")}</b><small>{tr(lang,"exactName")} · {tr(lang,"minRest")}</small></span></button>
       </section>
 
       <section className="panel">
-        <div className="sectionTitle"><b>HOURLY RATE</b></div>
+        <div className="sectionTitle"><b>{T("HOURLY RATE")}</b></div>
         <div className="rateCard">
           <div className="rateRow">
-            <span>Hourly Rate</span>
+            <span>{T("Hourly Rate")}</span>
             <div className="rateValue">
               <small>$</small>
-              <input type="number" step="0.01" min="0" value={payRate} onChange={ev=>setPayRate(+ev.target.value||0)} aria-label="Hourly rate"/>
+              <input type="number" step="0.01" min="0" value={payRate} onChange={ev=>setPayRate(+ev.target.value||0)} aria-label={T("Hourly rate")}/>
             </div>
           </div>
           <div className="rateRow">
-            <span>OT hours at tier 1</span>
+            <span>{T("OT hours at tier 1")}</span>
             <div className="rateValue">
-              <input type="number" step="0.5" min="0" value={otTier1Hours} onChange={ev=>setOtTier1Hours(+ev.target.value||0)} aria-label="Overtime tier 1 hours"/>
-              <small>hrs</small>
+              <input type="number" step="0.5" min="0" value={otTier1Hours} onChange={ev=>setOtTier1Hours(+ev.target.value||0)} aria-label={T("Overtime tier 1 hours")}/>
+              <small>{T("hrs")}</small>
             </div>
           </div>
           <div className="rateRow">
-            <span>Tier 1 rate (first {otTier1Hours}h OT)</span>
+            <span>{T("Tier 1 rate (first")} {otTier1Hours}{T("h OT)")}</span>
             <div className="rateValue">
-              <input type="number" step="0.1" min="1" value={otTier1Mult} onChange={ev=>setOtTier1Mult(+ev.target.value||1.5)} aria-label="Overtime tier 1 multiplier"/>
+              <input type="number" step="0.1" min="1" value={otTier1Mult} onChange={ev=>setOtTier1Mult(+ev.target.value||1.5)} aria-label={T("Overtime tier 1 multiplier")}/>
               <small>×</small>
             </div>
           </div>
           <div className="rateRow">
-            <span>Tier 2 rate (remaining OT)</span>
+            <span>{T("Tier 2 rate (remaining OT)")}</span>
             <div className="rateValue">
-              <input type="number" step="0.1" min="1" value={otTier2Mult} onChange={ev=>setOtTier2Mult(+ev.target.value||2.0)} aria-label="Overtime tier 2 multiplier"/>
+              <input type="number" step="0.1" min="1" value={otTier2Mult} onChange={ev=>setOtTier2Mult(+ev.target.value||2.0)} aria-label={T("Overtime tier 2 multiplier")}/>
               <small>×</small>
             </div>
           </div>
           <div className="rateRow" style={{marginTop:8,borderTop:"1px solid #2a251c",paddingTop:12}}>
-            <span>RT hours — time-and-half from</span>
+            <span>{T("RT hours — time-and-half from")}</span>
             <div className="rateValue">
-              <input type="number" step="1" min="0" value={rtTier1Threshold} onChange={ev=>setRtTier1Threshold(+ev.target.value||0)} aria-label="RT tier 1 threshold hours"/>
-              <small>hrs</small>
+              <input type="number" step="1" min="0" value={rtTier1Threshold} onChange={ev=>setRtTier1Threshold(+ev.target.value||0)} aria-label={T("RT tier 1 threshold hours")}/>
+              <small>{T("hrs")}</small>
             </div>
           </div>
           <div className="rateRow">
-            <span>RT hours — double from</span>
+            <span>{T("RT hours — double from")}</span>
             <div className="rateValue">
-              <input type="number" step="1" min="0" value={rtTier2Threshold} onChange={ev=>setRtTier2Threshold(+ev.target.value||0)} aria-label="RT tier 2 threshold hours"/>
-              <small>hrs</small>
+              <input type="number" step="1" min="0" value={rtTier2Threshold} onChange={ev=>setRtTier2Threshold(+ev.target.value||0)} aria-label={T("RT tier 2 threshold hours")}/>
+              <small>{T("hrs")}</small>
             </div>
           </div>
           {(()=>{const b=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);return(<>
-            <div className="rateRow"><span>Total RT hours this period</span><span>{b.totalRtHours.toFixed(2)}</span></div>
-            {b.tier1Hours>0&&<div className="rateRow"><span>— at {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} hrs</span></div>}
-            {b.tier2Hours>0&&<div className="rateRow"><span>— at {rtTier2Mult}× (over {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} hrs</span></div>}
+            <div className="rateRow"><span>{T("Total RT hours this period")}</span><span>{b.totalRtHours.toFixed(2)}</span></div>
+            {b.tier1Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} {T("hrs")}</span></div>}
+            {b.tier2Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier2Mult}{T("× (over")} {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} {T("hrs")}</span></div>}
             <div className="rateRow rateRowTotal">
-              <span>Total Pay</span>
+              <span>{T("Total Pay")}</span>
               <b>${b.totalPay.toFixed(2)}</b>
             </div>
           </>)})()}
         </div>
-        <p className="rateNote">OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.</p>
+        <p className="rateNote">{T("OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.")}</p>
       </section>
 
       <section className="panel">
-        <div className="sectionTitle"><b>ALLOWANCES (CLAUSE 16)</b></div>
+        <div className="sectionTitle"><b>{T("ALLOWANCES (CLAUSE 16)")}</b></div>
         <div className="rateCard">
           <div className="rateRow">
-            <span>Schedule 1 employee</span>
-            <input type="checkbox" checked={isSchedule1} onChange={ev=>setIsSchedule1(ev.target.checked)} aria-label="Schedule 1 employee"/>
+            <span>{T("Schedule 1 employee")}</span>
+            <input type="checkbox" checked={isSchedule1} onChange={ev=>setIsSchedule1(ev.target.checked)} aria-label={T("Schedule 1 employee")}/>
           </div>
           {(()=>{const a=totalAllowancesForRows(minePeriod,payRate,isSchedule1);return(<>
-            <div className="rateRow"><span>Shift allowance (16.2)</span><span>${a.shiftAllowance.toFixed(2)}</span></div>
-            <div className="rateRow"><span>Weekend penal (16.1){!isSchedule1?" \u2014 Schedule 1 only":""}</span><span>${a.weekendPenal.toFixed(2)}</span></div>
+            <div className="rateRow"><span>{T("Shift allowance (16.2)")}</span><span>${a.shiftAllowance.toFixed(2)}</span></div>
+            <div className="rateRow"><span>{T("Weekend penal (16.1)")}{!isSchedule1?T(" — Schedule 1 only"):""}</span><span>${a.weekendPenal.toFixed(2)}</span></div>
             <div className="rateRow rateRowTotal">
-              <span>Total allowances</span>
+              <span>{T("Total allowances")}</span>
               <b>${a.total.toFixed(2)}</b>
             </div>
           </>)})()}
         </div>
-        <p className="rateNote">Shift allowance pays pro rata for hours worked 2200\u20132359, 0000\u20130159 and 0200\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.</p>
+        <p className="rateNote">{T("Shift allowance pays pro rata for hours worked 2200\\u20132359, 0000\\u20130159 and 0200\\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.")}</p>
       </section>
 
       {(()=>{
@@ -3685,122 +3729,130 @@ function App(){
         const totalDeducted=tax+unionFee+kiwiSaver;
         const netPay=totalPay-totalDeducted;
         return <section className="panel">
-          <div className="sectionTitle"><b>DEDUCTIONS</b></div>
+          <div className="sectionTitle"><b>{T("DEDUCTIONS")}</b></div>
           <div className="rateCard">
-            <div className="rateRow"><span>Wages</span><span>${wagesPay.toFixed(2)}</span></div>
-            {wagesResult.breakDeduction>0&&<div className="rateRow" style={{opacity:.7}}><span>— unpaid meal breaks (ERA s69ZD)</span><span>-${wagesResult.breakDeduction.toFixed(2)}</span></div>}
-            <div className="rateRow"><span>Allowances</span><span>${allowancesPay.toFixed(2)}</span></div>
-            <div className="rateRow rateRowTotal"><span>Gross Pay</span><b>${totalPay.toFixed(2)}</b></div>
+            <div className="rateRow"><span>{T("Wages")}</span><span>${wagesPay.toFixed(2)}</span></div>
+            {wagesResult.breakDeduction>0&&<div className="rateRow" style={{opacity:.7}}><span>{T("— unpaid meal breaks (ERA s69ZD)")}</span><span>-${wagesResult.breakDeduction.toFixed(2)}</span></div>}
+            <div className="rateRow"><span>{T("Allowances")}</span><span>${allowancesPay.toFixed(2)}</span></div>
+            <div className="rateRow rateRowTotal"><span>{T("Gross Pay")}</span><b>${totalPay.toFixed(2)}</b></div>
             <div className="rateRow rateRowDeduction">
-              <span>Tax (NZ PAYE + ACC)</span>
+              <span>{T("Tax (NZ PAYE + ACC)")}</span>
               <div className="rateValue">
-                <select value={payFrequency} onChange={ev=>setPayFrequency(ev.target.value)} aria-label="Pay frequency">
-                  <option value="weekly">Weekly</option>
-                  <option value="fortnightly">Fortnightly</option>
-                  <option value="monthly">Monthly</option>
+                <select value={payFrequency} onChange={ev=>setPayFrequency(ev.target.value)} aria-label={T("Pay frequency")}>
+                  <option value="weekly">{T("Weekly")}</option>
+                  <option value="fortnightly">{T("Fortnightly")}</option>
+                  <option value="monthly">{T("Monthly")}</option>
                 </select>
               </div>
               <b className="rateDeductionAmount">${tax.toFixed(2)}</b>
             </div>
             <div className="rateRow rateRowDeduction">
-              <span>Union Fee</span>
+              <span>{T("Union Fee")}</span>
               <div className="rateValue">
-                <input type="number" step="0.01" min="0" value={unionPct} onChange={ev=>setUnionPct(+ev.target.value||0)} aria-label="Union fee percentage"/>
+                <input type="number" step="0.01" min="0" value={unionPct} onChange={ev=>setUnionPct(+ev.target.value||0)} aria-label={T("Union fee percentage")}/>
                 <small>%</small>
               </div>
               <b className="rateDeductionAmount">${unionFee.toFixed(2)}</b>
             </div>
             <div className="rateRow rateRowDeduction">
-              <span>KiwiSaver</span>
+              <span>{T("KiwiSaver")}</span>
               <div className="rateValue">
-                <input type="number" step="0.01" min="0" value={kiwiSaverPct} onChange={ev=>setKiwiSaverPct(+ev.target.value||0)} aria-label="KiwiSaver percentage"/>
+                <input type="number" step="0.01" min="0" value={kiwiSaverPct} onChange={ev=>setKiwiSaverPct(+ev.target.value||0)} aria-label={T("KiwiSaver percentage")}/>
                 <small>%</small>
               </div>
               <b className="rateDeductionAmount">${kiwiSaver.toFixed(2)}</b>
             </div>
             <div className="rateRow rateRowTotal">
-              <span>Total Deducted</span>
+              <span>{T("Total Deducted")}</span>
               <b>${totalDeducted.toFixed(2)}</b>
             </div>
             <div className="rateRow rateRowNet">
-              <span>Net Pay</span>
+              <span>{T("Net Pay")}</span>
               <b>${netPay.toFixed(2)}</b>
             </div>
           </div>
-          <p className="rateNote">Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Gross Pay = Wages + Allowances. Net Pay = Gross Pay − (Tax + Union Fee + KiwiSaver).</p>
+          <p className="rateNote">{T("Tax uses the real NZ IRD progressive brackets (10.5%/17.5%/30%/33%/39%) plus the ACC earner's levy, annualized by pay frequency — this is the standard IRD method, so it should closely match your payslip's PAYE, though exact figures can vary slightly by tax code or payroll rounding. Gross Pay = Wages + Allowances. Net Pay = Gross Pay − (Tax + Union Fee + KiwiSaver).")}</p>
         </section>;
       })()}
 
-      <section className="panel menu"><h3>MY PROFILE</h3>
+      <section className="panel menu"><h3>{T("MY PROFILE")}</h3>
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
-          Type your exact name as it appears on the roster
-          <input type="text" value={myName} placeholder="e.g. PRABHAKAR, Vimal"
+          {T("Type your exact name as it appears on the roster")}
+          <input type="text" value={myName} placeholder={T("e.g. PRABHAKAR, Vimal")}
             style={{fontSize:17,padding:"14px 13px",minHeight:52,width:"100%",boxSizing:"border-box"}}
             onChange={ev=>setMyNameOverride(ev.target.value)} />
         </label>
         {names.length>0&&<label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6,marginTop:10}}>
-          Or pick from names found in your last imported roster
+          {T("Or pick from names found in your last imported roster")}
           <select value={names.includes(myName)?myName:""} onChange={ev=>setMyNameOverride(ev.target.value)}
             style={{fontSize:17,padding:"14px 13px",minHeight:52,width:"100%",boxSizing:"border-box"}}>
-            <option value="">— select —</option>
+            <option value="">{T("— select —")}</option>
             {names.map(n=><option key={n} value={n}>{n}</option>)}
           </select>
         </label>}
-        <p className="rateNote" style={{padding:"0 13px 13px"}}>"My Roster" and evening shift reminders are based on this. Type it exactly as it appears on the roster sheet (e.g. "SURNAME, Firstname") so photo imports match correctly. Get it right before enabling reminders below, or you'll be notified about someone else's shift.</p>
+        <p className="rateNote" style={{padding:"0 13px 13px"}}>{T("\"My Roster\" and evening shift reminders are based on this. Type it exactly as it appears on the roster sheet (e.g. \"SURNAME, Firstname\") so photo imports match correctly. Get it right before enabling reminders below, or you'll be notified about someone else's shift.")}</p>
       </section>
 
-      <section className="panel menu"><h3>NOTIFICATIONS</h3>
+      <section className="panel menu"><h3>{T("NOTIFICATIONS")}</h3>
         <p className="rateNote" style={{padding:"0 13px 9px",fontWeight:700,color:
            subscriptionStatus==="active"||subscriptionStatus==="local"?"#75d3a0":subscriptionStatus==="checking"?"#87909a":"#ff9f43"
         }}>
-          {subscriptionStatus==="checking"&&"Checking reminder status for this device…"}
-          {subscriptionStatus==="active"&&"✓ Reminders are ON for this device."}
-           {subscriptionStatus==="local"&&"✓ Local reminders are ON while this app is open."}
-          {subscriptionStatus==="inactive"&&"Reminders are OFF on this device — tap the button below to turn them on."}
-           {subscriptionStatus==="unsupported"&&"Push is unavailable in this browser; the button below enables local reminders instead."}
+          {subscriptionStatus==="checking"&&T("Checking reminder status for this device…")}
+          {subscriptionStatus==="active"&&T("✓ Reminders are ON for this device.")}
+           {subscriptionStatus==="local"&&T("✓ Local reminders are ON while this app is open.")}
+          {subscriptionStatus==="inactive"&&T("Reminders are OFF on this device — tap the button below to turn them on.")}
+           {subscriptionStatus==="unsupported"&&T("Push is unavailable in this browser; the button below enables local reminders instead.")}
         </p>
         <label className="setting" style={{flexDirection:"column",alignItems:"stretch",gap:6}}>
-          Notification time
+          {T("Notification time")}
           <Time24Wheel
             value={`${String(notifyHour).padStart(2,"0")}:${String(notifyMinute).padStart(2,"0")}`}
             onChange={v=>{const [h,m]=v.split(":");setNotifyHour(+h);setNotifyMinute(+m)}}
-            ariaLabel="Evening reminder time"
+            ariaLabel={T("Evening reminder time")}
           />
         </label>
-        <button onClick={enableEveningReminders}><Clock3/><span><b>{subscriptionStatus==="unsupported"?"Enable Local Reminders":"Enable Evening Reminders"}</b><small>Get a notification at {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} NZT with tomorrow's shift</small></span></button>
-        <p className="rateNote" style={{padding:"0 13px"}}>If reminders are already ON for this device, changing the time above saves automatically — no need to tap the button again.</p>
+        <button onClick={enableEveningReminders}><Clock3/><span><b>{subscriptionStatus==="unsupported"?T("Enable Local Reminders"):T("Enable Evening Reminders")}</b><small>{T("Get a notification at")} {String(notifyHour).padStart(2,"0")}:{String(notifyMinute).padStart(2,"0")} {T("NZT with tomorrow's shift")}</small></span></button>
+        <p className="rateNote" style={{padding:"0 13px"}}>{T("If reminders are already ON for this device, changing the time above saves automatically — no need to tap the button again.")}</p>
         {reminderStatus&&<p className="rateNote" style={{padding:"0 13px 13px"}}>{reminderStatus}</p>}
       </section>
 
-      <section className="panel menu"><h3>SETTINGS</h3>
-        <label className="setting">Weekly overtime threshold<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label>
-        <button className="danger" onClick={()=>{if(confirm("Delete all roster data?"))setEntries([])}}><Trash2/><span><b>Reset All Data</b><small>Delete all roster data</small></span></button></section>
+      <section className="panel menu"><h3>{T("SETTINGS")}</h3>
+        <label className="setting">{T("Weekly overtime threshold")}<input type="number" value={threshold} onChange={e=>setThreshold(+e.target.value||38)}/></label>
+        <button className="danger" onClick={()=>{if(confirm(T("Delete all roster data?")))setEntries([])}}><Trash2/><span><b>{T("Reset All Data")}</b><small>{T("Delete all roster data")}</small></span></button></section>
     </main>}
 
     <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
+    <input ref={sheetRef} hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const fl=e.target.files?.[0];e.target.value="";if(fl)importSheet(fl)}}/>
+    {(needsSetup||setupOpen)&&<SetupModal initial={{language:vv.language,rosterType:vv.rosterType,name:myName,minRestHours:vv.setupDone?vv.minRestHours:10,shiftTypes:vv.shiftTypes,payCycle:payFrequency}} onSave={saveSetup} onCancel={needsSetup?undefined:()=>setSetupOpen(false)}/>}
+    {aiScanOpen&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} onClose={()=>setAiScanOpen(false)} onShifts={(shifts)=>importShifts(shifts,"ai-scan")}/>}
+    {sheetResult&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} initialResult={sheetResult} onClose={()=>setSheetResult(null)} onShifts={(shifts)=>importShifts(shifts,"spreadsheet")}/>}
+    {sheetPick&&<div className="modalWrap"><div className="modal">
+      <div className="modalHead"><div><h2>{myName}?</h2></div><button className="ghost" onClick={()=>setSheetPick(null)}>×</button></div>
+      {sheetPick.candidates.map((c,i)=><button key={i} className="ghost authFull" style={{marginBottom:6}} onClick={()=>{const pk=sheetPick;setSheetPick(null);importSheet(pk.file,c.row,pk.sheet)}}>{c.name}</button>)}
+    </div></div>}
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
     {processing&&<div className="modalWrap"><div className="modal compact">
-      <div className="spinner"/><h3>{status||"Reading roster…"}</h3><p>{progress}%</p>
-      <small>{table?"Reading only the employee you selected. A slow OCR pass will time out automatically.":"Reading the left-side staff name column first."}</small>
+      <div className="spinner"/><h3>{status||T("Reading roster…")}</h3><p>{progress}%</p>
+      <small>{table?T("Reading only the employee you selected. A slow OCR pass will time out automatically."):T("Reading the left-side staff name column first.")}</small>
     </div></div>}
 
     {table&&!processing&&<div className="modalWrap"><div className="modal autoTableModal" style={{maxHeight:"92vh",display:"flex",flexDirection:"column",overflowY:"auto",WebkitOverflowScrolling:"touch"}}>
-      <div className="modalHead"><div><h2>Roster staff detected</h2><p>Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
+      <div className="modalHead"><div><h2>{T("Roster staff detected")}</h2><p>{T("Select an employee and VV Roster shows the original cropped roster cell for every day exactly as it appears in the uploaded roster.")}</p></div><button className="ghost" onClick={()=>{setTable(null);setPreview(null);setReview(null)}}><X/></button></div>
 
       <div className="autoLayout">
-        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} staff • {table.tables?.length||1} tables{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div></div>
+        <div className="autoPreview"><img src={preview}/><div className="detectedBadge"><Users size={14}/>{table.staff.length} {T("staff •")} {table.tables?.length||1} {T("tables")}{table.staff.some(s=>s.nameUncertain)?` • ${table.staff.filter(s=>s.nameUncertain).length} need review`:""}</div></div>
         <div className="autoControls">
-          <label>Employee
+          <label>{T("Employee")}
             <select value={selectedStaff} onChange={e=>{if(e.target.value)selectStaff(e.target.value)}}>
-              <option value="">Select employee…</option>
+              <option value="">{T("Select employee…")}</option>
               {table.staff.map(s=><option key={s.id} value={s.id}>{s.nameUncertain?"⚠ ":""}{s.name}{table.tables?.length>1?` — Table ${s.tableIndex+1}`:""}</option>)}
             </select>
           </label>
 
           {table.staff.some(s=>s.nameUncertain)&&<details className="staffNameFix" open>
-            <summary>Fix employee names ({table.staff.filter(s=>s.nameUncertain).length} flagged)</summary>
+            <summary>{T("Fix employee names (")}{table.staff.filter(s=>s.nameUncertain).length} {T("flagged)")}</summary>
             <div className="staffNameFixList">
               {table.staff.map(s=>(
                 <div className={"staffNameFixRow"+(s.nameUncertain?" uncertain":"")} key={s.id}>
@@ -3808,10 +3860,10 @@ function App(){
                   <div style={{flex:1}}>
                     <input
                       value={s.name}
-                      placeholder="Employee name"
+                      placeholder={T("Employee name")}
                       onChange={e=>updateStaffName(s.id,e.target.value)}
                     />
-                    {s.debugError&&<small style={{color:"#ff7777",display:"block",marginTop:3}}>Error: {s.debugError}</small>}
+                    {s.debugError&&<small style={{color:"#ff7777",display:"block",marginTop:3}}>{T("Error:")} {s.debugError}</small>}
                   </div>
                 </div>
               ))}
@@ -3819,10 +3871,10 @@ function App(){
           </details>}
 
           {review&&<>
-            <label>First date
+            <label>{T("First date")}
               <input type="date" value={review.firstDate} onChange={e=>setReview(r=>({...r,firstDate:e.target.value}))}/>
             </label>
-            <div className="workingHoursCard"><Clock3 size={17}/><span><small>WORKING HOURS</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):"Not read"}</b></span></div>
+            <div className="workingHoursCard"><Clock3 size={17}/><span><small>{T("WORKING HOURS")}</small><b>{review.workingHours!=null?review.workingHours.toFixed(2):T("Not read")}</b></span></div>
           </>}
         </div>
       </div>
@@ -3830,7 +3882,7 @@ function App(){
       {review&&<>
         <div className="selectedRowTitle">
           <b>{review.name}</b>
-          <span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}14-day row</span>
+          <span>{review.tableIndex!=null?`Roster table ${review.tableIndex+1} • `:""}{T("14-day row")}</span>
         </div>
 
         <div className="exactSourceReview">
@@ -3849,20 +3901,20 @@ function App(){
         </div>
 
         <div className="importFooter exactModeFooter" style={{position:"sticky",bottom:0,background:"#0B0A08",paddingTop:10,paddingBottom:"env(safe-area-inset-bottom, 10px)",borderTop:"1px solid #2a251c",zIndex:2}}>
-          <span className="ready">✓ Showing the original selected employee cells exactly as uploaded</span>
+          <span className="ready">{T("✓ Showing the original selected employee cells exactly as uploaded")}</span>
           <button className="primary" disabled={!allValid} onClick={importReview}>
-            <Check size={16}/> Import {review.name}
+            <Check size={16}/> {T("Import")} {review.name}
           </button>
         </div>
       </>}
     </div></div>}
 
     <nav className="bottom">
-      <Nav id="dashboard" tab={tab} setTab={setTab} icon={<Home/>} label="Dashboard"/>
-      <Nav id="calendar" tab={tab} setTab={setTab} icon={<CalendarDays/>} label="Calendar"/>
-      <Nav id="roster" tab={tab} setTab={setTab} icon={<ClipboardList/>} label="My Roster"/>
-      <Nav id="search" tab={tab} setTab={setTab} icon={<Search/>} label="Search"/>
-      <Nav id="more" tab={tab} setTab={setTab} icon={<Menu/>} label="More"/>
+      <Nav id="dashboard" tab={tab} setTab={setTab} icon={<Home/>} label={T("Dashboard")}/>
+      <Nav id="calendar" tab={tab} setTab={setTab} icon={<CalendarDays/>} label={T("Calendar")}/>
+      <Nav id="roster" tab={tab} setTab={setTab} icon={<ClipboardList/>} label={T("My Roster")}/>
+      <Nav id="search" tab={tab} setTab={setTab} icon={<Search/>} label={T("Search")}/>
+      <Nav id="more" tab={tab} setTab={setTab} icon={<Menu/>} label={T("More")}/>
     </nav>
   </div>;
 }
@@ -4304,7 +4356,7 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
 // the Dashboard's THIS WEEK section only.
 function WeekRosterImages({rows,dates,employeeName}){
   return <div className="weekImageTable">
-    <div className="weekImageHead"><span>Day</span><span>Roster Hours</span></div>
+    <div className="weekImageHead"><span>{T("Day")}</span><span>{T("Roster Hours")}</span></div>
     {dates.map((date,i)=>{
       const e=rows[i];
       const dayLabel=fmt(date,{weekday:"short",day:"numeric",month:"short"});
@@ -4317,7 +4369,7 @@ function WeekRosterImages({rows,dates,employeeName}){
         <div className="weekImageCell">
           {image
             ? <img src={image} alt={`${dayLabel} roster cell`} className="roster-cell-image"/>
-            : <span className="weekImageUnavailable">Roster image unavailable</span>}
+            : <span className="weekImageUnavailable">{T("Roster image unavailable")}</span>}
         </div>
       </div>;
     })}
@@ -4325,7 +4377,7 @@ function WeekRosterImages({rows,dates,employeeName}){
 }
 
 function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mult=2.0}){
-  if(!rows.length)return <div className="empty">No shifts found.</div>;
+  if(!rows.length)return <div className="empty">{T("No shifts found.")}</div>;
 
   // Tracks which day-off rows (RDO/AL/SICK/etc.) the person has explicitly
   // chosen to turn into an editable shift, by entry id. Until a day is in
@@ -4397,7 +4449,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
 
   return <div className="rosterTable">
     <div className="rosterTableHead">
-      <span>Day</span><span>Start</span><span>End</span><span>Time</span><span>Pay</span>
+      <span>{T("Day")}</span><span>{T("Start")}</span><span>{T("End")}</span><span>{T("Time")}</span><span>{T("Pay")}</span>
     </div>
 
     {shiftRows.map((r,i)=>{
@@ -4416,7 +4468,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
           <div className="rosterTableEnd"><span>—</span></div>
           <div className="rosterTableTime">{formatHoursMinutes(0)}</div>
           <div className="rosterTablePay">
-            <button onClick={()=>setExpandedCodeIds(prev=>new Set(prev).add(e.id))}>Edit</button>
+            <button onClick={()=>setExpandedCodeIds(prev=>new Set(prev).add(e.id))}>{T("Edit")}</button>
           </div>
         </div>;
       }
@@ -4437,8 +4489,8 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
           <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
           <div className="rosterTableStart"><span>{start||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableEnd"><span>{end||(isRDO?"":"--:--")}</span></div>
-          <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}m break</small>}</div>
-          <div className="rosterTablePay">{payRate<=0 && (r.hours||0)>0 ? "Rate required" : `$${(r.pay||0).toFixed(2)}`}</div>
+          <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}{T("m break")}</small>}</div>
+          <div className="rosterTablePay">{payRate<=0 && (r.hours||0)>0 ? T("Rate required") : `$${(r.pay||0).toFixed(2)}`}</div>
         </div>;
       }
 
@@ -4458,8 +4510,8 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
                 onChange={ev=>onEdit(e.id,period,ev.target.value,"type")}
                 aria-label={`${periodLabel} shift type`}
               >
-                <option value="RT">RT</option>
-                <option value="OT">OT</option>
+                <option value="RT">{T("RT")}</option>
+                <option value="OT">{T("OT")}</option>
               </select>
             : <em className="rosterTableTypeReadonly">{r.type}</em>}
         </div>
@@ -4473,8 +4525,8 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
             ? <Time24Wheel value={end} onChange={v=>onEdit(e.id,period,joinAirportRange(start,v))} ariaLabel={`${periodLabel} end time`}/>
             : <span>{end||"--:--"}</span>}
         </div>
-        <div className="rosterTableTime">{formatHoursMinutes(r.hours)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}m break</small>}</div>
-        <div className="rosterTablePay">{payRate<=0 && r.hours>0 ? "Rate required" : `$${pay.toFixed(2)}`}</div>
+        <div className="rosterTableTime">{formatHoursMinutes(r.hours)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}{T("m break")}</small>}</div>
+        <div className="rosterTablePay">{payRate<=0 && r.hours>0 ? T("Rate required") : `$${pay.toFixed(2)}`}</div>
       </div>
       {onEdit &&
         <div style={{width:"100%",boxSizing:"border-box",padding:"0 4px 10px"}}>
@@ -4490,14 +4542,14 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
     })}
 
     <div className="rosterTableTotals">
-      <span>Total Time</span><b>{formatHoursMinutes(totalHours)}</b>
-      <span>Total Pay</span><b>{payRate<=0 && totalHours>0 ? "Rate required" : `$${totalPay.toFixed(2)}`}</b>
+      <span>{T("Total Time")}</span><b>{formatHoursMinutes(totalHours)}</b>
+      <span>{T("Total Pay")}</span><b>{payRate<=0 && totalHours>0 ? T("Rate required") : `$${totalPay.toFixed(2)}`}</b>
     </div>
-    {shiftRows.some(r=>r.breakMinutes>0)&&<p className="rateNote" style={{marginTop:8}}>Pay above already deducts unpaid meal breaks under the Employment Relations Act 2000 (s69ZD) — a shift of more than 4 hours in an 8-hour block loses a 30-min unpaid break; the paid 10-min rest breaks in the same law don't reduce pay.</p>}
+    {shiftRows.some(r=>r.breakMinutes>0)&&<p className="rateNote" style={{marginTop:8}}>{T("Pay above already deducts unpaid meal breaks under the Employment Relations Act 2000 (s69ZD) — a shift of more than 4 hours in an 8-hour block loses a 30-min unpaid break; the paid 10-min rest breaks in the same law don't reduce pay.")}</p>}
   </div>;
 }
-function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(`${d.getFullYear()}-${pad2(d.getMonth()+1)}-01`)};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
-function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{x}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(n)}`,r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(`${d.getFullYear()}-${pad2(d.getMonth()+1)}-01`)};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(dateLocales(),{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
+function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{T(x)}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(n)}`,r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
 
 function exportRosterPhoto(rows=[]){
   try{
@@ -4506,7 +4558,7 @@ function exportRosterPhoto(rows=[]){
       .slice(0,14);
 
     if(!roster.length){
-      alert("No roster data to export.");
+      alert(T("No roster data to export."));
       return;
     }
 
@@ -4525,7 +4577,7 @@ function exportRosterPhoto(rows=[]){
 
     const ctx=canvas.getContext("2d");
     if(!ctx){
-      alert("Unable to create JPEG on this browser.");
+      alert(T("Unable to create JPEG on this browser."));
       return;
     }
     ctx.scale(scale,scale);
@@ -4789,7 +4841,7 @@ function exportRosterPhoto(rows=[]){
 
   }catch(err){
     console.error("JPEG roster export failed",err);
-    alert("JPEG export failed: "+(err?.message||"Unknown error"));
+    alert(T("JPEG export failed: ")+(err?.message||"Unknown error"));
   }
 }
 

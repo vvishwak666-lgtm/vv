@@ -7,6 +7,11 @@
 // through by anyone poking around in dev tools.
 //
 // Usage: GET /api/flights?direction=departures  (or ?direction=arrivals)
+//
+// Changes from the original version:
+//  - arrivals now include `bagClaim` (the baggage belt/carousel) when aviationstack has one
+//  - an arriving flight that is in the air now reads "In air" instead of "Boarding"
+// Everything else behaves exactly as before.
 
 export default async function handler(req, res) {
   const apiKey = process.env.AVIATIONSTACK_API_KEY;
@@ -51,21 +56,24 @@ export default async function handler(req, res) {
 
     // Normalise to the shape the frontend expects (see mockFlights() in
     // main.tsx for the exact contract): flightNumber, route, scheduledTime,
-    // estimatedTime, status, gate, direction.
+    // estimatedTime, status, gate, direction  (+ bagClaim on arrivals).
     const flights = (data.data || []).map(f => {
       const leg = direction === "departures" ? f.departure : f.arrival;
       const otherLeg = direction === "departures" ? f.arrival : f.departure;
       const scheduled = stripFakeUtcOffset(leg?.scheduled || null);
       const estimated = stripFakeUtcOffset(leg?.estimated || leg?.actual || leg?.scheduled || null);
-      return {
+      const row = {
         flightNumber: f.flight?.iata || f.flight?.icao || "—",
         route: otherLeg?.iata || otherLeg?.icao || "—",
         scheduledTime: scheduled,
         estimatedTime: estimated,
-        status: humanizeStatus(f.flight_status),
+        status: humanizeStatus(f.flight_status, direction),
         gate: leg?.gate || null,
         direction
       };
+      // Baggage belt number — only meaningful for arrivals, and only when aviationstack has it.
+      if (direction === "arrivals" && leg?.baggage) row.bagClaim = String(leg.baggage);
+      return row;
     }).filter(f => f.scheduledTime); // drop entries with no usable time
 
     res.status(200).json({ flights, fetchedAt: new Date().toISOString() });
@@ -74,10 +82,12 @@ export default async function handler(req, res) {
   }
 }
 
-function humanizeStatus(status) {
+function humanizeStatus(status, direction) {
   switch (status) {
     case "scheduled": return "On time";
-    case "active": return "Boarding";
+    // "active" means the flight is airborne. For a departure the app has always shown
+    // "Boarding"; for an arrival that makes no sense, so say it is in the air.
+    case "active": return direction === "arrivals" ? "In air" : "Boarding";
     case "landed": return "Landed";
     case "cancelled": return "Cancelled";
     case "incident": return "Delayed";
