@@ -3,8 +3,8 @@
 // Flights at Auckland (AKL) for ONE airline other than Air New Zealand. This is a new file:
 // your existing /api/flights endpoint is not changed and still serves Air New Zealand.
 //
-// Returns the same shape the app already reads:
-//   {flights: [{flightNumber, route, scheduledTime, estimatedTime, gate, status, bagClaim?}]}
+// Returns exactly the same shape and wording as /api/flights:
+//   {flights: [{flightNumber, route, scheduledTime, estimatedTime, status, gate, direction, bagClaim?}]}
 //
 // Env var (already in your Vercel project): AVIATIONSTACK_API_KEY
 //
@@ -42,15 +42,24 @@ export function localToISO(str, tz){
   return new Date(guess).toISOString();
 }
 
-export function mapStatus(flightStatus, delayMin){
-  switch(String(flightStatus || "").toLowerCase()){
-    case "cancelled": return "Cancelled";
-    case "diverted": return "Diverted";
-    case "incident": return "Incident";
+// Same wording as api/flights.js so every airline reads the same in the app.
+export function mapStatus(flightStatus, direction){
+  switch(flightStatus){
+    case "scheduled": return "On time";
+    case "active": return direction === "arrivals" ? "In air" : "Boarding";
     case "landed": return "Landed";
-    case "active": return "In air";
-    default: return Number(delayMin) >= 15 ? "Delayed" : "On time";
+    case "cancelled": return "Cancelled";
+    case "incident": return "Delayed";
+    case "diverted": return "Delayed";
+    default: return flightStatus ? flightStatus[0].toUpperCase() + flightStatus.slice(1) : "Unknown";
   }
+}
+
+// aviationstack labels airport LOCAL time as "+00:00". api/flights.js strips that suffix so the
+// browser reads it as local time; do exactly the same here so all airlines match.
+export function stripFakeUtcOffset(iso){
+  if(!iso) return iso;
+  return iso.replace(/(?:Z|[+-]\d{2}:?\d{2})$/, "");
 }
 
 export function toFlight(f, direction){
@@ -58,21 +67,22 @@ export function toFlight(f, direction){
   const leg = dep ? f.departure : f.arrival;
   const other = dep ? f.arrival : f.departure;
   if(!leg) return null;
-  const scheduledTime = localToISO(leg.scheduled, leg.timezone);
+  const scheduledTime = stripFakeUtcOffset(leg.scheduled || null);
   if(!scheduledTime) return null;
-  const number = (f.flight && f.flight.iata) || ((f.airline && f.airline.iata || "") + (f.flight && f.flight.number || ""));
-  if(!number) return null;
-  const status = mapStatus(f.flight_status === "active" && dep ? "active" : f.flight_status, leg.delay);
-  const out = {
-    flightNumber: number,
-    route: (other && other.iata) || "",
+  const flightNumber = (f.flight && (f.flight.iata || f.flight.icao)) || "";
+  if(!flightNumber) return null;
+  const row = {
+    flightNumber,
+    route: (other && (other.iata || other.icao)) || "—",
     scheduledTime,
-    estimatedTime: localToISO(leg.estimated || leg.scheduled, leg.timezone) || scheduledTime,
-    gate: leg.gate || "",
-    status: dep && status === "In air" ? "Departed" : status
+    estimatedTime: stripFakeUtcOffset(leg.estimated || leg.actual || leg.scheduled || null),
+    status: mapStatus(f.flight_status, direction),
+    gate: leg.gate || null,
+    direction
   };
-  if(!dep && leg.baggage) out.bagClaim = String(leg.baggage);
-  return out;
+  if(!dep && leg.baggage) row.bagClaim = String(leg.baggage);
+  // true UTC instant, used only to keep flights inside the time window (not sent to the app)
+  return {row, instant: localToISO(leg.scheduled, leg.timezone)};
 }
 
 async function callUpstream(params){
@@ -115,17 +125,17 @@ export default async function handler(req, res){
   const flights = [];
   for(const f of data){
     if(f.flight && f.flight.codeshared) continue; // the operating airline's own entry is enough
-    const row = toFlight(f, direction);
-    if(!row) continue;
-    const t = Date.parse(row.scheduledTime);
+    const r = toFlight(f, direction);
+    if(!r) continue;
+    const t = r.instant ? Date.parse(r.instant) : NaN;
     if(!(t >= now - WINDOW_BACK_MS && t <= now + WINDOW_FORWARD_MS)) continue;
-    const k = row.flightNumber + "|" + row.scheduledTime;
+    const k = r.row.flightNumber + "|" + r.row.scheduledTime;
     if(seen.has(k)) continue;
     seen.add(k);
-    flights.push(row);
+    flights.push({row: r.row, t});
   }
-  flights.sort((a, b) => Date.parse(a.scheduledTime) - Date.parse(b.scheduledTime));
+  flights.sort((a, b) => a.t - b.t);
 
   res.setHeader("Cache-Control", "public, s-maxage=120, stale-while-revalidate=300");
-  return res.status(200).json({flights});
+  return res.status(200).json({flights: flights.map(x => x.row), fetchedAt: new Date().toISOString()});
 }
