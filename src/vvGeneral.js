@@ -338,7 +338,16 @@ const STR = {
     notFound: "We couldn't find that name on the roster. Check the spelling in Settings.", confirm: "Check your shifts, then save", saveShifts: "Save shifts",
     restShort: "Short turnaround", restOverlap: "Shifts overlap", restOnly: "only", restMin: "minimum",
     calendar: "Add to calendar", calendarDownload: "Download calendar file (.ics)", calendarHint: "Opens in Google, Apple or Outlook calendar.",
-    noShifts: "No shifts to export yet."
+    noShifts: "No shifts to export yet.",
+    shiftCodesHint: "Shift codes on your roster (optional) — e.g. D = 0700-1500",
+    addCode: "+ Add code",
+    scanFailed: "Scan failed. Please try again, or upload a spreadsheet.",
+    scanFailedNet: "Scan failed. Check your connection and try again.",
+    signInAgain: "Please sign in again.",
+    payCycle: "How often are you paid?",
+    weekly: "Weekly",
+    fortnightly: "Fortnightly",
+    monthly: "Monthly"
   },
   mi: {
     welcome: "Nau mai ki VV Duty Roster", language: "Reo", company: "Kamupene / momo rārangi",
@@ -351,7 +360,16 @@ const STR = {
     notFound: "Kāore i kitea tērā ingoa i te rārangi. Tirohia te tuhi i ngā Tautuhinga.", confirm: "Tirohia ō wāhanga mahi, ka tiaki", saveShifts: "Tiaki wāhanga mahi",
     restShort: "Okiokinga poto", restOverlap: "E paheke ana ngā wāhanga mahi", restOnly: "anake", restMin: "iti rawa",
     calendar: "Tāpiri ki te maramataka", calendarDownload: "Tikiake kōnae maramataka (.ics)", calendarHint: "Ka whakatuwhera i Google, Apple, Outlook rānei.",
-    noShifts: "Kāore ano he wāhanga mahi hei kaweake."
+    noShifts: "Kāore ano he wāhanga mahi hei kaweake.",
+    shiftCodesHint: "Ngā tohu wāhanga mahi i tō rārangi (kāore e herea) — hei tauira D = 0700-1500",
+    addCode: "+ Tāpiri tohu",
+    scanFailed: "I rahua te matawai. Whakamātau anō, tukuna rānei he whārangi tātai.",
+    scanFailedNet: "I rahua te matawai. Tirohia tō hononga ka whakamātau anō.",
+    signInAgain: "Takiuru anō, tēnā koa.",
+    payCycle: "Ia hia te utu mai ki a koe?",
+    weekly: "Ia wiki",
+    fortnightly: "Ia rua wiki",
+    monthly: "Ia marama"
   },
   hi: {
     welcome: "VV Duty Roster में आपका स्वागत है", language: "भाषा", company: "कंपनी / रोस्टर प्रकार",
@@ -364,7 +382,16 @@ const STR = {
     notFound: "रोस्टर में यह नाम नहीं मिला। सेटिंग्स में वर्तनी जाँचें।", confirm: "अपनी शिफ़्टें जाँचें, फिर सहेजें", saveShifts: "शिफ़्टें सहेजें",
     restShort: "कम आराम", restOverlap: "शिफ़्टें आपस में टकरा रही हैं", restOnly: "केवल", restMin: "न्यूनतम",
     calendar: "कैलेंडर में जोड़ें", calendarDownload: "कैलेंडर फ़ाइल डाउनलोड करें (.ics)", calendarHint: "Google, Apple या Outlook कैलेंडर में खुलती है।",
-    noShifts: "अभी निर्यात करने के लिए कोई शिफ़्ट नहीं है।"
+    noShifts: "अभी निर्यात करने के लिए कोई शिफ़्ट नहीं है।",
+    shiftCodesHint: "आपके रोस्टर के शिफ़्ट कोड (वैकल्पिक) — जैसे D = 0700-1500",
+    addCode: "+ कोड जोड़ें",
+    scanFailed: "स्कैन विफल रहा। फिर कोशिश करें, या स्प्रेडशीट अपलोड करें।",
+    scanFailedNet: "स्कैन विफल रहा। अपना कनेक्शन जाँचें और फिर कोशिश करें।",
+    signInAgain: "कृपया फिर से साइन इन करें।",
+    payCycle: "आपको वेतन कितने समय पर मिलता है?",
+    weekly: "साप्ताहिक",
+    fortnightly: "पाक्षिक (हर दो सप्ताह)",
+    monthly: "मासिक"
   },
   tl: {
     welcome: "Maligayang pagdating sa VV Duty Roster", language: "Wika", company: "Kumpanya / uri ng roster",
@@ -377,7 +404,16 @@ const STR = {
     notFound: "Hindi nahanap ang pangalang iyon sa roster. Suriin ang spelling sa Settings.", confirm: "Suriin ang mga shift, saka i-save", saveShifts: "I-save ang mga shift",
     restShort: "Maikling pahinga", restOverlap: "Nagpapatong ang mga shift", restOnly: "lang", restMin: "minimum",
     calendar: "Idagdag sa kalendaryo", calendarDownload: "I-download ang calendar file (.ics)", calendarHint: "Bubukas sa Google, Apple o Outlook calendar.",
-    noShifts: "Wala pang shift na mae-export."
+    noShifts: "Wala pang shift na mae-export.",
+    shiftCodesHint: "Mga shift code sa roster mo (opsyonal) — hal. D = 0700-1500",
+    addCode: "+ Magdagdag ng code",
+    scanFailed: "Nabigo ang pag-scan. Subukang muli, o mag-upload ng spreadsheet.",
+    scanFailedNet: "Nabigo ang pag-scan. Suriin ang koneksyon mo at subukang muli.",
+    signInAgain: "Mag-sign in muli.",
+    payCycle: "Gaano kadalas ka sinasahuran?",
+    weekly: "Lingguhan",
+    fortnightly: "Kada dalawang linggo",
+    monthly: "Buwanan"
   },
   sm: {
     welcome: "Afio mai i le VV Duty Roster", language: "Gagana", company: "Kamupani / ituaiga o le roster",
@@ -416,7 +452,16 @@ const STR = {
     notFound: "在排班表中找不到该姓名。请在设置中检查拼写。", confirm: "请核对班次，然后保存", saveShifts: "保存班次",
     restShort: "休息时间过短", restOverlap: "班次重叠", restOnly: "仅", restMin: "最低",
     calendar: "添加到日历", calendarDownload: "下载日历文件 (.ics)", calendarHint: "可在 Google、Apple 或 Outlook 日历中打开。",
-    noShifts: "暂无可导出的班次。"
+    noShifts: "暂无可导出的班次。",
+    shiftCodesHint: "您排班表上的班次代码（可选）——例如 D = 0700-1500",
+    addCode: "+ 添加代码",
+    scanFailed: "扫描失败。请重试，或上传电子表格。",
+    scanFailedNet: "扫描失败。请检查网络连接后重试。",
+    signInAgain: "请重新登录。",
+    payCycle: "您多久领一次工资？",
+    weekly: "每周",
+    fortnightly: "每两周",
+    monthly: "每月"
   },
   pa: {
     welcome: "VV Duty Roster ਵਿੱਚ ਜੀ ਆਇਆਂ ਨੂੰ", language: "ਭਾਸ਼ਾ", company: "ਕੰਪਨੀ / ਰੋਸਟਰ ਦੀ ਕਿਸਮ",
@@ -429,7 +474,16 @@ const STR = {
     notFound: "ਰੋਸਟਰ ਵਿੱਚ ਇਹ ਨਾਮ ਨਹੀਂ ਮਿਲਿਆ। ਸੈਟਿੰਗਾਂ ਵਿੱਚ ਸਪੈਲਿੰਗ ਜਾਂਚੋ।", confirm: "ਆਪਣੀਆਂ ਸ਼ਿਫ਼ਟਾਂ ਜਾਂਚੋ, ਫਿਰ ਸੰਭਾਲੋ", saveShifts: "ਸ਼ਿਫ਼ਟਾਂ ਸੰਭਾਲੋ",
     restShort: "ਘੱਟ ਆਰਾਮ", restOverlap: "ਸ਼ਿਫ਼ਟਾਂ ਆਪਸ ਵਿੱਚ ਟਕਰਾ ਰਹੀਆਂ ਹਨ", restOnly: "ਸਿਰਫ਼", restMin: "ਘੱਟੋ-ਘੱਟ",
     calendar: "ਕੈਲੰਡਰ ਵਿੱਚ ਜੋੜੋ", calendarDownload: "ਕੈਲੰਡਰ ਫ਼ਾਈਲ ਡਾਊਨਲੋਡ ਕਰੋ (.ics)", calendarHint: "Google, Apple ਜਾਂ Outlook ਕੈਲੰਡਰ ਵਿੱਚ ਖੁੱਲ੍ਹਦੀ ਹੈ।",
-    noShifts: "ਅਜੇ ਨਿਰਯਾਤ ਕਰਨ ਲਈ ਕੋਈ ਸ਼ਿਫ਼ਟ ਨਹੀਂ।"
+    noShifts: "ਅਜੇ ਨਿਰਯਾਤ ਕਰਨ ਲਈ ਕੋਈ ਸ਼ਿਫ਼ਟ ਨਹੀਂ।",
+    shiftCodesHint: "ਤੁਹਾਡੇ ਰੋਸਟਰ ਦੇ ਸ਼ਿਫ਼ਟ ਕੋਡ (ਵਿਕਲਪਿਕ) — ਜਿਵੇਂ D = 0700-1500",
+    addCode: "+ ਕੋਡ ਜੋੜੋ",
+    scanFailed: "ਸਕੈਨ ਅਸਫਲ ਰਿਹਾ। ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ, ਜਾਂ ਸਪ੍ਰੈਡਸ਼ੀਟ ਅੱਪਲੋਡ ਕਰੋ।",
+    scanFailedNet: "ਸਕੈਨ ਅਸਫਲ ਰਿਹਾ। ਆਪਣਾ ਕਨੈਕਸ਼ਨ ਜਾਂਚੋ ਅਤੇ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।",
+    signInAgain: "ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਸਾਈਨ ਇਨ ਕਰੋ।",
+    payCycle: "ਤੁਹਾਨੂੰ ਤਨਖ਼ਾਹ ਕਿੰਨੇ ਸਮੇਂ ਬਾਅਦ ਮਿਲਦੀ ਹੈ?",
+    weekly: "ਹਫ਼ਤਾਵਾਰੀ",
+    fortnightly: "ਪੰਦਰਵਾੜਾ",
+    monthly: "ਮਹੀਨਾਵਾਰ"
   }
 };
 

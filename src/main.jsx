@@ -2410,7 +2410,7 @@ function AccessGate({children}){
       <div className="approvedList">
         {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?T("Access ON"):T("Access OFF")}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?T("Revoke"):T("Restore")}</button></div>)}
       </div>
-      <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||20)}/>
+      <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||10)}/>
     </div></div>}
   </>;
 }
@@ -2471,6 +2471,7 @@ function App(){
   }
 
   useEffect(()=>{
+    if(tab==="flights"&&!airNz){setTab("dashboard");return;}
     if(tab==="flights"&&flights===null)fetchFlights(flightsDirection);
   },[tab]);
   const [threshold,setThreshold]=useState(38);
@@ -3013,7 +3014,7 @@ function App(){
     let cancelled=false;
     (async()=>{
       try{
-        const {data,error}=await supabase.from("profiles").select("roster_type,language,min_rest_hours,setup_done").eq("user_id",userId).maybeSingle();
+        const {data,error}=await supabase.from("profiles").select("roster_type,language,min_rest_hours,pay_cycle,setup_done").eq("user_id",userId).maybeSingle();
         if(!cancelled&&!error&&data?.setup_done){
           setVv(v=>({...v,rosterType:data.roster_type||"airnz",language:data.language||"en",minRestHours:Number(data.min_rest_hours)||0,setupDone:true}));
         }
@@ -3025,13 +3026,14 @@ function App(){
 
   useEffect(()=>{
     if(!supabase||!userId||!vv.setupDone||!profileChecked)return;
-    const row={user_id:userId,roster_type:vv.rosterType,language:vv.language,min_rest_hours:vv.minRestHours,setup_done:true};
+    const row={user_id:userId,roster_type:vv.rosterType,language:vv.language,min_rest_hours:vv.minRestHours,pay_cycle:payFrequency,setup_done:true};
     if(myNameOverride)row.employee_name=myNameOverride;
     supabase.from("profiles").upsert(row).then(({error})=>{if(error)console.warn("profile settings sync failed:",error.message)});
-  },[userId,profileChecked,vv.rosterType,vv.language,vv.minRestHours,vv.setupDone,myNameOverride]);
+  },[userId,profileChecked,vv.rosterType,vv.language,vv.minRestHours,payFrequency,vv.setupDone,myNameOverride]);
 
   const saveSetup=(st)=>{
     setVv(v=>({...v,language:st.language,rosterType:st.rosterType,minRestHours:st.minRestHours,shiftTypes:st.shiftTypes,setupDone:true}));
+    if(st.payCycle)setPayFrequency(st.payCycle);
     setMyNameOverride(st.name);
     setSetupOpen(false);
   };
@@ -3373,6 +3375,12 @@ function App(){
   // upload. Falls back to the calendar week only if no period covers
   // today at all (nothing uploaded yet).
   const dashboardPeriodStart=currentPeriod?currentPeriod.start:weekStart;
+  // Dashboard follows the pay cycle: weekly -> the current Mon–Sun week, otherwise the current 14-day period.
+  // Uses the "Pay frequency" setting (also asked at first sign-in). Monthly keeps the 14-day view.
+  const dashWeekly=payFrequency==="weekly";
+  const dashDays=dashWeekly?7:14;
+  const dashStart=dashWeekly?weekStart:dashboardPeriodStart;
+  const dashOvertime=dashWeekly?week.reduce((s,e)=>s+entryOvertimeHours(e),0):rosterOvertimeHours;
   // The period the My Roster tab actually displays — the one the person
   // tapped under Rosters Uploaded, falling back to the current period (or
   // the most recent period if there's no current one) when nothing's been
@@ -3404,8 +3412,8 @@ function App(){
       </section>}
       <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
 
-      <div className="stats"><Stat label={T("WEEK HOURS")} value={formatHoursMinutes(weekHours)}/><Stat label={T("OVERTIME")} value={rosterOvertimeHours.toFixed(2)}/></div>
-      <section className="panel"><div className="sectionTitle"><b>{T("NEXT 14 DAYS")}</b><span>{fmt(dashboardPeriodStart)} – {fmt(addDays(dashboardPeriodStart,13))}</span></div><WeekRosterImages rows={Array.from({length:14},(_,i)=>mine.find(e=>e.date===addDays(dashboardPeriodStart,i))||null)} dates={Array.from({length:14},(_,i)=>addDays(dashboardPeriodStart,i))} employeeName={myName}/></section>
+      <div className="stats"><Stat label={T("WEEK HOURS")} value={formatHoursMinutes(weekHours)}/><Stat label={T("OVERTIME")} value={dashOvertime.toFixed(2)}/></div>
+      <section className="panel"><div className="sectionTitle"><b>{dashWeekly?T("THIS WEEK"):T("NEXT 14 DAYS")}</b><span>{fmt(dashStart)} – {fmt(addDays(dashStart,dashDays-1))}</span></div><WeekRosterImages rows={Array.from({length:dashDays},(_,i)=>mine.find(e=>e.date===addDays(dashStart,i))||null)} dates={Array.from({length:dashDays},(_,i)=>addDays(dashStart,i))} employeeName={myName}/></section>
     </main>}
 
     {tab==="calendar"&&<main>
@@ -3530,7 +3538,7 @@ function App(){
       </section>
     </main>}
 
-    {tab==="flights"&&<main>
+    {tab==="flights"&&airNz&&<main>
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Plane size={17}/>
@@ -3617,9 +3625,9 @@ function App(){
     </main>}
 
     {tab==="more"&&<main>
-      <section className="panel menu"><h3>{T("LIVE FLIGHTS")}</h3>
+      {airNz&&<section className="panel menu"><h3>{T("LIVE FLIGHTS")}</h3>
         <button onClick={()=>setTab("flights")}><Plane/><span><b>{T("AKL · Air New Zealand status")}</b><small>{T("Live departures & arrivals")}</small></span></button>
-      </section>
+      </section>}
       <section className="panel menu"><h3>{T("IMPORT")}</h3>
         <button onClick={()=>{if(!myName){setSetupOpen(true);return;}setAiScanOpen(true);}}><Camera/><span><b>{tr(lang,"scanTitle")} {T("(AI)")}</b><small>{T("Photo or screenshot — only your own row is read and saved")}</small></span></button>
         <button onClick={()=>{if(!myName){setSetupOpen(true);return;}sheetRef.current?.click();}}><FileSpreadsheet/><span><b>{T("Upload spreadsheet")}</b><small>{T(".xlsx, .xls or .csv — read on your device, only your row is kept")}</small></span></button>
@@ -3691,7 +3699,7 @@ function App(){
         <p className="rateNote">{T("OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.")}</p>
       </section>
 
-      {airNz&&<section className="panel">
+      <section className="panel">
         <div className="sectionTitle"><b>{T("ALLOWANCES (CLAUSE 16)")}</b></div>
         <div className="rateCard">
           <div className="rateRow">
@@ -3708,9 +3716,9 @@ function App(){
           </>)})()}
         </div>
         <p className="rateNote">{T("Shift allowance pays pro rata for hours worked 2200\\u20132359, 0000\\u20130159 and 0200\\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.")}</p>
-      </section>}
+      </section>
 
-      {airNz&&(()=>{
+      {(()=>{
         const wagesResult=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);
         const wagesPay=wagesResult.totalPay;
         const allowancesPay=totalAllowancesForRows(minePeriod,payRate,isSchedule1).total;
@@ -3815,7 +3823,7 @@ function App(){
 
     <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
     <input ref={sheetRef} hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const fl=e.target.files?.[0];e.target.value="";if(fl)importSheet(fl)}}/>
-    {(needsSetup||setupOpen)&&<SetupModal initial={{language:vv.language,rosterType:vv.rosterType,name:myName,minRestHours:vv.setupDone?vv.minRestHours:10,shiftTypes:vv.shiftTypes}} onSave={saveSetup} onCancel={needsSetup?undefined:()=>setSetupOpen(false)}/>}
+    {(needsSetup||setupOpen)&&<SetupModal initial={{language:vv.language,rosterType:vv.rosterType,name:myName,minRestHours:vv.setupDone?vv.minRestHours:10,shiftTypes:vv.shiftTypes,payCycle:payFrequency}} onSave={saveSetup} onCancel={needsSetup?undefined:()=>setSetupOpen(false)}/>}
     {aiScanOpen&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} onClose={()=>setAiScanOpen(false)} onShifts={(shifts)=>importShifts(shifts,"ai-scan")}/>}
     {sheetResult&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} initialResult={sheetResult} onClose={()=>setSheetResult(null)} onShifts={(shifts)=>importShifts(shifts,"spreadsheet")}/>}
     {sheetPick&&<div className="modalWrap"><div className="modal">

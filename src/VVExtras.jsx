@@ -13,6 +13,7 @@ export function SetupModal({initial, onSave, onCancel}){
   const [rosterType, setRosterType] = useState(initial.rosterType || "airnz");
   const [name, setName] = useState(initial.name || "");
   const [minRest, setMinRest] = useState(String(initial.minRestHours ?? 10));
+  const [payCycle, setPayCycle] = useState(initial.payCycle || "fortnightly");
   const [codes, setCodes] = useState(Object.entries(initial.shiftTypes || {}).map(([code, v]) => ({code, start: v.slice(0, 4), end: v.slice(5)})));
   const [err, setErr] = useState("");
   const general = rosterType !== "airnz";
@@ -26,7 +27,7 @@ export function SetupModal({initial, onSave, onCancel}){
       const code = String(c.code || "").trim().toUpperCase().slice(0, 10);
       if(code && /^\d{4}$/.test(c.start) && /^\d{4}$/.test(c.end)) shiftTypes[code] = `${c.start}-${c.end}`;
     }
-    onSave({language: lang, rosterType, name: n, minRestHours: rest, shiftTypes});
+    onSave({language: lang, rosterType, name: n, minRestHours: rest, shiftTypes, payCycle});
   };
 
   return <div className="modalWrap"><div className="modal" style={{maxHeight: "92vh", overflowY: "auto"}}>
@@ -49,15 +50,22 @@ export function SetupModal({initial, onSave, onCancel}){
     <label className="rateNote" htmlFor="vv-rest">{t(lang, "minRest")}</label>
     <input id="vv-rest" type="number" min="0" max="24" step="0.5" value={minRest} onChange={e => setMinRest(e.target.value)} style={{width: 100, marginBottom: 10}}/>
 
+    <label className="rateNote" htmlFor="vv-cycle">{t(lang, "payCycle")}</label>
+    <select id="vv-cycle" value={payCycle} onChange={e => setPayCycle(e.target.value)} style={{width: "100%", marginBottom: 10}}>
+      <option value="weekly">{t(lang, "weekly")}</option>
+      <option value="fortnightly">{t(lang, "fortnightly")}</option>
+      {payCycle === "monthly" && <option value="monthly">{t(lang, "monthly")}</option>}
+    </select>
+
     {general && <div style={{marginBottom: 10}}>
-      <div className="rateNote">Shift codes on your roster (optional) — e.g. D = 0700-1500</div>
+      <div className="rateNote">{t(lang, "shiftCodesHint")}</div>
       {codes.map((c, i) => <div key={i} style={{display: "flex", gap: 6, margin: "6px 0"}}>
         <input value={c.code} placeholder="Code" maxLength={10} onChange={e => setCodes(codes.map((x, j) => j === i ? {...x, code: e.target.value} : x))} style={{width: 70}}/>
         <input value={c.start} placeholder="0700" inputMode="numeric" maxLength={4} onChange={e => setCodes(codes.map((x, j) => j === i ? {...x, start: e.target.value.replace(/\D/g, "")} : x))} style={{width: 70}}/>
         <input value={c.end} placeholder="1500" inputMode="numeric" maxLength={4} onChange={e => setCodes(codes.map((x, j) => j === i ? {...x, end: e.target.value.replace(/\D/g, "")} : x))} style={{width: 70}}/>
         <button className="ghost" onClick={() => setCodes(codes.filter((_, j) => j !== i))} aria-label="Remove code">×</button>
       </div>)}
-      {codes.length < 12 && <button className="ghost" onClick={() => setCodes([...codes, {code: "", start: "", end: ""}])}>+ Add code</button>}
+      {codes.length < 12 && <button className="ghost" onClick={() => setCodes([...codes, {code: "", start: "", end: ""}])}>{t(lang, "addCode")}</button>}
     </div>}
 
     {err && <p className="rateNote" style={{color: "#e88"}}>{err}</p>}
@@ -116,7 +124,7 @@ export function AiScanModal({supabase, lang, myName, today, onClose, onShifts, i
     setStage("working"); setMsg("");
     try{
       const h = await authHeader();
-      if(!h){ setMsg("Please sign in again."); setStage("error"); return; }
+      if(!h){ setMsg(t(lang, "signInAgain")); setStage("error"); return; }
       const image = await prepareImage(file);
       const r = await fetch("/api/scan-roster", {
         method: "POST", headers: {...h, "Content-Type": "application/json"},
@@ -125,13 +133,13 @@ export function AiScanModal({supabase, lang, myName, today, onClose, onShifts, i
       const j = await r.json().catch(() => ({}));
       if(r.status === 429){ setRemaining(0); setMsg(t(lang, "scanLimit")); setStage("error"); return; }
       if(r.status === 503){ setMsg(t(lang, "scanPaused")); setStage("error"); return; }
-      if(!r.ok){ setMsg("Scan failed. Please try again, or upload a spreadsheet."); setStage("error"); return; }
+      if(!r.ok){ setMsg(t(lang, "scanFailed")); setStage("error"); return; }
       if(typeof j.remaining === "number") setRemaining(j.remaining);
       if(j.ambiguous && j.candidates?.length){ setResult(j); setStage("pick"); return; }
       if(!j.found || !j.shifts?.length){ setMsg(t(lang, "notFound")); setStage("error"); return; }
       setResult(j); setChecked(Object.fromEntries(j.shifts.map((s, i) => [i, true]))); setStage("preview");
     }catch{
-      setMsg("Scan failed. Check your connection and try again."); setStage("error");
+      setMsg(t(lang, "scanFailedNet")); setStage("error");
     }
   };
 
@@ -237,7 +245,7 @@ export async function downloadIcs(entries, {timeZone, title, lang}){
 // ---------------------------------------------------------------------------
 // Admin: who is scanning most + spend this month (data comes from admin-only RPCs)
 // ---------------------------------------------------------------------------
-export function AdminScans({supabase, budgetUsd = 20}){
+export function AdminScans({supabase, budgetUsd = 10}){
   const [rows, setRows] = useState(null);
   const [spend, setSpend] = useState(0);
   const [err, setErr] = useState("");
