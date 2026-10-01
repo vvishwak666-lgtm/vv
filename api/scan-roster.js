@@ -12,8 +12,8 @@
 //   SUPABASE_URL                 (or VITE_SUPABASE_URL)
 //   SUPABASE_ANON_KEY            (or VITE_SUPABASE_ANON_KEY)  – used to verify the user's token
 //   SUPABASE_SERVICE_ROLE_KEY    (required) – server only, never expose to the browser
-//   SCAN_DAILY_LIMIT             optional, default 5   (scans per user in any rolling 24h)
-//   SCAN_MONTHLY_BUDGET_USD      optional, default 20  (app-level spend cap; also set one in the Anthropic console)
+//   SCAN_DAILY_LIMIT             optional, default 2   (scans per user in any rolling 24h)
+//   SCAN_MONTHLY_BUDGET_USD      optional, default 10  (app-level spend cap; also set one in the Anthropic console)
 //   SCAN_MODEL                   optional, default claude-sonnet-5-5
 
 import {sanitizeScanResult} from "../src/vvGeneral.js";
@@ -21,8 +21,8 @@ import {sanitizeScanResult} from "../src/vvGeneral.js";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const DAILY_LIMIT = Number(process.env.SCAN_DAILY_LIMIT || 5);
-const MONTHLY_BUDGET = Number(process.env.SCAN_MONTHLY_BUDGET_USD || 20);
+const DAILY_LIMIT = Number(process.env.SCAN_DAILY_LIMIT || 2);
+const MONTHLY_BUDGET = Number(process.env.SCAN_MONTHLY_BUDGET_USD || 10);
 const MODEL = process.env.SCAN_MODEL || "claude-sonnet-5-5";
 
 // USD per million tokens (Sonnet 5.5 list price). Used only for the app-level spend estimate.
