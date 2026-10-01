@@ -264,10 +264,8 @@ function fmtTime(iso){
 // Airlines offered in the Live Flights tab. Air New Zealand uses the original /api/flights
 // endpoint; every other airline uses /api/flights-all (one AviationStack request each).
 const FLIGHT_AIRLINES=[
-  {code:"NZ",name:"Air New Zealand"},{code:"QF",name:"Qantas"},{code:"JQ",name:"Jetstar"},
-  {code:"VA",name:"Virgin Australia"},{code:"EK",name:"Emirates"},{code:"SQ",name:"Singapore Airlines"},
-  {code:"FJ",name:"Fiji Airways"},{code:"CX",name:"Cathay Pacific"},{code:"QR",name:"Qatar Airways"},
-  {code:"SB",name:"Aircalin"},{code:"CZ",name:"China Southern"}
+  {code:"NZ",name:"Air New Zealand"},{code:"SB",name:"Aircalin"},
+  {code:"CZ",name:"China Southern"},{code:"EK",name:"Emirates"}
 ];
 const NZ_DOMESTIC_IATA=new Set([
   "WLG","CHC","ZQN","DUD","NPE","NSN","ROT","TUO","PMR","WHK","HLZ",
