@@ -11,7 +11,7 @@
 // Each call uses ONE AviationStack request. Responses are cached at Vercel's edge for
 // 2 minutes, so many users opening the same airline share one request.
 
-const AIRLINES = new Set(["NZ", "QF", "JQ", "VA", "EK", "SQ", "FJ", "CX", "QR", "SB", "CZ"]);
+const AIRLINES = new Set(["NZ", "EK", "CZ", "SB"]);
 const AIRPORT = "AKL";
 const WINDOW_BACK_MS = 2 * 3600 * 1000;
 const WINDOW_FORWARD_MS = 8 * 3600 * 1000;
