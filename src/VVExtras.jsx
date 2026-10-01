@@ -199,15 +199,39 @@ export function RestBanner({warnings, lang}){
 // ---------------------------------------------------------------------------
 // Calendar export (.ics works with Google, Apple and Outlook calendars)
 // ---------------------------------------------------------------------------
-export function downloadIcs(entries, {timeZone, title, lang}){
+export async function downloadIcs(entries, {timeZone, title, lang}){
   const {text, count} = buildIcs(entries, {timeZone, title});
   if(!count){ alert(t(lang, "noShifts")); return; }
-  const blob = new Blob([text], {type: "text/calendar;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "vv-roster.ics";
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const fileName = "vv-roster.ics";
+  const type = "text/calendar";
+
+  // 1) Phones and installed PWAs: the share sheet is the reliable way to hand a file to
+  //    Calendar (a plain download link is ignored by iOS home-screen apps).
+  try{
+    if(typeof File === "function" && navigator.canShare && navigator.share){
+      const file = new File([text], fileName, {type});
+      if(navigator.canShare({files: [file]})){
+        await navigator.share({files: [file], title: "VV roster"});
+        return;
+      }
+    }
+  }catch(err){
+    if(err && err.name === "AbortError") return; // user closed the share sheet: nothing to do
+    // any other share error: fall through to a normal download
+  }
+
+  // 2) Desktop browsers and anything that can't share files: normal download.
+  try{
+    const blob = new Blob([text], {type: type + ";charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }catch{
+    // 3) Last resort: open the data so the browser can offer it.
+    window.open("data:text/calendar;charset=utf-8," + encodeURIComponent(text), "_blank");
+  }
 }
 
 // ---------------------------------------------------------------------------
