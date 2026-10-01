@@ -10,6 +10,8 @@ import {
   Users, Clock3, Plane, RefreshCw, Mic
 } from "lucide-react";
 import "./styles.css";
+import {SetupModal,AiScanModal,RestBanner,AdminScans,downloadIcs} from "./VVExtras.jsx";
+import {findRestWarnings,isAirNz,extractMyRowFromGrid,t as tr} from "./vvGeneral.js";
 
 
 import { createClient } from "@supabase/supabase-js";
@@ -197,8 +199,8 @@ function parseVoiceShiftPhrase(transcript){
   return {ok:true,day,start,end,type};
 }
 // Finds the earliest real shift start in a day (as "HHMM"), checking both
-// AM/PM slots for dual-source entries so a rare split shift still alarms
-// off whichever half starts earlier, not just whichever happens to be
+// AM/PM slots for dual-source entries so a rare split shift still uses
+// whichever half starts earlier, not just whichever happens to be
 // listed first. Returns null for RDO/leave days or unparseable entries.
 function entryEarliestShiftStart(e){
   const isDualSource=e?.amShift!==undefined || e?.pmShift!==undefined;
@@ -215,16 +217,6 @@ function entryEarliestShiftStart(e){
   if(!starts.length) return null;
   starts.sort((a,b)=>Number(a)-Number(b));
   return starts[0];
-}
-// Subtracts leadMinutes from a shift's HHMM start, rolling back to the
-// previous calendar day when the result goes before midnight — e.g. a
-// 00:30 shift with a 120-minute lead alarms at 22:30 the night before.
-function computeAlarmClock(shiftDateISO,startHHMM,leadMinutes){
-  const sh=Number(startHHMM.slice(0,2)), sm=Number(startHHMM.slice(2,4));
-  let total=sh*60+sm-(Number(leadMinutes)||0);
-  let date=shiftDateISO;
-  if(total<0){ total+=1440; date=addDays(shiftDateISO,-1); }
-  return {date,hour:Math.floor(total/60),minute:total%60};
 }
 // Fixed cap on how many 14-day roster periods are kept per employee — not
 // user-configurable. New uploads auto-trim to this many periods, oldest
@@ -2222,6 +2214,21 @@ const supabase=(supabaseUrl&&supabaseKey)
     })
   : null;
 
+// ---- VV general-roster settings (company type, language, minimum rest) ----------
+// Existing users (anyone who already has roster data or a saved name on this device)
+// are treated as Air NZ and are never shown the new welcome screen.
+const VV_SETTINGS_KEY="vv-general-settings-v1";
+function loadVvSettings(){
+  const defaults={rosterType:"airnz",language:"en",minRestHours:0,shiftTypes:{},setupDone:false};
+  try{
+    const saved=JSON.parse(localStorage.getItem(VV_SETTINGS_KEY)||"null");
+    if(saved&&typeof saved==="object")return {...defaults,...saved};
+    const old=JSON.parse(localStorage.getItem(STORE)||"{}");
+    if((old.entries&&old.entries.length)||old.myNameOverride)return {...defaults,setupDone:true};
+  }catch{}
+  return defaults;
+}
+
 function AccessGate({children}){
   const [session,setSession]=useState(null);
   const [approved,setApproved]=useState(false);
@@ -2385,6 +2392,7 @@ function AccessGate({children}){
       <div className="approvedList">
         {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?"Access ON":"Access OFF"}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?"Revoke":"Restore"}</button></div>)}
       </div>
+      <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||20)}/>
     </div></div>}
   </>;
 }
@@ -2464,11 +2472,6 @@ function App(){
   // Clause 16.1 Penal Rate Allowance only applies to Schedule 1 employees —
   // everyone else leaves this off and sees no weekend penal in Allowances.
   const [isSchedule1,setIsSchedule1]=useState(false);
-  // Default lead time for the "set an alarm" prompt — how many minutes
-  // before the next upcoming shift's start the suggested alarm fires.
-  // Adjustable per-shift on the prompt itself; this is just the starting
-  // value.
-  const [alarmLeadMinutes,setAlarmLeadMinutes]=useState(600);
   const [myNameOverride,setMyNameOverride]=useState("");
   const [unionPct,setUnionPct]=useState(0.37);
   const [kiwiSaverPct,setKiwiSaverPct]=useState(3.5);
@@ -2485,8 +2488,8 @@ function App(){
   const [error,setError]=useState("");
   const fileRef=useRef(null);
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false);setAlarmLeadMinutes(x.alarmLeadMinutes??600)}catch{}},[]);
-  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1,alarmLeadMinutes]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem(STORE)||"{}");setEntries(x.entries||[]);setThreshold(x.threshold||38);setPayRate(x.payRate??33.39);setOtTier1Hours(x.otTier1Hours??3);setOtTier1Mult(x.otTier1Mult??1.5);setOtTier2Mult(x.otTier2Mult??2.0);setRtTier1Threshold(x.rtTier1Threshold??70);setRtTier2Threshold(x.rtTier2Threshold??80);setRtTier1Mult(x.rtTier1Mult??1.5);setRtTier2Mult(x.rtTier2Mult??2.0);setPayFrequency(x.payFrequency??"fortnightly");setUnionPct(x.unionPct??0.37);setKiwiSaverPct(x.kiwiSaverPct??3.5);setMyNameOverride(x.myNameOverride??"");setIsSchedule1(x.isSchedule1??false)}catch{}},[]);
+  useEffect(()=>{try{localStorage.setItem(STORE,JSON.stringify({entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1}))}catch{}},[entries,threshold,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult,payFrequency,unionPct,kiwiSaverPct,myNameOverride,isSchedule1]);
 
   const scanFullTable=useCallback(async(file)=>{
     setError("");setReview(null);setTable(null);setProcessing(true);setProgress(0);
@@ -2969,6 +2972,114 @@ function App(){
     return()=>{cancelled=true};
   },[userId]);
 
+  // ---- General roster: settings, AI scan, spreadsheet import, rest warnings -----
+  const [vv,setVv]=useState(loadVvSettings);
+  const [profileChecked,setProfileChecked]=useState(!supabase);
+  const [setupOpen,setSetupOpen]=useState(false);
+  const [aiScanOpen,setAiScanOpen]=useState(false);
+  const [sheetResult,setSheetResult]=useState(null);
+  const [sheetPick,setSheetPick]=useState(null);
+  const sheetRef=useRef(null);
+  const lang=vv.language||"en";
+  const airNz=isAirNz(vv.rosterType);
+  const needsSetup=!vv.setupDone&&profileChecked;
+
+  useEffect(()=>{try{localStorage.setItem(VV_SETTINGS_KEY,JSON.stringify(vv))}catch{}},[vv]);
+
+  // Settings follow the account across devices. If the new profile columns don't
+  // exist yet (migration not run) this fails quietly and local settings are used.
+  useEffect(()=>{
+    if(!supabase||!userId)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        const {data,error}=await supabase.from("profiles").select("roster_type,language,min_rest_hours,setup_done").eq("user_id",userId).maybeSingle();
+        if(!cancelled&&!error&&data?.setup_done){
+          setVv(v=>({...v,rosterType:data.roster_type||"airnz",language:data.language||"en",minRestHours:Number(data.min_rest_hours)||0,setupDone:true}));
+        }
+      }catch{}
+      finally{if(!cancelled)setProfileChecked(true);}
+    })();
+    return()=>{cancelled=true};
+  },[userId]);
+
+  useEffect(()=>{
+    if(!supabase||!userId||!vv.setupDone||!profileChecked)return;
+    const row={user_id:userId,roster_type:vv.rosterType,language:vv.language,min_rest_hours:vv.minRestHours,setup_done:true};
+    if(myNameOverride)row.employee_name=myNameOverride;
+    supabase.from("profiles").upsert(row).then(({error})=>{if(error)console.warn("profile settings sync failed:",error.message)});
+  },[userId,profileChecked,vv.rosterType,vv.language,vv.minRestHours,vv.setupDone,myNameOverride]);
+
+  const saveSetup=(st)=>{
+    setVv(v=>({...v,language:st.language,rosterType:st.rosterType,minRestHours:st.minRestHours,shiftTypes:st.shiftTypes,setupDone:true}));
+    setMyNameOverride(st.name);
+    setSetupOpen(false);
+  };
+
+  // Rechecked automatically whenever shifts change — manual edits, new uploads, roster changes.
+  const restWarnings=useMemo(()=>findRestWarnings(mine,vv.minRestHours||0),[mine,vv.minRestHours]);
+
+  // Saves ONLY the signed-in user's own shifts (from an AI scan or a spreadsheet).
+  const importShifts=(shifts,source)=>{
+    const name=myName;
+    if(!name||!shifts?.length)return;
+    const stamp=Date.now();
+    const added=shifts.map((sh,i)=>{
+      const hasTimes=!!(sh.start&&sh.end);
+      const literal=hasTimes?`${sh.start}-${sh.end}`:(sh.code||"");
+      const parsed=parseDisplayedRosterValue(literal);
+      const ps=parseShiftText(literal);
+      const amShift=(ps&&!ps.isDayOff)?`${ps.start.replace(":","")}-${ps.end.replace(":","")}`:"0000-0000";
+      return {
+        id:`ai-${stamp}-${i}`,name,date:sh.date,
+        time:parsed.time,code:hasTimes?parsed.code:(sh.code||parsed.code),hours:parsed.hours,display:parsed.display,
+        canonicalValue:parsed.display,editableValue:"0000-0000",
+        amShift,pmShift:"0000-0000",amType:"RT",pmType:"RT",
+        originalValue:parsed.display,rawCellText:literal,rawShiftText:literal,
+        start:ps?.start||"",end:ps?.end||"",minutes:ps?.minutes||0,
+        isDayOff:!hasTimes,
+        source
+      };
+    });
+    setEntries(old=>{
+      const merged=[
+        ...old.filter(e=>!(normalizeEmployeeName(e.name)===normalizeEmployeeName(name)&&added.some(a=>a.date===e.date))),
+        ...added
+      ];
+      return prunedEntriesKeepingRecentPeriods(merged,name,MAX_ROSTER_PERIODS);
+    });
+    const first=added.map(a=>a.date).sort()[0];
+    setSelectedDate(first);
+    setCalendarMonth(first.slice(0,7)+"-01");
+    setAiScanOpen(false);setSheetResult(null);setSheetPick(null);setTab("dashboard");
+  };
+
+  // Spreadsheets are read on the device. Only the matching row is kept; nothing is uploaded.
+  const importSheet=async(file,pickRow=null,pickSheet=null)=>{
+    if(!myName){setSetupOpen(true);return;}
+    try{
+      const wb=XLSX.read(await file.arrayBuffer(),{type:"array"});
+      const hintYear=Number(ymd(new Date()).slice(0,4));
+      const opts={hintYear,shiftTypes:vv.shiftTypes||{}};
+      let amb=null,noDates=false;
+      const names=pickSheet?[pickSheet]:wb.SheetNames;
+      for(const sn of names){
+        const grid=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:"",raw:true});
+        const r=extractMyRowFromGrid(grid,myName,{...opts,pickRow});
+        if(r.status==="ok"){
+          setSheetResult({found:true,shifts:r.shifts,matchedName:r.matchedName,notes:""});
+          return;
+        }
+        if(r.status==="ambiguous"&&!amb)amb={file,sheet:sn,candidates:r.candidates};
+        if(r.status==="no_dates")noDates=true;
+      }
+      if(amb){setSheetPick(amb);return;}
+      alert(noDates?"We found your name but couldn't read the dates in this spreadsheet. Try scanning a photo of it instead.":tr(lang,"notFound"));
+    }catch{
+      alert("Couldn't read that spreadsheet. Check the file and try again.");
+    }
+  };
+
   // Any later manual change via the "Which name on the roster is you?"
   // dropdown gets pushed to Supabase too — guarded so this can't fire
   // before the load above has run and silently overwrite a real saved
@@ -3110,87 +3221,9 @@ function App(){
     }));
   },[subscriptionStatus,notifyHour,notifyMinute,myName]);
 
-  // Dashboard "set an alarm" prompt for the next upcoming shift. Separate
-  // from the evening-reminder system above: this is a one-shot alarm tied
-  // to a specific shift's start time minus a lead time, not a recurring
-  // daily notification. Persisted under its own key so it survives a
-  // reload, same pattern as :localReminder.
-  const [shiftAlarm,setShiftAlarm]=useState(null); // {shiftDate,shiftStart,alarmDate,alarmHour,alarmMinute,leadMinutes}
-  const [shiftAlarmStatus,setShiftAlarmStatus]=useState("");
+  // The old in-app shift alarm was removed; clear any saved alarm left on this device.
+  useEffect(()=>{try{localStorage.removeItem(`${STORE}:shiftAlarm`)}catch{}},[]);
 
-  useEffect(()=>{
-    try{
-      const saved=JSON.parse(localStorage.getItem(`${STORE}:shiftAlarm`)||"null");
-      if(saved) setShiftAlarm(saved);
-    }catch{}
-  },[]);
-
-  const setShiftAlarmNow=useCallback(async(shiftDate,shiftStart,leadMinutes)=>{
-    if(!("Notification" in window)){
-      setShiftAlarmStatus("This browser can't show alarm notifications. Install the app to your Home Screen or use a supported browser.");
-      return;
-    }
-    const perm=Notification.permission==="granted"
-      ? "granted"
-      : await Notification.requestPermission();
-    if(perm!=="granted"){
-      setShiftAlarmStatus("Notification permission was not granted.");
-      return;
-    }
-    const alarm=computeAlarmClock(shiftDate,shiftStart,leadMinutes);
-    const record={
-      shiftDate,shiftStart,
-      alarmDate:alarm.date,alarmHour:alarm.hour,alarmMinute:alarm.minute,
-      leadMinutes
-    };
-    setShiftAlarm(record);
-    try{localStorage.setItem(`${STORE}:shiftAlarm`,JSON.stringify(record));}catch{}
-    setShiftAlarmStatus(`Alarm set for ${pad2(alarm.hour)}:${pad2(alarm.minute)} on ${fmt(alarm.date)} — ${leadMinutes} min before your ${shiftStart.slice(0,2)}:${shiftStart.slice(2)} shift. Keep this app open, or install it to your Home Screen for better background support.`);
-  },[]);
-
-  const cancelShiftAlarm=useCallback(()=>{
-    setShiftAlarm(null);
-    try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
-    setShiftAlarmStatus("Alarm cancelled.");
-  },[]);
-
-  // The notification above is best-effort — it can't survive the app being
-  // fully closed, and it won't override silent mode the way a real phone
-  // alarm does. This copies the computed time to the clipboard so it's a
-  // two-second paste into the phone's actual Clock app as a reliable backup.
-  const copyAlarmTime=useCallback(async(hour,minute)=>{
-    const text=`${pad2(hour)}:${pad2(minute)}`;
-    try{
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        await navigator.clipboard.writeText(text);
-        setShiftAlarmStatus(`Copied ${text} — paste it into your phone's Clock app for a real alarm.`);
-      }else{
-        setShiftAlarmStatus(`Alarm time: ${text}. Copying isn't supported in this browser — set it in your phone's Clock app manually.`);
-      }
-    }catch{
-      setShiftAlarmStatus(`Alarm time: ${text}. Copy failed — set it in your phone's Clock app manually.`);
-    }
-  },[]);
-
-  // Fires the armed alarm at its exact moment, same setTimeout-to-target
-  // pattern as the evening reminder above, but one-shot: once it fires (or
-  // its time has already passed, e.g. the app was closed through it) the
-  // alarm clears itself rather than rescheduling daily.
-  useEffect(()=>{
-    if(!shiftAlarm || !("Notification" in window) || Notification.permission!=="granted") return;
-    const target=new Date(`${shiftAlarm.alarmDate}T${pad2(shiftAlarm.alarmHour)}:${pad2(shiftAlarm.alarmMinute)}:00`);
-    const ms=target.getTime()-Date.now();
-    if(ms<=0) return;
-    const timer=setTimeout(()=>{
-      new Notification("VV Duty Roster — shift alarm",{
-        body:`Your shift starts at ${shiftAlarm.shiftStart.slice(0,2)}:${shiftAlarm.shiftStart.slice(2)} — time to get up.`,
-        tag:"vv-shift-alarm"
-      });
-      setShiftAlarm(null);
-      try{localStorage.removeItem(`${STORE}:shiftAlarm`);}catch{}
-    },Math.min(ms,2147483647));
-    return()=>clearTimeout(timer);
-  },[shiftAlarm]);
 
   const enableEveningReminders=async()=>{
     if(!supabase||!userId){setReminderStatus("Sign in first.");return;}
@@ -3332,11 +3365,6 @@ function App(){
   const viewedPeriodRows=viewedPeriod?viewedPeriod.rows:[];
   const viewedPeriodOvertimeHours=viewedPeriodRows.reduce((s,e)=>s+entryOvertimeHours(e),0);
   const upcoming=mine.find(e=>airport24HourDuration(entryRosterText(e)).time && e.date>=todayISO()) || mine.find(e=>airport24HourDuration(entryRosterText(e)).time);
-  // Only prompts for a real dated shift with a genuine start time today or
-  // later — never for a past shift, an RDO, or when nothing's rostered.
-  const upcomingShiftStart=(upcoming && upcoming.date>=todayISO()) ? entryEarliestShiftStart(upcoming) : null;
-  const upcomingAlarmMatch=!!(shiftAlarm && upcoming && shiftAlarm.shiftDate===upcoming.date && shiftAlarm.shiftStart===upcomingShiftStart);
-  const suggestedAlarm=upcomingShiftStart ? computeAlarmClock(upcoming.date,upcomingShiftStart,alarmLeadMinutes) : null;
   const filtered=entries.filter(e=>{
     if(!searchDay) return true;
     if(!e.date) return false;
@@ -3349,6 +3377,7 @@ function App(){
     <header className="top"><div><img src="/icon-512.png" alt="VV" style={{height:44,width:44,display:"block"}}/><div className="sub">DUTY ROSTER</div></div></header>
 
     {tab==="dashboard"&&<main>
+      <RestBanner warnings={restWarnings} lang={lang}/>
       {!myName&&<section className="panel" style={{padding:"13px",background:"#3a2a12",border:"1px solid #D4AF6A"}}>
         <b style={{color:"#D4AF6A"}}>Set your name to see your roster</b>
         <p className="rateNote" style={{marginTop:6}}>Go to Settings &gt; My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.</p>
@@ -3367,6 +3396,7 @@ function App(){
     </main>}
 
     {tab==="roster"&&<main>
+      <RestBanner warnings={restWarnings} lang={lang}/>
       <div className="stats rosterSummary">
         <Stat label="TOTAL HOURS" value={(viewedPeriod?viewedPeriod.hours:0).toFixed(2)}/>
         <Stat label="OVERTIME" value={viewedPeriodOvertimeHours.toFixed(2)}/>
@@ -3424,36 +3454,6 @@ function App(){
     </main>}
 
     {tab==="search"&&<main>
-      {upcomingShiftStart&&<section className="panel" style={{padding:13}}>
-        {upcomingAlarmMatch
-          ? <>
-              <div className="sectionTitle"><b>ALARM SET</b></div>
-              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(shiftAlarm.alarmHour)}:{pad2(shiftAlarm.alarmMinute)}</div>
-              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(shiftAlarm.alarmDate)} — {shiftAlarm.leadMinutes} min before your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>copyAlarmTime(shiftAlarm.alarmHour,shiftAlarm.alarmMinute)}>Copy time</button>
-                <button onClick={cancelShiftAlarm}>Cancel alarm</button>
-              </div>
-            </>
-          : <>
-              <div className="sectionTitle"><b>SET AN ALARM?</b></div>
-              <div style={{fontSize:32,fontWeight:800,margin:"6px 0 2px"}}>{pad2(suggestedAlarm.hour)}:{pad2(suggestedAlarm.minute)}</div>
-              <p style={{margin:"0 0 8px",opacity:.7}}>on {fmt(suggestedAlarm.date)}, for your {upcomingShiftStart.slice(0,2)}:{upcomingShiftStart.slice(2)} shift</p>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                <span style={{opacity:.7}}>Lead time</span>
-                <input type="number" min="0" step="5" value={alarmLeadMinutes}
-                  onChange={ev=>setAlarmLeadMinutes(Math.max(0,+ev.target.value||0))}
-                  style={{width:60}} aria-label="Alarm lead time in minutes"/>
-                <span style={{opacity:.7}}>min before shift</span>
-              </div>
-              <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>copyAlarmTime(suggestedAlarm.hour,suggestedAlarm.minute)}>Copy time</button>
-                <button onClick={()=>setShiftAlarmNow(upcoming.date,upcomingShiftStart,alarmLeadMinutes)}>Set alarm</button>
-              </div>
-            </>
-        }
-        <p className="rateNote" style={{marginTop:8}}>{shiftAlarmStatus||"This in-app alarm needs the app open (or installed to your Home Screen) to fire — for a reliable wake-up, copy the time into your phone's real Clock app too."}</p>
-      </section>}
       <div className="daySearchCard">
         <div className="daySearchLabel">
           <Search size={17}/>
@@ -3591,10 +3591,16 @@ function App(){
         <button onClick={()=>setTab("flights")}><Plane/><span><b>AKL · Air New Zealand status</b><small>Live departures &amp; arrivals</small></span></button>
       </section>
       <section className="panel menu"><h3>IMPORT</h3>
-        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Upload roster photo</b><small>Reads the name column first, then the selected employee row</small></span></button>
+        <button onClick={()=>{if(!myName){setSetupOpen(true);return;}setAiScanOpen(true);}}><Camera/><span><b>{tr(lang,"scanTitle")} (AI)</b><small>Photo or screenshot — only your own row is read and saved</small></span></button>
+        <button onClick={()=>{if(!myName){setSetupOpen(true);return;}sheetRef.current?.click();}}><FileSpreadsheet/><span><b>Upload spreadsheet</b><small>.xlsx, .xls or .csv — read on your device, only your row is kept</small></span></button>
+        <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>Photo scan (basic, backup)</b><small>Older offline reader — use only if AI scan is unavailable</small></span></button>
       </section>
       <section className="panel menu"><h3>EXPORT</h3>
+        <button onClick={()=>downloadIcs(mine,{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||"Pacific/Auckland",title:"Work shift",lang})}><CalendarDays/><span><b>{tr(lang,"calendarDownload")}</b><small>{tr(lang,"calendarHint")}</small></span></button>
         <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>Export 14-Day Roster as JPEG</b><small>Name, Date, RT, OT & Hours</small></span></button>
+      </section>
+      <section className="panel menu"><h3>SETUP</h3>
+        <button onClick={()=>setSetupOpen(true)}><Users/><span><b>{tr(lang,"language")}, {tr(lang,"company")}</b><small>{tr(lang,"exactName")} · {tr(lang,"minRest")}</small></span></button>
       </section>
 
       <section className="panel">
@@ -3655,7 +3661,7 @@ function App(){
         <p className="rateNote">OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.</p>
       </section>
 
-      <section className="panel">
+      {airNz&&<section className="panel">
         <div className="sectionTitle"><b>ALLOWANCES (CLAUSE 16)</b></div>
         <div className="rateCard">
           <div className="rateRow">
@@ -3672,9 +3678,9 @@ function App(){
           </>)})()}
         </div>
         <p className="rateNote">Shift allowance pays pro rata for hours worked 2200\u20132359, 0000\u20130159 and 0200\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.</p>
-      </section>
+      </section>}
 
-      {(()=>{
+      {airNz&&(()=>{
         const wagesResult=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);
         const wagesPay=wagesResult.totalPay;
         const allowancesPay=totalAllowancesForRows(minePeriod,payRate,isSchedule1).total;
@@ -3778,6 +3784,14 @@ function App(){
     </main>}
 
     <input ref={fileRef} hidden type="file" accept="image/*" onChange={e=>{upload(e.target.files);e.target.value=""}}/>
+    <input ref={sheetRef} hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{const fl=e.target.files?.[0];e.target.value="";if(fl)importSheet(fl)}}/>
+    {(needsSetup||setupOpen)&&<SetupModal initial={{language:vv.language,rosterType:vv.rosterType,name:myName,minRestHours:vv.setupDone?vv.minRestHours:10,shiftTypes:vv.shiftTypes}} onSave={saveSetup} onCancel={needsSetup?undefined:()=>setSetupOpen(false)}/>}
+    {aiScanOpen&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} onClose={()=>setAiScanOpen(false)} onShifts={(shifts)=>importShifts(shifts,"ai-scan")}/>}
+    {sheetResult&&<AiScanModal supabase={supabase} lang={lang} myName={myName} today={ymd(new Date())} initialResult={sheetResult} onClose={()=>setSheetResult(null)} onShifts={(shifts)=>importShifts(shifts,"spreadsheet")}/>}
+    {sheetPick&&<div className="modalWrap"><div className="modal">
+      <div className="modalHead"><div><h2>{myName}?</h2></div><button className="ghost" onClick={()=>setSheetPick(null)}>×</button></div>
+      {sheetPick.candidates.map((c,i)=><button key={i} className="ghost authFull" style={{marginBottom:6}} onClick={()=>{const pk=sheetPick;setSheetPick(null);importSheet(pk.file,c.row,pk.sheet)}}>{c.name}</button>)}
+    </div></div>}
 
     {error&&<div className="toast"><AlertTriangle size={16}/>{error}<button onClick={()=>setError("")}><X size={14}/></button></div>}
 
