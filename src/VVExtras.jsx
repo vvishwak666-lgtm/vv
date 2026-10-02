@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from "react";
-import {LANGUAGES, ROSTER_TYPES, t, formatGap, buildIcs} from "./vvGeneral.js";
+import {LANGUAGES, ROSTER_TYPES, t, formatGap, compactShiftsParam} from "./vvGeneral.js";
 
 const fmtDay = iso => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, {weekday: "short", day: "numeric", month: "short"});
 const CONSENT_KEY = "vv-scan-consent-v1";
@@ -207,39 +207,40 @@ export function RestBanner({warnings, lang}){
 // ---------------------------------------------------------------------------
 // Calendar export (.ics works with Google, Apple and Outlook calendars)
 // ---------------------------------------------------------------------------
-export async function downloadIcs(entries, {timeZone, title, lang}){
-  const {text, count} = buildIcs(entries, {timeZone, title});
-  if(!count){ alert(t(lang, "noShifts")); return; }
-  const fileName = "vv-roster.ics";
-  const type = "text/calendar";
-
-  // 1) Phones and installed PWAs: the share sheet is the reliable way to hand a file to
-  //    Calendar (a plain download link is ignored by iOS home-screen apps).
+// "Add to calendar": opens a link the phone's calendar app understands.
+//   iPhone / iPad  -> webcal://…  (iOS asks "Subscribe to calendar?", works from the installed app too)
+//   Android, other -> https://…   (the phone offers to open the file in its calendar)
+// ---------------------------------------------------------------------------
+const isApplePhone = () => {
   try{
-    if(typeof File === "function" && navigator.canShare && navigator.share){
-      const file = new File([text], fileName, {type});
-      if(navigator.canShare({files: [file]})){
-        await navigator.share({files: [file], title: "VV roster"});
-        return;
-      }
-    }
-  }catch(err){
-    if(err && err.name === "AbortError") return; // user closed the share sheet: nothing to do
-    // any other share error: fall through to a normal download
-  }
+    const ua = navigator.userAgent || "";
+    return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  }catch{ return false; }
+};
 
-  // 2) Desktop browsers and anything that can't share files: normal download.
-  try{
-    const blob = new Blob([text], {type: type + ";charset=utf-8"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = fileName;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-  }catch{
-    // 3) Last resort: open the data so the browser can offer it.
-    window.open("data:text/calendar;charset=utf-8," + encodeURIComponent(text), "_blank");
+export function calendarLinkFor(entries, {timeZone, title, now = new Date(), origin, host}){
+  const from = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10); // last week onwards
+  const recent = (entries || []).filter(e => e && e.date >= from).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const build = list => {
+    const s = compactShiftsParam(list);
+    return s ? `/api/calendar?s=${encodeURIComponent(s)}&tz=${encodeURIComponent(timeZone || "Pacific/Auckland")}&t=${encodeURIComponent(title || "Work shift")}` : null;
+  };
+  let list = recent;
+  let path = build(list);
+  // Keep the link comfortably short for every phone: drop the furthest-away shifts if the roster is huge.
+  while(path && path.length > 7000 && list.length > 1){
+    list = list.slice(0, Math.max(1, Math.floor(list.length * 0.8)));
+    path = build(list);
   }
+  if(!path) return null;
+  return {path, https: `${origin}${path}`, webcal: `webcal://${host}${path}`, length: path.length, shifts: list.length};
+}
+
+export function addToCalendarLink(entries, {timeZone, title, lang}){
+  const link = calendarLinkFor(entries, {timeZone, title, origin: window.location.origin, host: window.location.host});
+  if(!link){ alert(t(lang, "noShifts")); return; }
+  if(isApplePhone()) window.location.href = link.webcal;
+  else window.open(link.https, "_blank") || (window.location.href = link.https);
 }
 
 // ---------------------------------------------------------------------------

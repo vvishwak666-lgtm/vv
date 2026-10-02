@@ -10,7 +10,7 @@ import {
   Users, Clock3, Plane, RefreshCw
 } from "lucide-react";
 import "./styles.css";
-import {SetupModal,AiScanModal,RestBanner,AdminScans,downloadIcs} from "./VVExtras.jsx";
+import {SetupModal,AiScanModal,RestBanner,AdminScans,addToCalendarLink} from "./VVExtras.jsx";
 import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
 import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
 
@@ -3472,7 +3472,7 @@ function App(){
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>{T("Photo scan (basic, backup)")}</b><small>{T("Older offline reader — use only if AI scan is unavailable")}</small></span></button>
       </section>
       <section className="panel menu"><h3>{T("EXPORT")}</h3>
-        <button onClick={()=>downloadIcs(mine,{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||"Pacific/Auckland",title:"Work shift",lang})}><CalendarDays/><span><b>{tr(lang,"calendarDownload")}</b><small>{tr(lang,"calendarHint")}</small></span></button>
+        <button onClick={()=>addToCalendarLink(mine,{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||"Pacific/Auckland",title:"Work shift",lang})}><CalendarDays/><span><b>{tr(lang,"calendar")}</b><small>{tr(lang,"calendarHint")}</small></span></button>
         <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>{T("Export 14-Day Roster as JPEG")}</b><small>{T("Name, Date, RT, OT & Hours")}</small></span></button>
       </section>
       <section className="panel menu"><h3>{T("SETUP")}</h3>

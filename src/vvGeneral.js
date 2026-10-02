@@ -101,11 +101,60 @@ function icsFold(line){
   out.push(rest);
   return out.join("\r\n");
 }
-function icsLocal(iso, minutesFromMidnight){
-  // floating local time anchored to TZID; minutesFromMidnight may exceed 1440.
+
+// UTC offset (ms) of a time zone at a given instant.
+function tzOffsetMs(utcMs, tz){
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  }).formatToParts(new Date(utcMs));
+  const g = t => Number(parts.find(p => p.type === t).value);
+  return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second")) - utcMs;
+}
+
+// A wall-clock time ("2026-10-05" + minutes after midnight, may exceed 1440) in `tz`,
+// written as a UTC timestamp like 20261004T170000Z. UTC needs no VTIMEZONE block, so every
+// calendar app (iPhone, Google, Outlook) imports it, and it shows in the phone's own time zone.
+// If the zone name is unknown, falls back to a "floating" local time (no Z).
+function icsStamp(iso, minutesFromMidnight, tz){
   const day = minutesFromMidnight >= 1440 ? isoAddDays(iso, Math.floor(minutesFromMidnight / 1440)) : iso;
   const mm = minutesFromMidnight % 1440;
-  return `${day.replace(/-/g, "")}T${pad2(Math.floor(mm / 60))}${pad2(mm % 60)}00`;
+  const [Y, Mo, D] = day.split("-").map(Number);
+  const wanted = Date.UTC(Y, Mo - 1, D, Math.floor(mm / 60), mm % 60, 0);
+  const fmt = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}${pad2(d.getUTCSeconds())}`; };
+  try{
+    let guess = wanted;
+    for(let i = 0; i < 3; i++) guess = wanted - tzOffsetMs(guess, tz);
+    return fmt(guess) + "Z";
+  }catch{
+    return fmt(wanted);
+  }
+}
+
+// The shift ranges ("HHMM-HHMM", at most two) a roster entry holds. Day-off entries have none.
+export function slotRanges(e){
+  if(!e || !e.date || e.isDayOff) return [];
+  const slots = (e.amShift !== undefined || e.pmShift !== undefined)
+    ? [e.amShift, e.pmShift]
+    : [[e.editableValue, e.canonicalValue, e.display, e.rawCellText, e.time].find(v => parseCompactRange(v))];
+  const out = [];
+  for(const s of slots){
+    const r = parseCompactRange(s);
+    if(!r) continue;
+    const a = String(s).replace(/[–—]/g, "-").match(/(\d{2})(\d{2})\s*-\s*(\d{2})(\d{2})/);
+    out.push(`${a[1]}${a[2]}-${a[3]}${a[4]}`);
+  }
+  return out;
+}
+
+// Compact list for the /api/calendar link: "2026-10-05:0500-1230,2026-10-06:0500-0900:1300-1700".
+export function compactShiftsParam(entries){
+  const parts = [];
+  for(const e of entries || []){
+    const r = slotRanges(e);
+    if(r.length) parts.push([e.date, ...r.slice(0, 2)].join(":"));
+  }
+  return parts.join(",");
 }
 
 // entries: one person's entries. timeZone: IANA name (e.g. "Pacific/Auckland").
@@ -117,27 +166,21 @@ export function buildIcs(entries, {timeZone = "Pacific/Auckland", calendarName =
     "PRODID:-//VV Duty Roster//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    `X-WR-CALNAME:${icsEscape(calendarName)}`,
-    `X-WR-TIMEZONE:${timeZone}`
+    `X-WR-CALNAME:${icsEscape(calendarName)}`
   ];
   const dtstamp = stamp.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   let count = 0;
   for(const e of entries || []){
-    if(!e || !e.date || e.isDayOff) continue;
-    const slots = (e.amShift !== undefined || e.pmShift !== undefined)
-      ? [e.amShift, e.pmShift]
-      : [[e.editableValue, e.canonicalValue, e.display, e.rawCellText, e.time].find(v => parseCompactRange(v))];
-    slots.forEach((s, idx) => {
-      const r = parseCompactRange(s);
-      if(!r) return;
-      const a = String(s).replace(/[–—]/g, "-").match(/(\d{2})(\d{2})\s*-\s*(\d{2})(\d{2})/);
+    const ranges = slotRanges(e);
+    ranges.forEach((range, idx) => {
+      const r = parseCompactRange(range);
       lines.push(
         "BEGIN:VEVENT",
         `UID:vv-${e.date}-${idx}-${r.startMin}@vv-duty-roster`,
         `DTSTAMP:${dtstamp}`,
-        `DTSTART;TZID=${timeZone}:${icsLocal(e.date, r.startMin)}`,
-        `DTEND;TZID=${timeZone}:${icsLocal(e.date, r.endMin)}`,
-        `SUMMARY:${icsEscape(title)} ${a[1]}:${a[2]}-${a[3]}:${a[4]}`,
+        `DTSTART:${icsStamp(e.date, r.startMin, timeZone)}`,
+        `DTEND:${icsStamp(e.date, r.endMin, timeZone)}`,
+        `SUMMARY:${icsEscape(title)} ${range.slice(0, 2)}:${range.slice(2, 4)}-${range.slice(5, 7)}:${range.slice(7, 9)}`,
         "TRANSP:OPAQUE",
         "END:VEVENT"
       );
@@ -337,7 +380,7 @@ const STR = {
     scanPaused: "Scanning is paused right now. Please upload a spreadsheet or enter shifts manually.",
     notFound: "We couldn't find that name on the roster. Check the spelling in Settings.", confirm: "Check your shifts, then save", saveShifts: "Save shifts",
     restShort: "Short turnaround", restOverlap: "Shifts overlap", restOnly: "only", restMin: "minimum",
-    calendar: "Add to calendar", calendarDownload: "Download calendar file (.ics)", calendarHint: "Opens in Google, Apple or Outlook calendar.",
+    calendar: "Add to calendar", calendarHint: "Opens in Google, Apple or Outlook calendar.",
     noShifts: "No shifts to export yet.",
     shiftCodesHint: "Shift codes on your roster (optional) — e.g. D = 0700-1500",
     addCode: "+ Add code",
@@ -359,7 +402,7 @@ const STR = {
     scanPaused: "Kua okioki te matawai i tēnei wā. Tukuna he whārangi tātai, tāuru rānei ā-ringa.",
     notFound: "Kāore i kitea tērā ingoa i te rārangi. Tirohia te tuhi i ngā Tautuhinga.", confirm: "Tirohia ō wāhanga mahi, ka tiaki", saveShifts: "Tiaki wāhanga mahi",
     restShort: "Okiokinga poto", restOverlap: "E paheke ana ngā wāhanga mahi", restOnly: "anake", restMin: "iti rawa",
-    calendar: "Tāpiri ki te maramataka", calendarDownload: "Tikiake kōnae maramataka (.ics)", calendarHint: "Ka whakatuwhera i Google, Apple, Outlook rānei.",
+    calendar: "Tāpiri ki te maramataka", calendarHint: "Ka whakatuwhera i Google, Apple, Outlook rānei.",
     noShifts: "Kāore ano he wāhanga mahi hei kaweake.",
     shiftCodesHint: "Ngā tohu wāhanga mahi i tō rārangi (kāore e herea) — hei tauira D = 0700-1500",
     addCode: "+ Tāpiri tohu",
@@ -381,7 +424,7 @@ const STR = {
     scanPaused: "स्कैनिंग अभी रुकी हुई है। कृपया स्प्रेडशीट अपलोड करें या शिफ़्टें हाथ से भरें।",
     notFound: "रोस्टर में यह नाम नहीं मिला। सेटिंग्स में वर्तनी जाँचें।", confirm: "अपनी शिफ़्टें जाँचें, फिर सहेजें", saveShifts: "शिफ़्टें सहेजें",
     restShort: "कम आराम", restOverlap: "शिफ़्टें आपस में टकरा रही हैं", restOnly: "केवल", restMin: "न्यूनतम",
-    calendar: "कैलेंडर में जोड़ें", calendarDownload: "कैलेंडर फ़ाइल डाउनलोड करें (.ics)", calendarHint: "Google, Apple या Outlook कैलेंडर में खुलती है।",
+    calendar: "कैलेंडर में जोड़ें", calendarHint: "Google, Apple या Outlook कैलेंडर में खुलती है।",
     noShifts: "अभी निर्यात करने के लिए कोई शिफ़्ट नहीं है।",
     shiftCodesHint: "आपके रोस्टर के शिफ़्ट कोड (वैकल्पिक) — जैसे D = 0700-1500",
     addCode: "+ कोड जोड़ें",
@@ -403,7 +446,7 @@ const STR = {
     scanPaused: "Naka-pause ang pag-scan ngayon. Mag-upload ng spreadsheet o manu-manong ilagay ang mga shift.",
     notFound: "Hindi nahanap ang pangalang iyon sa roster. Suriin ang spelling sa Settings.", confirm: "Suriin ang mga shift, saka i-save", saveShifts: "I-save ang mga shift",
     restShort: "Maikling pahinga", restOverlap: "Nagpapatong ang mga shift", restOnly: "lang", restMin: "minimum",
-    calendar: "Idagdag sa kalendaryo", calendarDownload: "I-download ang calendar file (.ics)", calendarHint: "Bubukas sa Google, Apple o Outlook calendar.",
+    calendar: "Idagdag sa kalendaryo", calendarHint: "Bubukas sa Google, Apple o Outlook calendar.",
     noShifts: "Wala pang shift na mae-export.",
     shiftCodesHint: "Mga shift code sa roster mo (opsyonal) — hal. D = 0700-1500",
     addCode: "+ Magdagdag ng code",
@@ -425,7 +468,7 @@ const STR = {
     scanPaused: "Ua taofia le scan i le taimi nei. ʻUluina se spreadsheet pe tusi lima galuega.",
     notFound: "Ua le maua lena igoa i le roster. Siaki le sipelaga i Settings.", confirm: "Siaki au galuega, ona teu lea", saveShifts: "Teu galuega",
     restShort: "Malolo puupuu", restOverlap: "E tuaʻi galuega", restOnly: "na o", restMin: "aupito itiiti",
-    calendar: "Faaopoopo i le kalena", calendarDownload: "Download le faila kalena (.ics)", calendarHint: "E tatalaina i Google, Apple po o Outlook.",
+    calendar: "Faaopoopo i le kalena", calendarHint: "E tatalaina i Google, Apple po o Outlook.",
     noShifts: "Leai ni galuega e auina atu."
   },
   to: {
@@ -438,7 +481,7 @@ const STR = {
     scanPaused: "Kuo tuku ʻa e sikeni he taimi ni. Fakahū ha spreadsheet pe tohi ʻaki hā nima.",
     notFound: "Naʻe ʻikai ʻilo e hingoa ko ia ʻi he roster. Sivi e tohi ʻi he Settings.", confirm: "Sivi hoʻo ngaahi ngāue, pea tauhi", saveShifts: "Tauhi ngaahi ngāue",
     restShort: "Mālōlō nounou", restOverlap: "ʻOku feʻaluaki ngaahi ngāue", restOnly: "pē", restMin: "māʻulalo taha",
-    calendar: "Fakahū ki he kalenitā", calendarDownload: "Download e faile kalenitā (.ics)", calendarHint: "ʻOku toki ʻi Google, Apple pe Outlook.",
+    calendar: "Fakahū ki he kalenitā", calendarHint: "ʻOku toki ʻi Google, Apple pe Outlook.",
     noShifts: "ʻIkai ha ngāue ke fakahū atu."
   },
   zh: {
@@ -451,7 +494,7 @@ const STR = {
     scanPaused: "扫描功能暂时暂停。请上传电子表格或手动输入班次。",
     notFound: "在排班表中找不到该姓名。请在设置中检查拼写。", confirm: "请核对班次，然后保存", saveShifts: "保存班次",
     restShort: "休息时间过短", restOverlap: "班次重叠", restOnly: "仅", restMin: "最低",
-    calendar: "添加到日历", calendarDownload: "下载日历文件 (.ics)", calendarHint: "可在 Google、Apple 或 Outlook 日历中打开。",
+    calendar: "添加到日历", calendarHint: "可在 Google、Apple 或 Outlook 日历中打开。",
     noShifts: "暂无可导出的班次。",
     shiftCodesHint: "您排班表上的班次代码（可选）——例如 D = 0700-1500",
     addCode: "+ 添加代码",
@@ -473,7 +516,7 @@ const STR = {
     scanPaused: "ਸਕੈਨਿੰਗ ਇਸ ਵੇਲੇ ਰੁਕੀ ਹੋਈ ਹੈ। ਕਿਰਪਾ ਕਰਕੇ ਸਪ੍ਰੈਡਸ਼ੀਟ ਅੱਪਲੋਡ ਕਰੋ ਜਾਂ ਸ਼ਿਫ਼ਟਾਂ ਹੱਥੀਂ ਭਰੋ।",
     notFound: "ਰੋਸਟਰ ਵਿੱਚ ਇਹ ਨਾਮ ਨਹੀਂ ਮਿਲਿਆ। ਸੈਟਿੰਗਾਂ ਵਿੱਚ ਸਪੈਲਿੰਗ ਜਾਂਚੋ।", confirm: "ਆਪਣੀਆਂ ਸ਼ਿਫ਼ਟਾਂ ਜਾਂਚੋ, ਫਿਰ ਸੰਭਾਲੋ", saveShifts: "ਸ਼ਿਫ਼ਟਾਂ ਸੰਭਾਲੋ",
     restShort: "ਘੱਟ ਆਰਾਮ", restOverlap: "ਸ਼ਿਫ਼ਟਾਂ ਆਪਸ ਵਿੱਚ ਟਕਰਾ ਰਹੀਆਂ ਹਨ", restOnly: "ਸਿਰਫ਼", restMin: "ਘੱਟੋ-ਘੱਟ",
-    calendar: "ਕੈਲੰਡਰ ਵਿੱਚ ਜੋੜੋ", calendarDownload: "ਕੈਲੰਡਰ ਫ਼ਾਈਲ ਡਾਊਨਲੋਡ ਕਰੋ (.ics)", calendarHint: "Google, Apple ਜਾਂ Outlook ਕੈਲੰਡਰ ਵਿੱਚ ਖੁੱਲ੍ਹਦੀ ਹੈ।",
+    calendar: "ਕੈਲੰਡਰ ਵਿੱਚ ਜੋੜੋ", calendarHint: "Google, Apple ਜਾਂ Outlook ਕੈਲੰਡਰ ਵਿੱਚ ਖੁੱਲ੍ਹਦੀ ਹੈ।",
     noShifts: "ਅਜੇ ਨਿਰਯਾਤ ਕਰਨ ਲਈ ਕੋਈ ਸ਼ਿਫ਼ਟ ਨਹੀਂ।",
     shiftCodesHint: "ਤੁਹਾਡੇ ਰੋਸਟਰ ਦੇ ਸ਼ਿਫ਼ਟ ਕੋਡ (ਵਿਕਲਪਿਕ) — ਜਿਵੇਂ D = 0700-1500",
     addCode: "+ ਕੋਡ ਜੋੜੋ",
