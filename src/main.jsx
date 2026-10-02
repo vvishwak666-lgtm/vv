@@ -2261,6 +2261,13 @@ function AccessGate({children}){
   const current=String(session?.user?.email||"").toLowerCase();
   const isAdmin=current&&current===adminEmail;
 
+  // The bottom navigation lives in App, below this gate. Tapping any tab closes the admin panel.
+  useEffect(()=>{
+    const close=()=>setAdminOpen(false);
+    window.addEventListener("vv:close-admin",close);
+    return()=>window.removeEventListener("vv:close-admin",close);
+  },[]);
+
   const check=useCallback(async(s)=>{
     if(!supabase||!s?.user?.email){setApproved(false);return;}
     const em=String(s.user.email).toLowerCase();
@@ -2401,16 +2408,17 @@ function AccessGate({children}){
   return <>
     {children}
     <div className="accessBar">
-      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{setAdminOpen(true);await loadUsers();}}>{T("Admin")}</button>}
+      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{if(adminOpen){setAdminOpen(false);return;}setAdminOpen(true);await loadUsers();}}>{adminOpen?T("Close"):T("Admin")}</button>}
       <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
     </div>
-    {adminOpen&&<div className="modalWrap"><div className="modal adminAccess" style={{maxHeight:"82vh",overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain",paddingBottom:120}}>
+    {adminOpen&&<div className="modalWrap" onClick={e=>{if(e.target===e.currentTarget)setAdminOpen(false)}}><div className="modal adminAccess" style={{maxHeight:"82vh",overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain",paddingBottom:120}}>
       <div className="modalHead"><div><h2>{T("Approved Users")}</h2><p>{T("Approve once; revoke any time.")}</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
       <div className="approveRow"><input type="email" placeholder={T("user@example.com")} value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>{T("Approve")}</button></div>
       <div className="approvedList" style={{maxHeight:"none",overflow:"visible"}}>
         {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?T("Access ON"):T("Access OFF")}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?T("Revoke"):T("Restore")}</button></div>)}
       </div>
       <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||10)}/>
+      <button className="primary authFull" style={{marginTop:16}} onClick={()=>setAdminOpen(false)}>{T("Close")}</button>
     </div></div>}
   </>;
 }
@@ -3920,7 +3928,7 @@ function App(){
 }
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
-function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>setTab(id)}>{icon}<span>{label}</span></button>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
 
 // Deterministic duration examples:
   // 0430-0930 = 5.0h
@@ -4029,12 +4037,25 @@ function entryOvertimeHours(e){
   return total;
 }
 
+// True when a day that was imported as RDO/leave has since been edited to real shift hours
+// (in My Roster). The edit must win, otherwise the Dashboard keeps showing "RDO".
+function hasEditedHoursOnDayOff(e){
+  if(!(e?.isDayOff || e?.code==="RDO")) return false;
+  if(e?.amShift===undefined && e?.pmShift===undefined) return false;
+  const am=airport24HourDuration(e?.amShift ?? "0000-0000");
+  const pm=airport24HourDuration(e?.pmShift ?? "0000-0000");
+  return (am.valid && am.hours>0) || (pm.valid && pm.hours>0);
+}
+
 function entryRosterText(e){
   // Standalone codes (RDO, AL, SICK, etc.) always win, regardless of
   // whatever placeholder amShift/pmShift happen to carry — otherwise an RDO
   // day renders as "AM 0000-0000 • PM 0000-0000" instead of "RDO".
-  if(e?.isDayOff) return e.code||"RDO";
-  if(e?.code && CODES.has(e.code)) return e.code;
+  // (Exception: an RDO day the user has edited into a real shift.)
+  if(!hasEditedHoursOnDayOff(e)){
+    if(e?.isDayOff) return e.code||"RDO";
+    if(e?.code && CODES.has(e.code)) return e.code;
+  }
 
   if(e?.amShift!==undefined || e?.pmShift!==undefined){
     const am=e?.amShift ?? "0000-0000";
@@ -4357,14 +4378,18 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
 // Short text for a day that has no roster picture (AI-scan and spreadsheet imports never have one).
 function compactShiftText(e,showType=true){
   if(!e) return "";
+  const dual=e.amShift!==undefined || e.pmShift!==undefined;
+  const parts=dual
+    ? [[e.amShift,e.amType],[e.pmShift,e.pmType]]
+        .filter(([r])=>r && r!=="0000-0000")
+        .map(([r,t])=>showType&&t==="OT"?`${r} (OT)`:r)
+    : [];
+  const codeDay=!!(e.code && CODES.has(e.code) && e.code!=="RDO");   // AL, SICK, TRNG...
+  const rdoLike=!!(e.isDayOff || e.code==="RDO");
+  if(parts.length && (rdoLike || !codeDay)) return parts.join(" · "); // real hours (including an edited RDO day)
   if(e.isDayOff) return e.code||"RDO";
-  if(e.code && CODES.has(e.code)) return e.code;
-  if(e.amShift!==undefined || e.pmShift!==undefined){
-    const parts=[[e.amShift,e.amType],[e.pmShift,e.pmType]]
-      .filter(([r])=>r && r!=="0000-0000")
-      .map(([r,t])=>showType&&t==="OT"?`${r} (OT)`:r);
-    if(parts.length) return parts.join(" · ");
-  }
+  if(codeDay) return e.code;
+  if(dual) return e.code||"RDO";                                      // cleared day
   return entryRosterText(e);
 }
 
