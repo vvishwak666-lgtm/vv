@@ -2404,10 +2404,10 @@ function AccessGate({children}){
       {isAdmin&&<button className="adminMobileButton" onClick={async()=>{setAdminOpen(true);await loadUsers();}}>{T("Admin")}</button>}
       <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
     </div>
-    {adminOpen&&<div className="modalWrap"><div className="modal adminAccess">
+    {adminOpen&&<div className="modalWrap"><div className="modal adminAccess" style={{maxHeight:"82vh",overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain",paddingBottom:120}}>
       <div className="modalHead"><div><h2>{T("Approved Users")}</h2><p>{T("Approve once; revoke any time.")}</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
       <div className="approveRow"><input type="email" placeholder={T("user@example.com")} value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>{T("Approve")}</button></div>
-      <div className="approvedList">
+      <div className="approvedList" style={{maxHeight:"none",overflow:"visible"}}>
         {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?T("Access ON"):T("Access OFF")}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?T("Revoke"):T("Restore")}</button></div>)}
       </div>
       <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||10)}/>
@@ -3410,7 +3410,7 @@ function App(){
         <b style={{color:"#D4AF6A"}}>{T("Set your name to see your roster")}</b>
         <p className="rateNote" style={{marginTop:6}}>{T("Go to Settings > My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.")}</p>
       </section>}
-      <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{entryRosterText(upcoming)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
+      <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{compactShiftText(upcoming,false)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
 
       <div className="stats"><Stat label={T("WEEK HOURS")} value={formatHoursMinutes(weekHours)}/><Stat label={T("OVERTIME")} value={dashOvertime.toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>{dashWeekly?T("THIS WEEK"):T("NEXT 14 DAYS")}</b><span>{fmt(dashStart)} – {fmt(addDays(dashStart,dashDays-1))}</span></div><WeekRosterImages rows={Array.from({length:dashDays},(_,i)=>mine.find(e=>e.date===addDays(dashStart,i))||null)} dates={Array.from({length:dashDays},(_,i)=>addDays(dashStart,i))} employeeName={myName}/></section>
@@ -4355,14 +4355,14 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
 // untouched for My Roster / Calendar / Search, per the request to change
 // the Dashboard's THIS WEEK section only.
 // Short text for a day that has no roster picture (AI-scan and spreadsheet imports never have one).
-function compactShiftText(e){
+function compactShiftText(e,showType=true){
   if(!e) return "";
   if(e.isDayOff) return e.code||"RDO";
   if(e.code && CODES.has(e.code)) return e.code;
   if(e.amShift!==undefined || e.pmShift!==undefined){
     const parts=[[e.amShift,e.amType],[e.pmShift,e.pmType]]
       .filter(([r])=>r && r!=="0000-0000")
-      .map(([r,t])=>t==="OT"?`${r} (OT)`:r);
+      .map(([r,t])=>showType&&t==="OT"?`${r} (OT)`:r);
     if(parts.length) return parts.join(" · ");
   }
   return entryRosterText(e);
