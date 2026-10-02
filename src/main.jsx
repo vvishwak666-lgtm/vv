@@ -4354,6 +4354,20 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
 // This is intentionally a separate component from <Roster>, which is left
 // untouched for My Roster / Calendar / Search, per the request to change
 // the Dashboard's THIS WEEK section only.
+// Short text for a day that has no roster picture (AI-scan and spreadsheet imports never have one).
+function compactShiftText(e){
+  if(!e) return "";
+  if(e.isDayOff) return e.code||"RDO";
+  if(e.code && CODES.has(e.code)) return e.code;
+  if(e.amShift!==undefined || e.pmShift!==undefined){
+    const parts=[[e.amShift,e.amType],[e.pmShift,e.pmType]]
+      .filter(([r])=>r && r!=="0000-0000")
+      .map(([r,t])=>t==="OT"?`${r} (OT)`:r);
+    if(parts.length) return parts.join(" · ");
+  }
+  return entryRosterText(e);
+}
+
 function WeekRosterImages({rows,dates,employeeName}){
   return <div className="weekImageTable">
     <div className="weekImageHead"><span>{T("Day")}</span><span>{T("Roster Hours")}</span></div>
@@ -4369,7 +4383,9 @@ function WeekRosterImages({rows,dates,employeeName}){
         <div className="weekImageCell">
           {image
             ? <img src={image} alt={`${dayLabel} roster cell`} className="roster-cell-image"/>
-            : <span className="weekImageUnavailable">{T("Roster image unavailable")}</span>}
+            : e
+              ? <span className="weekImageUnavailable" style={{fontStyle:"normal",fontWeight:600,opacity:1}}>{compactShiftText(e)}</span>
+              : <span className="weekImageUnavailable">{T("Roster image unavailable")}</span>}
         </div>
       </div>;
     })}
