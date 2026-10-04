@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import {SetupModal,AiScanModal,RestBanner,addToCalendarLink} from "./VVExtras.jsx";
-import AdminDashboard,{useIsAdmin} from "./AdminDashboard.jsx";
 import SignUpPage from "./SignUpPage.jsx";
 import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
 import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
@@ -2046,6 +2045,26 @@ function parseDisplayedRosterValue(value){
 }
 
 
+// Admin screen = the separate VV Admin site, shown inside the app.
+const ADMIN_SITE_URL="https://vv-admin-vimal-vishwak.vercel.app";
+// True only for accounts listed in the Supabase `admins` table.
+function useIsAdmin(supabase,session){
+  const [isAdmin,setIsAdmin]=useState(false);
+  const uid=session?.user?.id;
+  useEffect(()=>{
+    let off=false;
+    (async()=>{
+      if(!uid){setIsAdmin(false);return;}
+      try{
+        const {data}=await supabase.from("admins").select("user_id").eq("user_id",uid).maybeSingle();
+        if(!off)setIsAdmin(!!data);
+      }catch{ if(!off)setIsAdmin(false); }
+    })();
+    return()=>{off=true};
+  },[supabase,uid]);
+  return isAdmin;
+}
+
 const supabaseUrl=import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey=import.meta.env.VITE_SUPABASE_ANON_KEY;
 const adminEmail=String(import.meta.env.VITE_ADMIN_EMAIL||"").toLowerCase();
@@ -3439,8 +3458,9 @@ function App(){
         <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
-    {tab==="admin"&&isAdminUser&&<main style={{padding:0,paddingBottom:96,maxWidth:"none"}}>
-      <AdminDashboard supabase={supabase} onClose={()=>setTab("more")}/>
+    {tab==="admin"&&isAdminUser&&<main style={{padding:0}}>
+      <iframe title="VV Admin" src={ADMIN_SITE_URL} style={{display:"block",width:"100%",height:"calc(100dvh - 240px)",minHeight:420,border:0,background:"#000"}}/>
+      <p style={{textAlign:"center",margin:"10px 0 100px"}}><a href={ADMIN_SITE_URL} target="_blank" rel="noopener noreferrer" style={{color:"#d4af37"}}>{T("Open admin in browser")}</a></p>
     </main>}
 
     {tab==="more"&&<main>
