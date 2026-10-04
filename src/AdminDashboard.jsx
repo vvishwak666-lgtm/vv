@@ -85,7 +85,10 @@ const css = `
 .vva .badge{display:inline-block;min-width:20px;padding:1px 6px;margin-left:6px;border-radius:999px;background:var(--red);color:#fff;font-size:12px;line-height:18px}
 .vva .req{display:grid;grid-template-columns:44px 1fr;gap:4px 13px;padding:14px;margin-bottom:9px;border-radius:16px}
 .vva .req .av{grid-row:1/3}
-.vva .req .acts{grid-column:2/3;display:flex;gap:8px;margin-top:8px}
+.vva .req .acts{grid-column:2/3;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}
+.vva .rm{font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);background:none;border:0;padding:8px 6px;margin-left:auto;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.vva .rm:hover{color:var(--red)}
+.vva .rm:disabled{opacity:.5;cursor:default}
 .vva .req.pending{border-color:rgba(243,220,138,.5);box-shadow:0 0 28px rgba(212,175,55,.1)}
 .vva .ok,.vva .no{font:inherit;font-size:13px;font-weight:700;border-radius:999px;padding:8px 16px;cursor:pointer}
 .vva .ok{color:#1a1403;border:0;background:linear-gradient(135deg,var(--gold1),var(--gold2))}
@@ -124,6 +127,15 @@ function AdminDashboardInner({ supabase, onClose }) {
     setBusyEmail(email);
     setActionError(null);
     const { error } = await supabase.rpc("admin_set_user_access", { p_email: email, p_allow: allow });
+    setBusyEmail(null);
+    if (error) return setActionError(error.message);
+    load();
+  };
+
+  const removeUser = async (person) => {
+    setBusyEmail(person.email);
+    setActionError(null);
+    const { error } = await supabase.rpc("admin_delete_user", { p_user_id: person.user_id });
     setBusyEmail(null);
     if (error) return setActionError(error.message);
     load();
@@ -244,7 +256,7 @@ function AdminDashboardInner({ supabase, onClose }) {
       )}
 
       {view === "users" && !notAdmin && (
-        <UsersPanel people={state.people} busyEmail={busyEmail} error={actionError} onSet={setAccess} />
+        <UsersPanel people={state.people} busyEmail={busyEmail} error={actionError} onSet={setAccess} onRemove={removeUser} />
       )}
 
       {view === "overview" && (<>
@@ -418,9 +430,14 @@ export default function AdminDashboard(props) {
   );
 }
 
-function UserRow({ p, kind, busy, onSet }) {
+function UserRow({ p, kind, busy, onSet, onRemove }) {
   const ask = (msg, allow) => {
     if (window.confirm(msg)) onSet(p.email, allow);
+  };
+  const remove = () => {
+    if (!window.confirm(`Remove ${p.name} completely?\n\nThis permanently deletes their account, roster data and approval. It can't be undone.`)) return;
+    if (!window.confirm(`Last check: permanently delete ${p.email}?`)) return;
+    onRemove(p);
   };
   return (
     <div className={`card req ${kind === "pending" ? "pending" : ""}`}>
@@ -442,16 +459,17 @@ function UserRow({ p, kind, busy, onSet }) {
         {kind === "revoked" && (
           <button className="ok" disabled={busy} onClick={() => onSet(p.email, true)}>Restore</button>
         )}
+        <button className="rm" disabled={busy} onClick={remove}>Remove completely</button>
       </div>
     </div>
   );
 }
 
-function UsersPanel({ people, busyEmail, error, onSet }) {
+function UsersPanel({ people, busyEmail, error, onSet, onRemove }) {
   const pending = people.filter((p) => p.state === "pending");
   const approved = people.filter((p) => p.state === "approved");
   const revoked = people.filter((p) => p.state === "revoked");
-  const row = (p, kind) => <UserRow key={p.user_id} p={p} kind={kind} busy={busyEmail === p.email} onSet={onSet} />;
+  const row = (p, kind) => <UserRow key={p.user_id} p={p} kind={kind} busy={busyEmail === p.email} onSet={onSet} onRemove={onRemove} />;
   return (
     <div>
       {error && <div className="note bad">{error}</div>}
