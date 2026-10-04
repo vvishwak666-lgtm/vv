@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * VV Admin Dashboard (black + gold)
@@ -112,7 +113,7 @@ const cap1 = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const R = 58;
 const C = 2 * Math.PI * R;
 
-export default function AdminDashboard({ supabase, onClose }) {
+function AdminDashboardInner({ supabase, onClose }) {
   const [state, setState] = useState({ loading: true, error: null, summary: [], spend: 0, extras: null, people: [] });
   const [sort, setSort] = useState("month");
   const [view, setView] = useState("overview");
@@ -353,6 +354,61 @@ export default function AdminDashboard({ supabase, onClose }) {
       </div>
       </>)}
     </div>
+  );
+}
+
+/**
+ * Renders the dashboard inside a shadow root so the app's global CSS can't
+ * restyle or hide it, and shows any crash on screen instead of a blank page.
+ */
+function ShadowHost({ children }) {
+  const hostRef = useRef(null);
+  const [mount, setMount] = useState(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const shadow = host.shadowRoot || host.attachShadow({ mode: "open" });
+    let el = shadow.querySelector("[data-vv-root]");
+    if (!el) {
+      el = document.createElement("div");
+      el.setAttribute("data-vv-root", "");
+      shadow.appendChild(el);
+    }
+    setMount(el);
+  }, []);
+  return (
+    <div ref={hostRef} style={{ display: "block", background: "#000", minHeight: "60vh" }}>
+      {mount && createPortal(children, mount)}
+    </div>
+  );
+}
+
+class Boundary extends Component {
+  state = { err: null };
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err) { console.error("AdminDashboard crashed", err); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ color: "#F3EBD3", background: "#000", padding: 20, fontFamily: "system-ui, sans-serif" }}>
+          <b>The admin dashboard hit an error.</b>
+          <div style={{ marginTop: 8, fontSize: 13, color: "#ec6a55", wordBreak: "break-word" }}>
+            {String(this.state.err?.message || this.state.err)}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function AdminDashboard(props) {
+  return (
+    <ShadowHost>
+      <Boundary>
+        <AdminDashboardInner {...props} />
+      </Boundary>
+    </ShadowHost>
   );
 }
 
