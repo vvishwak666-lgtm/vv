@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 /**
@@ -230,6 +230,7 @@ function AdminDashboardInner({ supabase, onClose }) {
         </div>
       </div>
 
+      {state.loading && <div className="note">Loading data…</div>}
       {state.error && <div className="note bad">Couldn't load data: {state.error}</div>}
       {notAdmin && <div className="note bad">This account isn't an admin, so there's nothing to show.</div>}
 
@@ -377,7 +378,12 @@ function ShadowHost({ children }) {
     setMount(el);
   }, []);
   return (
-    <div ref={hostRef} style={{ display: "block", background: "#000", minHeight: "60vh" }}>
+    <div ref={hostRef} style={{ display: "block", background: "#000", minHeight: "100%" }}>
+      {!mount && (
+        <div style={{ color: "#F3DC8A", padding: 24, fontFamily: "system-ui, sans-serif", fontSize: 15 }}>
+          Loading admin dashboard (v3)…
+        </div>
+      )}
       {mount && createPortal(children, mount)}
     </div>
   );

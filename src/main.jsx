@@ -12,6 +12,7 @@ import {
 import "./styles.css";
 import {SetupModal,AiScanModal,RestBanner,addToCalendarLink} from "./VVExtras.jsx";
 import SignUpPage from "./SignUpPage.jsx";
+import AdminDashboard from "./AdminDashboard.jsx";
 import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
 import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
 
@@ -2045,8 +2046,6 @@ function parseDisplayedRosterValue(value){
 }
 
 
-// Admin screen = the separate VV Admin site, shown inside the app.
-const ADMIN_SITE_URL="https://vv-admin-vimal-vishwak.vercel.app";
 // True only for accounts listed in the Supabase `admins` table.
 function useIsAdmin(supabase,session){
   const [isAdmin,setIsAdmin]=useState(false);
@@ -2261,21 +2260,6 @@ function App(){
     return()=>data.subscription.unsubscribe();
   },[]);
   const isAdminUser=useIsAdmin(supabase,adminSession);
-  // Hand the signed-in admin's login to the Admin screen (a separate site shown in a frame),
-  // so you never have to sign in twice. Only the admin site's own origin is answered.
-  useEffect(()=>{
-    if(tab!=="admin"||!supabase)return;
-    const adminOrigin=new URL(ADMIN_SITE_URL).origin;
-    const onMsg=async(e)=>{
-      if(e.origin!==adminOrigin||!e.data||e.data.type!=="vv-need-token")return;
-      const {data}=await supabase.auth.getSession();
-      const sess=data?.session;
-      if(!sess)return;
-      e.source?.postMessage({type:"vv-token",access_token:sess.access_token,user_id:sess.user.id,email:sess.user.email},adminOrigin);
-    };
-    window.addEventListener("message",onMsg);
-    return()=>window.removeEventListener("message",onMsg);
-  },[tab]);
   // Which 14-day period's shifts the My Roster tab shows. null means "follow
   // the current period" (today's block) — tapping a different row under
   // Rosters Uploaded pins the view to that period instead.
@@ -3474,7 +3458,7 @@ function App(){
     </main>}
 
     {tab==="admin"&&isAdminUser&&<main style={{padding:0,paddingBottom:96}}>
-      <iframe title="VV Admin" src={ADMIN_SITE_URL} style={{display:"block",width:"100%",height:"calc(100dvh - 210px)",minHeight:420,border:0,background:"#000"}}/>
+      <AdminDashboard supabase={supabase}/>
     </main>}
 
     {tab==="more"&&<main>
