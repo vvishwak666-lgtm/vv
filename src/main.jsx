@@ -7,10 +7,12 @@ import * as XLSX from "xlsx";
 import {
   Home, CalendarDays, ClipboardList, Search, Menu, Camera, FileSpreadsheet,
   Download, Trash2, ChevronLeft, ChevronRight, X, Check, AlertTriangle,
-  Users, Clock3, Plane, RefreshCw
+  Users, Clock3, Plane, RefreshCw, Shield
 } from "lucide-react";
 import "./styles.css";
-import {SetupModal,AiScanModal,RestBanner,AdminScans,addToCalendarLink} from "./VVExtras.jsx";
+import {SetupModal,AiScanModal,RestBanner,addToCalendarLink} from "./VVExtras.jsx";
+import AdminDashboard,{useIsAdmin} from "./AdminDashboard.jsx";
+import SignUpPage from "./SignUpPage.jsx";
 import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
 import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
 
@@ -2093,19 +2095,9 @@ function AccessGate({children}){
     const [confirmPassword,setConfirmPassword]=useState("");
   const [msg,setMsg]=useState("");
   const [,setLangTick]=useState(0);
-  const [adminOpen,setAdminOpen]=useState(false);
-  const [users,setUsers]=useState([]);
-  const [newEmail,setNewEmail]=useState("");
+  const [mode,setMode]=useState("signin");
 
   const current=String(session?.user?.email||"").toLowerCase();
-  const isAdmin=current&&current===adminEmail;
-
-  // The bottom navigation lives in App, below this gate. Tapping any tab closes the admin panel.
-  useEffect(()=>{
-    const close=()=>setAdminOpen(false);
-    window.addEventListener("vv:close-admin",close);
-    return()=>window.removeEventListener("vv:close-admin",close);
-  },[]);
 
   const check=useCallback(async(s)=>{
     if(!supabase||!s?.user?.email){setApproved(false);return;}
@@ -2192,24 +2184,6 @@ function AccessGate({children}){
     window.history.replaceState({},document.title,window.location.pathname);
   };
 
-  const loadUsers=async()=>{
-    const {data}=await supabase.from("approved_users")
-      .select("id,email,active,created_at").order("created_at",{ascending:false});
-    setUsers(data||[]);
-  };
-
-  const approve=async()=>{
-    const em=newEmail.trim().toLowerCase();
-    if(!em)return;
-    await supabase.from("approved_users").upsert({email:em,active:true},{onConflict:"email"});
-    setNewEmail(""); await loadUsers();
-  };
-
-  const toggle=async(u)=>{
-    await supabase.from("approved_users").update({active:!u.active}).eq("id",u.id);
-    await loadUsers();
-  };
-
   if(loading)return <div className="authScreen"><div className="authCard"><h2>{T("VV Duty Roster")}</h2><p>{T("Checking access…")}</p></div></div>;
 
   if(recoveryMode)return <div className="authScreen"><div className="authCard">
@@ -2224,6 +2198,8 @@ function AccessGate({children}){
     {msg&&<small>{msg}</small>}
   </div></div>;
 
+  if(!session&&mode==="signup")return <SignUpPage supabase={supabase} T={T} onSwitchToLogin={()=>setMode("signin")}/>;
+
   if(!session)return <div className="authScreen"><div className="authCard">
     <img src="/icon-512.png" alt={T("VV")} style={{height:56,width:56,display:"block",margin:"0 auto 12px"}}/><h2>{T("Private Access")}</h2>
     <p>{T("Only approved users can use this app.")}</p>
@@ -2233,6 +2209,7 @@ function AccessGate({children}){
       onKeyDown={e=>{if(e.key==="Enter")signIn();}} />
     <button className="primary authFull" onClick={signIn}>{T("Sign in")}</button>
     <button className="ghost authFull" onClick={sendPasswordRecovery}>{T("Forgot password?")}</button>
+    <button className="ghost authFull" onClick={()=>{setMsg("");setMode("signup")}}>{T("Create account")}</button>
     <select aria-label="Language" value={getActiveLang()} onChange={e=>{saveLanguageChoice(e.target.value);setLangTick(n=>n+1)}} style={{width:"100%",marginTop:10}}>
       {LANGUAGES.map(l=><option key={l.id} value={l.id}>{l.label}</option>)}
     </select>
@@ -2240,31 +2217,31 @@ function AccessGate({children}){
   </div></div>;
 
   if(!approved)return <div className="authScreen"><div className="authCard">
-    <h2>{T("Access not approved")}</h2><p>{current}</p>
+    <h2>{T("Waiting for approval")}</h2><p>{current}</p>
+    <p>{T("An admin needs to approve your account before you can use the app.")}</p>
+    <button className="primary authFull" onClick={()=>check(session)}>{T("Check again")}</button>
     <button className="ghost authFull" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
   </div></div>;
 
   return <>
     {children}
     <div className="accessBar">
-      {isAdmin&&<button className="adminMobileButton" onClick={async()=>{if(adminOpen){setAdminOpen(false);return;}setAdminOpen(true);await loadUsers();}}>{adminOpen?T("Close"):T("Admin")}</button>}
       <button className="signOutMobileButton" onClick={()=>supabase.auth.signOut()}>{T("Sign out")}</button>
     </div>
-    {adminOpen&&<div className="modalWrap" onClick={e=>{if(e.target===e.currentTarget)setAdminOpen(false)}}><div className="modal adminAccess" style={{maxHeight:"82vh",overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain",paddingBottom:120}}>
-      <div className="modalHead"><div><h2>{T("Approved Users")}</h2><p>{T("Approve once; revoke any time.")}</p></div><button className="ghost" onClick={()=>setAdminOpen(false)}>×</button></div>
-      <div className="approveRow"><input type="email" placeholder={T("user@example.com")} value={newEmail} onChange={e=>setNewEmail(e.target.value)}/><button className="primary" onClick={approve}>{T("Approve")}</button></div>
-      <div className="approvedList" style={{maxHeight:"none",overflow:"visible"}}>
-        {users.map(u=><div className="approvedItem" key={u.id}><div><b>{u.email}</b><small>{u.active?T("Access ON"):T("Access OFF")}</small></div><button className={u.active?"danger":"primary"} onClick={()=>toggle(u)}>{u.active?T("Revoke"):T("Restore")}</button></div>)}
-      </div>
-      <AdminScans supabase={supabase} budgetUsd={Number(import.meta.env.VITE_SCAN_BUDGET_USD||10)}/>
-      <button className="primary authFull" style={{marginTop:16}} onClick={()=>setAdminOpen(false)}>{T("Close")}</button>
-    </div></div>}
   </>;
 }
 
 function App(){
   const [entries,setEntries]=useState([]);
   const [tab,setTab]=useState("dashboard");
+  const [adminSession,setAdminSession]=useState(null);
+  useEffect(()=>{
+    if(!supabase)return;
+    supabase.auth.getSession().then(({data})=>setAdminSession(data.session||null));
+    const {data}=supabase.auth.onAuthStateChange((_e,s)=>setAdminSession(s||null));
+    return()=>data.subscription.unsubscribe();
+  },[]);
+  const isAdminUser=useIsAdmin(supabase,adminSession);
   // Which 14-day period's shifts the My Roster tab shows. null means "follow
   // the current period" (today's block) — tapping a different row under
   // Rosters Uploaded pins the view to that period instead.
@@ -3462,7 +3439,14 @@ function App(){
         <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
+    {tab==="admin"&&isAdminUser&&<main style={{padding:0,paddingBottom:96,maxWidth:"none"}}>
+      <AdminDashboard supabase={supabase} onClose={()=>setTab("more")}/>
+    </main>}
+
     {tab==="more"&&<main>
+      {isAdminUser&&<section className="panel menu"><h3>{T("ADMIN")}</h3>
+        <button onClick={()=>setTab("admin")}><Shield/><span><b>{T("Admin dashboard")}</b><small>{T("Approve users, scans and API spend")}</small></span></button>
+      </section>}
       {airNz&&<section className="panel menu"><h3>{T("LIVE FLIGHTS")}</h3>
         <button onClick={()=>setTab("flights")}><Plane/><span><b>{T("AKL · Air New Zealand status")}</b><small>{T("Live departures & arrivals")}</small></span></button>
       </section>}
@@ -3758,7 +3742,7 @@ function App(){
 }
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
-function Nav({id,tab,setTab,icon,label}){return <button className={tab===id?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id||(id==="more"&&tab==="admin")?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
 
 // Deterministic duration examples:
   // 0430-0930 = 5.0h
