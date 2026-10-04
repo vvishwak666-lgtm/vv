@@ -2261,6 +2261,21 @@ function App(){
     return()=>data.subscription.unsubscribe();
   },[]);
   const isAdminUser=useIsAdmin(supabase,adminSession);
+  // Hand the signed-in admin's login to the Admin screen (a separate site shown in a frame),
+  // so you never have to sign in twice. Only the admin site's own origin is answered.
+  useEffect(()=>{
+    if(tab!=="admin"||!supabase)return;
+    const adminOrigin=new URL(ADMIN_SITE_URL).origin;
+    const onMsg=async(e)=>{
+      if(e.origin!==adminOrigin||!e.data||e.data.type!=="vv-need-token")return;
+      const {data}=await supabase.auth.getSession();
+      const sess=data?.session;
+      if(!sess)return;
+      e.source?.postMessage({type:"vv-token",access_token:sess.access_token,user_id:sess.user.id,email:sess.user.email},adminOrigin);
+    };
+    window.addEventListener("message",onMsg);
+    return()=>window.removeEventListener("message",onMsg);
+  },[tab]);
   // Which 14-day period's shifts the My Roster tab shows. null means "follow
   // the current period" (today's block) — tapping a different row under
   // Rosters Uploaded pins the view to that period instead.
@@ -3458,9 +3473,8 @@ function App(){
         <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
-    {tab==="admin"&&isAdminUser&&<main style={{padding:0}}>
-      <iframe title="VV Admin" src={ADMIN_SITE_URL} style={{display:"block",width:"100%",height:"calc(100dvh - 240px)",minHeight:420,border:0,background:"#000"}}/>
-      <p style={{textAlign:"center",margin:"10px 0 100px"}}><a href={ADMIN_SITE_URL} target="_blank" rel="noopener noreferrer" style={{color:"#d4af37"}}>{T("Open admin in browser")}</a></p>
+    {tab==="admin"&&isAdminUser&&<main style={{padding:0,paddingBottom:96}}>
+      <iframe title="VV Admin" src={ADMIN_SITE_URL} style={{display:"block",width:"100%",height:"calc(100dvh - 210px)",minHeight:420,border:0,background:"#000"}}/>
     </main>}
 
     {tab==="more"&&<main>
