@@ -12,6 +12,29 @@ import {
 import "./styles.css";
 import {SetupModal,AiScanModal,RestBanner,addToCalendarLink} from "./VVExtras.jsx";
 import SignUpPage from "./SignUpPage.jsx";
+import {holidayName,phShare,PH_MULT,nextHoliday,localISO,diffDays} from "./nzHolidays.js";
+import LeaveOptimiser from "./LeaveOptimiser.jsx";
+import EarningsGoalCard from "./EarningsGoal.jsx";
+
+const PH_STYLE={display:"inline-block",marginLeft:6,padding:"1px 7px",borderRadius:999,background:"#D4AF6A",color:"#111",fontSize:10,fontWeight:800,letterSpacing:".02em",verticalAlign:"middle"};
+function HolidayCountdown({mine}){
+  const today=localISO();
+  const h=nextHoliday(today);
+  if(!h) return null;
+  const n=diffDays(today,h.date);
+  const when=n===0?"today":n===1?"tomorrow":`in ${n} days`;
+  const e=(mine||[]).find(x=>x.date===h.date);
+  let status;
+  if(!e) status="Your roster for that day isn't in yet.";
+  else if(effectiveEntryHours(e)>0) status=`You're rostered ${compactShiftText(e,false)} — paid time and a half, and you earn an alternative holiday.`;
+  else status="You're off that day.";
+  return <section className="panel" style={{padding:"11px 14px",borderLeft:"3px solid #D4AF6A"}}>
+    <small style={{color:"#D4AF6A",fontWeight:800,letterSpacing:".06em"}}>NEXT PUBLIC HOLIDAY</small>
+    <div style={{fontWeight:800,fontSize:16,marginTop:2}}>{h.name} · {n===0?"Today":fmt(h.date,{weekday:"short",day:"numeric",month:"short"})} <span style={{opacity:.7,fontWeight:600}}>({when})</span></div>
+    <p className="rateNote" style={{margin:"4px 0 0"}}>{status}</p>
+  </section>;
+}
+function PHTag({date}){const n=holidayName(date);return n?<span style={PH_STYLE} title={n}>PH · {n}</span>:null}
 import AdminDashboard from "./AdminDashboard.jsx";
 import {findRestWarnings,isAirNz,extractMyRowFromGrid,LANGUAGES,t as tr} from "./vvGeneral.js";
 import {T,setActiveLang,getActiveLang,dateLocales,detectLang} from "./i18nApp.js";
@@ -2102,6 +2125,48 @@ function saveLanguageChoice(code){
   try{localStorage.setItem(VV_SETTINGS_KEY,JSON.stringify({...loadVvSettings(),language:code}))}catch{}
 }
 
+// ---- Whose roster is stored on this device? ------------------------------------
+// Roster data lives in this browser's storage, not on the account. Without this check,
+// signing in as a different account on the same phone showed the previous person's roster
+// and even copied it into the new account. Now the device remembers its owner, wipes the
+// local roster when a different account signs in, and never uploads data to an account that
+// doesn't own it.
+const DEVICE_OWNER_KEY="vv-device-owner";
+const normPersonName=s=>String(s||"").toUpperCase().replace(/[^A-Z]+/g," ").split(/\s+/).filter(Boolean).sort().join(" ");
+function wipeLocalRosterData(){
+  try{
+    localStorage.removeItem(STORE);
+    localStorage.removeItem(VV_SETTINGS_KEY);
+    localStorage.removeItem(`${STORE}:localReminder`);
+    localStorage.removeItem(`${STORE}:shiftAlarm`);
+  }catch{}
+}
+function deviceOwnedBy(uid){
+  try{return !!uid&&localStorage.getItem(DEVICE_OWNER_KEY)===uid}catch{return true}
+}
+async function claimDevice(uid){
+  try{
+    const prev=localStorage.getItem(DEVICE_OWNER_KEY);
+    if(prev===uid)return;
+    if(prev){ // last used by a different account: start clean for this one
+      wipeLocalRosterData();
+      localStorage.setItem(DEVICE_OWNER_KEY,uid);
+      return;
+    }
+    // Older install with no recorded owner: claim it only if the server agrees these shifts are this account's.
+    const local=JSON.parse(localStorage.getItem(STORE)||"{}");
+    const localName=normPersonName(local.myNameOverride);
+    if(!localName){localStorage.setItem(DEVICE_OWNER_KEY,uid);return;} // nothing personal stored yet
+    const [p,r]=await Promise.all([
+      supabase.from("profiles").select("employee_name").eq("user_id",uid).maybeSingle(),
+      supabase.from("roster_sync").select("name").eq("user_id",uid).limit(60)
+    ]);
+    const serverNames=[p?.data?.employee_name,...((r?.data)||[]).map(x=>x.name)].map(normPersonName).filter(Boolean);
+    if(serverNames.includes(localName))localStorage.setItem(DEVICE_OWNER_KEY,uid);
+    // otherwise leave it unclaimed: nothing is uploaded for this account until the owner is confirmed
+  }catch{}
+}
+
 function AccessGate({children}){
   const [session,setSession]=useState(null);
   const [approved,setApproved]=useState(false);
@@ -2120,9 +2185,10 @@ function AccessGate({children}){
   const check=useCallback(async(s)=>{
     if(!supabase||!s?.user?.email){setApproved(false);return;}
     const em=String(s.user.email).toLowerCase();
-    if(em===adminEmail){setApproved(true);return;}
+    if(em===adminEmail){await claimDevice(s.user.id);setApproved(true);return;}
     const {data}=await supabase.from("approved_users")
       .select("email,active").eq("email",em).eq("active",true).maybeSingle();
+    if(data)await claimDevice(s.user.id);
     setApproved(!!data);
   },[]);
 
@@ -2818,7 +2884,7 @@ function App(){
           // Server has a saved choice — it wins over localStorage, since
           // Supabase is the durable source of truth across devices.
           setMyNameOverride(data.employee_name);
-        }else if(!error&&myNameOverride){
+        }else if(!error&&myNameOverride&&deviceOwnedBy(userId)){
           // No server row yet, but this device already picked a name
           // locally (e.g. from before this sync existed) — push it up once
           // so it isn't lost on the next reinstall.
@@ -2867,7 +2933,7 @@ function App(){
   },[userId]);
 
   useEffect(()=>{
-    if(!supabase||!userId||!vv.setupDone||!profileChecked)return;
+    if(!supabase||!userId||!vv.setupDone||!profileChecked||!deviceOwnedBy(userId))return;
     const row={user_id:userId,roster_type:vv.rosterType,language:vv.language,min_rest_hours:vv.minRestHours,pay_cycle:payFrequency,setup_done:true};
     if(myNameOverride)row.employee_name=myNameOverride;
     supabase.from("profiles").upsert(row).then(({error})=>{if(error)console.warn("profile settings sync failed:",error.message)});
@@ -2876,6 +2942,15 @@ function App(){
   const saveSetup=(st)=>{
     setVv(v=>({...v,language:st.language,rosterType:st.rosterType,minRestHours:st.minRestHours,shiftTypes:st.shiftTypes,setupDone:true}));
     if(st.payCycle)setPayFrequency(st.payCycle);
+    if(!isAirNz(st.rosterType)){
+      // Other company / general: start every pay setting at zero until the person sets it.
+      if(payRate===33.39)setPayRate(0);
+      if(otTier1Hours===3)setOtTier1Hours(0);
+      if(rtTier1Threshold===70)setRtTier1Threshold(0);
+      if(rtTier2Threshold===80)setRtTier2Threshold(0);
+      if(unionPct===0.37)setUnionPct(0);
+      if(kiwiSaverPct===3.5)setKiwiSaverPct(0);
+    }
     setMyNameOverride(st.name);
     setSetupOpen(false);
   };
@@ -2949,7 +3024,7 @@ function App(){
   // before the load above has run and silently overwrite a real saved
   // value with the still-default "".
   useEffect(()=>{
-    if(!supabase||!userId||!hasAttemptedProfileLoad.current||!myNameOverride)return;
+    if(!supabase||!userId||!hasAttemptedProfileLoad.current||!myNameOverride||!deviceOwnedBy(userId))return;
     supabase.from("profiles").upsert({user_id:userId,employee_name:myNameOverride}).then(({error})=>{
       if(error)console.error("Couldn't save employee name to profile:",error.message);
     });
@@ -3001,7 +3076,7 @@ function App(){
   // Mirrors this person's own shifts (not every employee's) to Supabase, so
   // the evening reminder job can look up "tomorrow's shift" server-side.
   useEffect(()=>{
-    if(!supabase||!userId||!mine.length)return;
+    if(!supabase||!userId||!mine.length||!deviceOwnedBy(userId))return;
     const rows=mine.filter(e=>e.date).map(e=>({
       user_id:userId,
       date:e.date,
@@ -3252,8 +3327,14 @@ function App(){
         <b style={{color:"#D4AF6A"}}>{T("Set your name to see your roster")}</b>
         <p className="rateNote" style={{marginTop:6}}>{T("Go to Settings > My Profile and choose which name on the roster is you. Until then, no shifts are shown — this is intentional, so you never see someone else's hours by mistake.")}</p>
       </section>}
-      <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{compactShiftText(upcoming,false)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
+      <section className="hero"><small>{T("UPCOMING SHIFT")}</small>{upcoming?<><h2>{fmt(upcoming.date,{weekday:"long",day:"numeric",month:"long"})}</h2>{holidayName(upcoming.date)&&<p style={{margin:"4px 0 8px"}}><span style={PH_STYLE}>{"Public holiday · "+holidayName(upcoming.date)}</span></p>}{upcoming.sourceCell?<div className="heroSourceCell"><img src={upcoming.sourceCell} alt={entryRosterText(upcoming)}/></div>:<h1>{compactShiftText(upcoming,false)||T("See roster cell")}</h1>}<p>{upcoming.name}</p></>:<h2>{T("No upcoming shift")}</h2>}</section>
 
+      <HolidayCountdown mine={mine}/>
+      {minePeriod.length>0&&(()=>{
+        const w=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);
+        const g=w.totalPay+(airNz?totalAllowancesForRows(minePeriod,payRate,isSchedule1).total:0);
+        return <EarningsGoalCard gross={g} taxFn={x=>periodNzPaye(x,payFrequency)} unionPct={unionPct} kiwiSaverPct={kiwiSaverPct} payRate={payRate} otMult={otTier1Mult} periodEnd={currentPeriod?.end}/>;
+      })()}
       <div className="stats"><Stat label={T("WEEK HOURS")} value={formatHoursMinutes(weekHours)}/><Stat label={T("OVERTIME")} value={dashOvertime.toFixed(2)}/></div>
       <section className="panel"><div className="sectionTitle"><b>{dashWeekly?T("THIS WEEK"):T("NEXT 14 DAYS")}</b><span>{fmt(dashStart)} – {fmt(addDays(dashStart,dashDays-1))}</span></div><WeekRosterImages rows={Array.from({length:dashDays},(_,i)=>mine.find(e=>e.date===addDays(dashStart,i))||null)} dates={Array.from({length:dashDays},(_,i)=>addDays(dashStart,i))} employeeName={myName}/></section>
     </main>}
@@ -3261,7 +3342,7 @@ function App(){
     {tab==="calendar"&&<main>
       <MonthHead month={calendarMonth} setMonth={setCalendarMonth}/>
       <CalendarGrid month={calendarMonth} rows={mine} selected={selectedDate} onSelect={setSelectedDate}/>
-      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b></div><Roster rows={mine.filter(e=>e.date===selectedDate)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
+      <section className="panel"><div className="sectionTitle"><b>{fmt(selectedDate,{weekday:"long",day:"numeric",month:"long"})}</b>{holidayName(selectedDate)&&<span style={PH_STYLE}>{"Public holiday · "+holidayName(selectedDate)}</span>}</div><Roster rows={mine.filter(e=>e.date===selectedDate)} payRate={payRate} otTier1Hours={otTier1Hours} otTier1Mult={otTier1Mult} otTier2Mult={otTier2Mult}/></section>
       <div className="stats calendarTotals"><Stat label={T("TOTAL HOURS")} value={rosterTotalHours.toFixed(2)}/><Stat label={T("OVERTIME")} value={rosterOvertimeHours.toFixed(2)}/></div>
     </main>}
 
@@ -3457,6 +3538,10 @@ function App(){
         <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
+    {tab==="leave"&&<main>
+      <LeaveOptimiser entries={mine} isWorking={e=>effectiveEntryHours(e)>0} onBack={()=>setTab("more")}/>
+    </main>}
+
     {tab==="admin"&&isAdminUser&&<main style={{padding:0,paddingBottom:96}}>
       <AdminDashboard supabase={supabase}/>
     </main>}
@@ -3473,13 +3558,16 @@ function App(){
         <button onClick={()=>{if(!myName){setSetupOpen(true);return;}sheetRef.current?.click();}}><FileSpreadsheet/><span><b>{T("Upload spreadsheet")}</b><small>{T(".xlsx, .xls or .csv — read on your device, only your row is kept")}</small></span></button>
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>{T("Photo scan (basic, backup)")}</b><small>{T("Older offline reader — use only if AI scan is unavailable")}</small></span></button>
       </section>
+      <section className="panel menu"><h3>PLAN</h3>
+        <button onClick={()=>setTab("leave")}><CalendarDays/><span><b>Leave Optimiser</b><small>Best days to book off for the longest break</small></span></button>
+      </section>
       <section className="panel menu"><h3>{T("EXPORT")}</h3>
         <button onClick={()=>addToCalendarLink(mine,{timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||"Pacific/Auckland",title:"Work shift",lang})}><CalendarDays/><span><b>{tr(lang,"calendar")}</b><small>{tr(lang,"calendarHint")}</small></span></button>
         <button onClick={()=>exportRosterPhoto(minePeriod)}><Camera/><span><b>{T("Export 14-Day Roster as JPEG")}</b><small>{T("Name, Date, RT, OT & Hours")}</small></span></button>
       </section>
-      <section className="panel menu"><h3>{T("SETUP")}</h3>
+      {isAdminUser&&<section className="panel menu"><h3>{T("SETUP")}</h3>
         <button onClick={()=>setSetupOpen(true)}><Users/><span><b>{tr(lang,"language")}, {tr(lang,"company")}</b><small>{tr(lang,"exactName")} · {tr(lang,"minRest")}</small></span></button>
-      </section>
+      </section>}
 
       <section className="panel">
         <div className="sectionTitle"><b>{T("HOURLY RATE")}</b></div>
@@ -3498,7 +3586,7 @@ function App(){
               <small>{T("hrs")}</small>
             </div>
           </div>
-          <div className="rateRow">
+          {airNz&&<><div className="rateRow">
             <span>{T("Tier 1 rate (first")} {otTier1Hours}{T("h OT)")}</span>
             <div className="rateValue">
               <input type="number" step="0.1" min="1" value={otTier1Mult} onChange={ev=>setOtTier1Mult(+ev.target.value||1.5)} aria-label={T("Overtime tier 1 multiplier")}/>
@@ -3511,7 +3599,7 @@ function App(){
               <input type="number" step="0.1" min="1" value={otTier2Mult} onChange={ev=>setOtTier2Mult(+ev.target.value||2.0)} aria-label={T("Overtime tier 2 multiplier")}/>
               <small>×</small>
             </div>
-          </div>
+          </div></>}
           <div className="rateRow" style={{marginTop:8,borderTop:"1px solid #2a251c",paddingTop:12}}>
             <span>{T("RT hours — time-and-half from")}</span>
             <div className="rateValue">
@@ -3519,27 +3607,29 @@ function App(){
               <small>{T("hrs")}</small>
             </div>
           </div>
-          <div className="rateRow">
+          {airNz&&<div className="rateRow">
             <span>{T("RT hours — double from")}</span>
             <div className="rateValue">
               <input type="number" step="1" min="0" value={rtTier2Threshold} onChange={ev=>setRtTier2Threshold(+ev.target.value||0)} aria-label={T("RT tier 2 threshold hours")}/>
               <small>{T("hrs")}</small>
             </div>
-          </div>
+          </div>}
           {(()=>{const b=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);return(<>
             <div className="rateRow"><span>{T("Total RT hours this period")}</span><span>{b.totalRtHours.toFixed(2)}</span></div>
-            {b.tier1Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} {T("hrs")}</span></div>}
-            {b.tier2Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier2Mult}{T("× (over")} {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} {T("hrs")}</span></div>}
-            <div className="rateRow rateRowTotal">
+            {airNz&&b.tier1Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier1Mult}× ({rtTier1Threshold}-{rtTier2Threshold}h)</span><span>{b.tier1Hours.toFixed(2)} {T("hrs")}</span></div>}
+            {airNz&&b.tier2Hours>0&&<div className="rateRow"><span>{T("— at")} {rtTier2Mult}{T("× (over")} {rtTier2Threshold}h)</span><span>{b.tier2Hours.toFixed(2)} {T("hrs")}</span></div>}
+            {b.altHolidays>0&&<div className="rateRow"><span>{T("Public holiday")} ({b.phRtHours.toFixed(2)}h at {PH_MULT}×)</span><span>+${b.phPay.toFixed(2)}</span></div>}
+            {b.altHolidays>0&&<div className="rateRow"><span>{T("Alternative holidays earned")}</span><b>{b.altHolidays}</b></div>}
+            {airNz&&<div className="rateRow rateRowTotal">
               <span>{T("Total Pay")}</span>
               <b>${b.totalPay.toFixed(2)}</b>
-            </div>
+            </div>}
           </>)})()}
         </div>
-        <p className="rateNote">{T("OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.")}</p>
+        {airNz&&<p className="rateNote">{T("OT-tagged shifts (splits, stay-backs, early starts you enter manually) are paid at Tier 1/Tier 2 per day as set above. RT hours are pooled across the whole roster period — once total RT hours pass the time-and-half threshold, hours above it pay 1.5×, and hours past the double threshold pay 2×.")}</p>}
       </section>
 
-      <section className="panel">
+      {airNz&&<section className="panel">
         <div className="sectionTitle"><b>{T("ALLOWANCES (CLAUSE 16)")}</b></div>
         <div className="rateCard">
           <div className="rateRow">
@@ -3556,12 +3646,12 @@ function App(){
           </>)})()}
         </div>
         <p className="rateNote">{T("Shift allowance pays pro rata for hours worked 2200\\u20132359, 0000\\u20130159 and 0200\\u20130600, at whichever agreement rate is in force on each date (stepping up 9 Mar 2026 and 8 Mar 2027). Weekend penal pays half the ordinary rate on ordinary-time hours worked Saturday or Sunday, Schedule 1 employees only. Neither allowance is paid on OT-tagged shifts.")}</p>
-      </section>
+      </section>}
 
       {(()=>{
         const wagesResult=totalPayForRowsWithRtTiers(minePeriod,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult);
         const wagesPay=wagesResult.totalPay;
-        const allowancesPay=totalAllowancesForRows(minePeriod,payRate,isSchedule1).total;
+        const allowancesPay=airNz?totalAllowancesForRows(minePeriod,payRate,isSchedule1).total:0;
         const totalPay=wagesPay+allowancesPay;
         const tax=periodNzPaye(totalPay,payFrequency);
         const unionFee=totalPay*(unionPct/100);
@@ -3572,8 +3662,9 @@ function App(){
           <div className="sectionTitle"><b>{T("DEDUCTIONS")}</b></div>
           <div className="rateCard">
             <div className="rateRow"><span>{T("Wages")}</span><span>${wagesPay.toFixed(2)}</span></div>
+            {wagesResult.altHolidays>0&&<div className="rateRow" style={{opacity:.7}}><span>{T("— incl. public holiday time-and-half")}</span><span>+${wagesResult.phPay.toFixed(2)}</span></div>}
             {wagesResult.breakDeduction>0&&<div className="rateRow" style={{opacity:.7}}><span>{T("— unpaid meal breaks (ERA s69ZD)")}</span><span>-${wagesResult.breakDeduction.toFixed(2)}</span></div>}
-            <div className="rateRow"><span>{T("Allowances")}</span><span>${allowancesPay.toFixed(2)}</span></div>
+            {airNz&&<div className="rateRow"><span>{T("Allowances")}</span><span>${allowancesPay.toFixed(2)}</span></div>}
             <div className="rateRow rateRowTotal"><span>{T("Gross Pay")}</span><b>${totalPay.toFixed(2)}</b></div>
             <div className="rateRow rateRowDeduction">
               <span>{T("Tax (NZ PAYE + ACC)")}</span>
@@ -3760,7 +3851,7 @@ function App(){
 }
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
-function Nav({id,tab,setTab,icon,label}){return <button className={tab===id||(id==="more"&&tab==="admin")?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id||(id==="more"&&(tab==="admin"||tab==="leave"))?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
 
 // Deterministic duration examples:
   // 0430-0930 = 5.0h
@@ -3955,14 +4046,15 @@ function dayShiftPays(e,payRate,tier1Hours,tier1Mult,tier2Mult){
     amPay=tieredOtPay(otSoFar,amHours,payRate,tier1Hours,tier1Mult,tier2Mult);
     otSoFar+=amHours;
   }else{
-    amPay=amHours*payRate;
+    // Public holiday: RT hours on the holiday earn the extra half (time and a half).
+    amPay=amHours*payRate + amHours*phShare(e.date,am)*payRate*(PH_MULT-1);
   }
 
   if(pmType==="OT"){
     pmPay=tieredOtPay(otSoFar,pmHours,payRate,tier1Hours,tier1Mult,tier2Mult);
     otSoFar+=pmHours;
   }else{
-    pmPay=pmHours*payRate;
+    pmPay=pmHours*payRate + pmHours*phShare(e.date,pm)*payRate*(PH_MULT-1);
   }
 
   return {amHours,pmHours,amGrossHours,pmGrossHours,amBreakMinutes,pmBreakMinutes,amPay,pmPay,amType,pmType};
@@ -4160,7 +4252,8 @@ function totalPayForRows(rows,payRate,tier1Hours,tier1Mult,tier2Mult){
 // totalPayForRows above does. Split shifts, stay-backs, and early starts
 // are just RT-tagged rows like any other, so they're included the same way.
 function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier2Mult,rtTier1Threshold,rtTier2Threshold,rtTier1Mult,rtTier2Mult){
-  let otPay=0,totalRtHours=0,breakDeduction=0;
+  let otPay=0,totalRtHours=0,breakDeduction=0,phRtHours=0;
+  const phDays=new Set();
   for(const e of rows){
     const isDualSource=e.amShift!==undefined || e.pmShift!==undefined;
     if(!isDualSource){
@@ -4182,20 +4275,27 @@ function totalPayForRowsWithRtTiers(rows,payRate,otTier1Hours,otTier1Mult,otTier
     // hour for hour. Only RT segments get netted.
     const amHours=amType==="OT" ? amGross : netSegmentHours(amGross);
     const pmHours=pmType==="OT" ? pmGross : netSegmentHours(pmGross);
+    // Public holiday share of each segment (0 when the shift is not on a holiday).
+    const amPh=amGross>0?phShare(e.date,am):0, pmPh=pmGross>0?phShare(e.date,pm):0;
+    if(amPh>0||pmPh>0) phDays.add(e.date);   // worked a public holiday -> alternative holiday earned
     let otSoFarToday=0;
     if(amType==="OT"){ otPay+=tieredOtPay(otSoFarToday,amHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=amHours; }
-    else { totalRtHours+=amHours; breakDeduction+=(amGross-amHours)*payRate; }
+    else { totalRtHours+=amHours; phRtHours+=amHours*amPh; breakDeduction+=(amGross-amHours)*payRate; }
     if(pmType==="OT"){ otPay+=tieredOtPay(otSoFarToday,pmHours,payRate,otTier1Hours,otTier1Mult,otTier2Mult); otSoFarToday+=pmHours; }
-    else { totalRtHours+=pmHours; breakDeduction+=(pmGross-pmHours)*payRate; }
+    else { totalRtHours+=pmHours; phRtHours+=pmHours*pmPh; breakDeduction+=(pmGross-pmHours)*payRate; }
   }
 
-  const straightHours=Math.min(totalRtHours,rtTier1Threshold);
-  const tier1Hours=Math.max(0,Math.min(totalRtHours,rtTier2Threshold)-rtTier1Threshold);
-  const tier2Hours=Math.max(0,totalRtHours-rtTier2Threshold);
+  // A threshold of 0 (or blank) means "not set": no time-and-half / double time from that point.
+  const t1=rtTier1Threshold>0?rtTier1Threshold:Infinity;
+  const t2=rtTier2Threshold>0?rtTier2Threshold:Infinity;
+  const straightHours=Math.min(totalRtHours,t1);
+  const tier1Hours=Math.max(0,Math.min(totalRtHours,t2)-t1);
+  const tier2Hours=Math.max(0,totalRtHours-t2);
   const rtPay=straightHours*payRate + tier1Hours*payRate*rtTier1Mult + tier2Hours*payRate*rtTier2Mult;
   breakDeduction=Math.round(breakDeduction*100)/100;
+  const phPay=Math.round(phRtHours*payRate*(PH_MULT-1)*100)/100;   // the extra half on public-holiday RT hours
 
-  return {totalPay:Math.max(0,rtPay+otPay),totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay,breakDeduction};
+  return {totalPay:Math.max(0,rtPay+otPay+phPay),totalRtHours,straightHours,tier1Hours,tier2Hours,otPay,rtPay,breakDeduction,phPay,phRtHours,altHolidays:phDays.size};
 }
 
 // Dashboard-only "THIS WEEK" display. Shows the exact cropped roster-cell
@@ -4234,7 +4334,7 @@ function WeekRosterImages({rows,dates,employeeName}){
       const image=e?.sourceCell||"";
       return <div className="weekImageRow" key={date}>
         <div className="weekImageDay">
-          <small>{dayLabel}</small>
+          <small>{dayLabel}<PHTag date={date}/></small>
           <span>{e?.name||employeeName||""}</span>
         </div>
         <div className="weekImageCell">
@@ -4336,7 +4436,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
         // etc.) instead of blank 00:00-00:00, with an explicit "Edit" to
         // turn it into a real shift only if the person chooses to.
         return <div className={"rosterTableRow rosterTableRowFlat"+dayClass} key={e.id+"-code-"+i}>
-          <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
+          <div className="rosterTableDay"><small>{dayLabel}<PHTag date={e.date}/></small><span>{e.name}</span></div>
           <div className="rosterTableStart"><span>{r.label}</span></div>
           <div className="rosterTableEnd"><span>—</span></div>
           <div className="rosterTableTime">{formatHoursMinutes(0)}</div>
@@ -4359,7 +4459,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
           : splitAirportRange(parsed.time);
 
         return <div className={"rosterTableRow rosterTableRowFlat"+dayClass} key={e.id+"-flat-"+i}>
-          <div className="rosterTableDay"><small>{dayLabel}</small><span>{e.name}</span></div>
+          <div className="rosterTableDay"><small>{dayLabel}<PHTag date={e.date}/></small><span>{e.name}</span></div>
           <div className="rosterTableStart"><span>{start||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableEnd"><span>{end||(isRDO?"":"--:--")}</span></div>
           <div className="rosterTableTime">{formatHoursMinutes(r.hours||0)}{r.breakMinutes>0&&<small style={{display:"block",opacity:.6,fontWeight:400}}>-{r.breakMinutes}{T("m break")}</small>}</div>
@@ -4374,7 +4474,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
       return <React.Fragment key={e.id+"-"+period}>
       <div className={"rosterTableRow"+dayClass}>
         <div className="rosterTableDay">
-          <small>{dayLabel}</small>
+          <small>{dayLabel}<PHTag date={e.date}/></small>
           <span>{e.name} · {periodLabel}</span>
           {onEdit
             ? <select
@@ -4412,7 +4512,7 @@ function Roster({rows,onEdit,payRate=0,otTier1Hours=3,otTier1Mult=1.5,otTier2Mul
   </div>;
 }
 function MonthHead({month,setMonth}){const move=n=>{const d=new Date(`${month}T12:00:00`);d.setMonth(d.getMonth()+n);setMonth(`${d.getFullYear()}-${pad2(d.getMonth()+1)}-01`)};return <div className="monthHead"><button className="ghost" onClick={()=>move(-1)}><ChevronLeft/></button><h2>{new Date(`${month}T12:00:00`).toLocaleDateString(dateLocales(),{month:"long",year:"numeric"})}</h2><button className="ghost" onClick={()=>move(1)}><ChevronRight/></button></div>}
-function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{T(x)}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(n)}`,r=rows.find(x=>x.date===iso);return <button key={i} className={selected===iso?"selected":""} onClick={()=>onSelect(iso)}><b>{n}</b>{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
+function CalendarGrid({month,rows,selected,onSelect}){const d=new Date(`${month}T12:00:00`),first=new Date(d.getFullYear(),d.getMonth(),1),days=new Date(d.getFullYear(),d.getMonth()+1,0).getDate(),lead=(first.getDay()+6)%7;const cells=[...Array(lead).fill(null),...Array.from({length:days},(_,i)=>i+1)];while(cells.length%7)cells.push(null);return <div className="cal">{["MON","TUE","WED","THU","FRI","SAT","SUN"].map(x=><div className="dow" key={x}>{T(x)}</div>)}{cells.map((n,i)=>{if(!n)return <div key={i}/>;const iso=`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(n)}`,r=rows.find(x=>x.date===iso);const ph=holidayName(iso);return <button key={i} className={selected===iso?"selected":""} title={ph||undefined} style={ph?{position:"relative",boxShadow:"inset 0 0 0 1.5px #D4AF6A"}:undefined} onClick={()=>onSelect(iso)}><b style={ph?{color:"#D4AF6A"}:undefined}>{n}</b>{ph&&<i style={{position:"absolute",top:3,right:4,fontSize:8,fontStyle:"normal",fontWeight:800,color:"#D4AF6A"}}>PH</i>}{r&&<span className={r.code==="RDO"?"off":""}/>}</button>})}</div>}
 
 function exportRosterPhoto(rows=[]){
   try{
