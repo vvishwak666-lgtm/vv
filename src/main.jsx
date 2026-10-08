@@ -14,6 +14,8 @@ import {SetupModal,AiScanModal,RestBanner,addToCalendarLink} from "./VVExtras.js
 import SignUpPage from "./SignUpPage.jsx";
 import {holidayName,phShare,PH_MULT,nextHoliday,localISO,diffDays} from "./nzHolidays.js";
 import LeaveOptimiser from "./LeaveOptimiser.jsx";
+import YearPlanner from "./YearPlanner.jsx";
+import AskRoster from "./AskRoster.jsx";
 import EarningsGoalCard from "./EarningsGoal.jsx";
 
 const PH_STYLE={display:"inline-block",marginLeft:6,padding:"1px 7px",borderRadius:999,background:"#D4AF6A",color:"#111",fontSize:10,fontWeight:800,letterSpacing:".02em",verticalAlign:"middle"};
@@ -3538,6 +3540,14 @@ function App(){
         <small className="flightsUpdatedAt">{T("Updated")} {fmtTime(flightsUpdatedAt)}</small>}
     </main>}
 
+    {tab==="ask"&&<main>
+      <AskRoster entries={mine} isWorking={e=>effectiveEntryHours(e)>0} shiftText={e=>compactShiftText(e,false)} onBack={()=>setTab("more")}/>
+    </main>}
+
+    {tab==="year"&&<main>
+      <YearPlanner entries={mine} isWorking={e=>effectiveEntryHours(e)>0} onBack={()=>setTab("more")}/>
+    </main>}
+
     {tab==="leave"&&<main>
       <LeaveOptimiser entries={mine} isWorking={e=>effectiveEntryHours(e)>0} onBack={()=>setTab("more")}/>
     </main>}
@@ -3559,6 +3569,8 @@ function App(){
         <button onClick={()=>fileRef.current?.click()}><Camera/><span><b>{T("Photo scan (basic, backup)")}</b><small>{T("Older offline reader — use only if AI scan is unavailable")}</small></span></button>
       </section>
       <section className="panel menu"><h3>PLAN</h3>
+        <button onClick={()=>setTab("ask")}><Search/><span><b>Ask your roster</b><small>"Next weekend off?" "Am I working 25 Dec?"</small></span></button>
+        <button onClick={()=>setTab("year")}><CalendarDays/><span><b>Year Planner</b><small>Your whole year: earlies, lates, days off and holidays</small></span></button>
         <button onClick={()=>setTab("leave")}><CalendarDays/><span><b>Leave Optimiser</b><small>Best days to book off for the longest break</small></span></button>
       </section>
       <section className="panel menu"><h3>{T("EXPORT")}</h3>
@@ -3851,7 +3863,7 @@ function App(){
 }
 
 function Stat({label,value}){return <div className="stat"><small>{label}</small><b>{value}</b></div>}
-function Nav({id,tab,setTab,icon,label}){return <button className={tab===id||(id==="more"&&(tab==="admin"||tab==="leave"))?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
+function Nav({id,tab,setTab,icon,label}){return <button className={tab===id||(id==="more"&&(tab==="admin"||tab==="leave"||tab==="year"||tab==="ask"))?"on":""} onClick={()=>{try{window.dispatchEvent(new Event("vv:close-admin"))}catch{}setTab(id)}}>{icon}<span>{label}</span></button>}
 
 // Deterministic duration examples:
   // 0430-0930 = 5.0h

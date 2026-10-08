@@ -87,3 +87,8 @@ export function nextHoliday(fromISO){
   const d = dates.find(x => x >= fromISO);
   return d ? { date: d, name: NZ_HOLIDAYS[d] } : null;
 }
+
+// All public holidays as [{date,name}] sorted by date (used by Ask your roster to understand "Christmas", "Labour Day"...).
+export function listHolidays(){
+  return Object.keys(NZ_HOLIDAYS).sort().map(d => ({ date: d, name: NZ_HOLIDAYS[d] }));
+}
