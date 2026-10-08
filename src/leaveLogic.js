@@ -93,3 +93,18 @@ export function findBreaks({ today, monthStart, monthEnd, budget, offAt, limit =
   }
   return picked;
 }
+
+// Air NZ team year planners (2026 and 2027 both checked against this cycle): every team repeats the same 9-day cycle - 3 days off, 3 earlies, 3 lates -
+// and the three teams are offset by 3 days. `anchor` is the first day of one of that team's days-off blocks.
+export const TEAMS = {
+  alpha:   { label: "Alpha",   on: 6, off: 3, anchor: "2026-01-06" },
+  bravo:   { label: "Bravo",   on: 6, off: 3, anchor: "2026-01-03" },
+  charlie: { label: "Charlie", on: 6, off: 3, anchor: "2025-12-31" },
+};
+export const TEAM_PLANNER_END = "2027-12-31";   // the published planners cover calendar 2026 and 2027
+// Which team (if any) an anchor date belongs to.
+export function teamForAnchor(anchor){
+  if(!anchor) return "";
+  for(const [k, t] of Object.entries(TEAMS)) if(mod(diffDays(t.anchor, anchor), 9) === 0) return k;
+  return "";
+}

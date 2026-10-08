@@ -1,6 +1,6 @@
 import React, {useMemo, useState} from "react";
 import {holidayName, localISO, addIso} from "./nzHolidays.js";
-import {detectPattern, makeOffFn, findBreaks} from "./leaveLogic.js";
+import {detectPattern, makeOffFn, findBreaks, TEAMS, teamForAnchor, TEAM_PLANNER_END} from "./leaveLogic.js";
 
 const GOLD = "#D4AF6A";
 const LS_KEY = "vv-leave-pattern";
@@ -35,6 +35,13 @@ function shareText(b) {
   const lv = b.leaveDays.length;
   return `Take ${lv} day${lv > 1 ? "s" : ""} of leave (${fmtDay(b.leaveDays[0])}${lv > 1 ? " – " + fmtDay(b.leaveDays[lv-1]) : ""}) and get ${b.total} days off in a row 🌴 Planned with VV Duty Roster – https://vv-sigma-one.vercel.app`;
 }
+function addToPlan(days) {
+  try {
+    const cur = new Set(JSON.parse(localStorage.getItem("vv-leave-plan") || "[]"));
+    days.forEach(d => cur.add(d));
+    localStorage.setItem("vv-leave-plan", JSON.stringify([...cur].sort()));
+  } catch {}
+}
 async function shareBreak(b) {
   const text = shareText(b);
   try {
@@ -59,9 +66,12 @@ export default function LeaveOptimiser({entries, isWorking, onBack}) {
   const [toast, setToast] = useState("");
   const [editing, setEditing] = useState(false);
 
-  const on = ov.on ?? det.on ?? 6;
-  const off = ov.off ?? det.off ?? 3;
-  const anchor = ov.anchor ?? det.anchor ?? "";
+  const team = TEAMS[ov.team] ? ov.team : "";
+  const t = team ? TEAMS[team] : null;
+  const on = ov.on ?? t?.on ?? det.on ?? 6;
+  const off = ov.off ?? t?.off ?? det.off ?? 3;
+  const anchor = ov.anchor ?? t?.anchor ?? det.anchor ?? "";
+  const seenTeam = teamForAnchor(det.anchor);
   const patch = p => { const n = {...ov, ...p}; setOv(n); save(n); };
 
   const offAt = useMemo(() => makeOffFn(known, {on, off, anchor}), [known, on, off, anchor]);
@@ -94,6 +104,19 @@ export default function LeaveOptimiser({entries, isWorking, onBack}) {
         </div>
       </div>
 
+      <div className="rateRow" style={{marginTop: 6}}>
+        <span>My team</span>
+        <div className="rateValue">
+          <select value={team} aria-label="My team"
+            onChange={ev => patch({team: ev.target.value, on: undefined, off: undefined, anchor: undefined})}>
+            <option value="">Auto (from my roster)</option>
+            {Object.entries(TEAMS).map(([k, v]) => <option key={k} value={k}>{v.label} team</option>)}
+          </select>
+        </div>
+      </div>
+      {!team && seenTeam && <p className="rateNote" style={{marginTop: 4}}>Your roster looks like the <b>{TEAMS[seenTeam].label}</b> team. Choose it above to use the full-year planner.</p>}
+      {team && <p className="rateNote" style={{marginTop: 4}}>Using the {TEAMS[team].label} team year planners (2026 and 2027): 3 earlies, 3 lates, 3 off. Days from your imported roster still take priority.</p>}
+
       <p className="rateNote" style={{marginTop: 10}}>
         Your pattern: <b>{on} on / {off} off</b>{anchor ? <> · a days-off block starts {fmtDay(anchor)}</> : null}.{" "}
         <a onClick={() => setEditing(v => !v)} style={{color: GOLD, textDecoration: "underline", cursor: "pointer"}}>{editing ? "Done" : "Change"}</a>
@@ -118,7 +141,7 @@ export default function LeaveOptimiser({entries, isWorking, onBack}) {
 
     {breaks.map((b, i) => {
       const lv = b.leaveDays.length;
-      const beyond = lastKnown && b.end > lastKnown;
+      const beyond = lastKnown && b.end > lastKnown && !(team && b.end <= TEAM_PLANNER_END);
       return <section key={b.start} className="panel" style={{padding: 14, marginTop: 10, border: i === 0 ? `1px solid ${GOLD}` : undefined}}>
         {i === 0 && <small style={{color: GOLD, fontWeight: 800, letterSpacing: ".06em"}}>BEST OPTION</small>}
         <div style={{fontSize: 24, fontWeight: 800, marginTop: 2}}>{b.total} days off in a row</div>
@@ -129,10 +152,15 @@ export default function LeaveOptimiser({entries, isWorking, onBack}) {
         <div><b>Book {lv} leave day{lv > 1 ? "s" : ""}:</b> {b.leaveDays.map(d => fmtDay(d)).join(", ")}</div>
         {b.savedHolidays.length > 0 && <p className="rateNote" style={{marginTop: 6}}>
           {b.savedHolidays.map(d => `${holidayName(d)} (${fmtDay(d)})`).join(" and ")} falls on a day you'd work, so it's paid as a public holiday and shouldn't use one of your leave days.</p>}
-        {beyond && <p className="rateNote" style={{marginTop: 6}}>Part of this is after your last imported roster ({fmtDay(lastKnown)}), so it assumes your {on} on / {off} off pattern continues. Check it against the published roster before you book.</p>}
-        <button style={{...btn, marginTop: 10}} onClick={async () => { const r = await shareBreak(b); setToast(r); setTimeout(() => setToast(""), 1800); }}>
-          Share this plan
-        </button>
+        {beyond && <p className="rateNote" style={{marginTop: 6}}>Part of this is {team ? `after the published team planners (to ${TEAM_PLANNER_END.slice(0, 4)})` : `after your last imported roster (${fmtDay(lastKnown)})`}, so it assumes your {on} on / {off} off pattern continues. Check it against the published roster before you book.</p>}
+        <div style={{display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10}}>
+          <button style={btn} onClick={async () => { const r = await shareBreak(b); setToast(r); setTimeout(() => setToast(""), 1800); }}>
+            Share this plan
+          </button>
+          <button style={btn} onClick={() => { addToPlan(b.leaveDays); setToast("Added to Year Planner"); setTimeout(() => setToast(""), 1800); }}>
+            Add to Year Planner
+          </button>
+        </div>
       </section>;
     })}
     {toast && <div className="toast">{toast}</div>}
