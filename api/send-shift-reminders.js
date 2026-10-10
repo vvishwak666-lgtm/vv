@@ -16,6 +16,71 @@ import webpush from "web-push";
 
 const TOLERANCE_MINUTES = 20; // covers a ~15-minute polling interval with margin
 
+// Converts A–Z, a–z, 0–9 to Unicode sans-serif bold so text looks bold in a
+// plain-text push notification. Other characters pass through unchanged.
+function toBold(str) {
+  return Array.from(str).map(ch => {
+    const c = ch.codePointAt(0);
+    if (c >= 65 && c <= 90) return String.fromCodePoint(0x1d5d4 + c - 65);
+    if (c >= 97 && c <= 122) return String.fromCodePoint(0x1d5ee + c - 97);
+    if (c >= 48 && c <= 57) return String.fromCodePoint(0x1d7ec + c - 48);
+    return ch;
+  }).join("");
+}
+
+// Auckland Airport — forecast for the place the shift is actually worked.
+const WEATHER_LAT = -37.008;
+const WEATHER_LON = 174.792;
+
+// Fetches tomorrow's forecast from Open-Meteo (free, no API key). Returns a
+// short weather line plus a flag for notable conditions, or null if the
+// lookup fails — weather must never stop the shift reminder from sending.
+async function getTomorrowWeather(tomorrowIso) {
+  try {
+    const url =
+      `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_gusts_10m_max` +
+      `&timezone=Pacific%2FAuckland&forecast_days=3`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const resp = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const d = json?.daily;
+    const i = d?.time?.indexOf(tomorrowIso);
+    if (!d || i === undefined || i < 0) return null;
+
+    const code = d.weather_code[i];
+    const hi = Math.round(d.temperature_2m_max[i]);
+    const lo = Math.round(d.temperature_2m_min[i]);
+    const rain = d.precipitation_probability_max[i];
+    const gust = Math.round(d.wind_gusts_10m_max[i]);
+
+    let sky = "Fine";
+    if (code >= 95) sky = "Thunderstorms";
+    else if (code >= 80) sky = "Showers";
+    else if (code >= 61) sky = "Rain";
+    else if (code >= 51) sky = "Drizzle";
+    else if (code >= 45) sky = "Fog";
+    else if (code >= 3) sky = "Cloudy";
+    else if (code >= 1) sky = "Partly cloudy";
+
+    const alerts = [];
+    if (code >= 95) alerts.push("⚡ Thunderstorm risk — lightning stand-downs possible on the ramp");
+    if (rain >= 60 && code < 95) alerts.push("🌧 Rain likely — pack wet weather gear");
+    if (gust >= 60) alerts.push(`💨 Strong gusts to ${gust} km/h`);
+    if (code >= 45 && code <= 48) alerts.push("🌫 Fog — expect possible delays");
+    if (hi >= 28) alerts.push("☀️ Hot day — bring water and sun protection");
+    if (lo <= 4) alerts.push("🥶 Cold start — dress warm");
+
+    const line = `${sky}, ${lo}–${hi}°C, ${rain}% rain, gusts ${gust} km/h`;
+    return { line, alerts };
+  } catch (_) {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   // Vercel automatically sends this header on cron-triggered requests when
   // a CRON_SECRET env var is set on the project, preventing anyone else from
@@ -117,12 +182,21 @@ const tomorrowLabel = tomorrowDateOnly.toLocaleDateString("en-NZ", {
     return `Tomorrow (${tomorrowLabel}): ${parts.join(", ")}`;
   }
 
+  // One forecast lookup shared by every notification in this run.
+  const weather = await getTomorrowWeather(tomorrowIso);
+
   let sent = 0, failed = 0, removed = 0;
   const failures = [];
 
   for (const sub of due) {
     const row = rosterByUser.get(sub.user_id);
-    const body = formatShiftMessage(row);
+    // Push notifications are plain text, so only the shift line is made bold
+    // (Unicode bold letters); the weather lines stay as normal text.
+    let body = toBold(formatShiftMessage(row));
+    if (weather) {
+      body += `\n🌤 ${weather.line}`;
+      for (const a of weather.alerts) body += `\n${a}`;
+    }
     const payload = JSON.stringify({ title: "Tomorrow's Shift", body, url: "/" });
     const pushSubscription = {
       endpoint: sub.endpoint,
